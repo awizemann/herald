@@ -10,8 +10,13 @@ actor FakeMailAPIClient: MailAPIClient {
     struct PerformedAction: Sendable, Hashable {
         var action: String
         var id: String
+        /// Conversation actions only. The server 400s without a folder, so "which
+        /// folder did the view-model claim the thread was in" has to be observable.
+        var folder: ConversationFolder?
     }
 
+    /// Every sync pass starts with `listMailboxes`, so this counts polls.
+    private(set) var mailboxRequestCount = 0
     private(set) var performed: [PerformedAction] = []
     private(set) var htmlRequests: [String] = []
     private(set) var trusted: [String] = []
@@ -29,9 +34,17 @@ actor FakeMailAPIClient: MailAPIClient {
         performed.count { $0.action == action && $0.id == id }
     }
 
+    /// The folders conversation actions were sent with, in order.
+    func actionFolders(_ action: String, on id: String) -> [ConversationFolder?] {
+        performed.filter { $0.action == action && $0.id == id }.map(\.folder)
+    }
+
     // MARK: MailAPIClient
 
-    func listMailboxes() async throws -> [Mailbox] { [] }
+    func listMailboxes() async throws -> [Mailbox] {
+        mailboxRequestCount += 1
+        return []
+    }
 
     func listMessages(folder: MailFolder?, mailboxID: String?, search: String?) async throws -> [MessageSummary] {
         []
@@ -82,7 +95,7 @@ actor FakeMailAPIClient: MailAPIClient {
         onConversation id: String,
         in folder: ConversationFolder
     ) async throws -> ConversationActionResult {
-        performed.append(PerformedAction(action: action.rawValue, id: id))
+        performed.append(PerformedAction(action: action.rawValue, id: id, folder: folder))
         if let actionError { throw actionError }
         return ConversationActionResult(threadID: id, affected: 1)
     }

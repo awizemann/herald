@@ -38,6 +38,10 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
         case status
         case decoding
         case transport
+        /// The metadata parsed but pointed the flow at another host (or at plain
+        /// http): a `.well-known` document that sends authorization elsewhere is
+        /// exactly how a token gets minted for someone else.
+        case untrustedEndpoints
     }
 
     /// True for the one OAuth error code that means "this grant is dead, re-auth".
@@ -53,7 +57,7 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     }
 }
 
-extension OAuthError: LocalizedError {
+nonisolated extension OAuthError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .discoveryFailed(let url, _):

@@ -129,11 +129,61 @@ import Testing
         )
 
         let account = try await coordinator.addAccount(origin: AuthFixtures.origin)
-        try coordinator.signOut(account)
+        try await coordinator.signOut(account)
 
         #expect(try store.accounts().isEmpty)
         #expect(try store.tokens(for: account.id) == nil)
         #expect(try store.clientID(for: AuthFixtures.origin) == "cid_registered")
+        // This server advertises no revocation_endpoint: skip it, do not fail.
+        #expect(server.requests(path: AuthFixtures.revokePath).isEmpty)
+    }
+
+    /// Signing out used to only forget Herald's copy of the tokens: the refresh
+    /// token stayed live on the server for its whole lifetime, redeemable by
+    /// anyone who had captured it. Fails on a sign-out that does not revoke, that
+    /// revokes the access token instead of the refresh token, or that revokes
+    /// AFTER dropping the tokens (at which point there is nothing left to send).
+    @Test("signOut revokes the refresh token before dropping it")
+    func signOutRevokesTheRefreshToken() async throws {
+        let server = AuthFixtures.revokingServer()
+        let store = RecordingAccountStore()
+        let coordinator = AuthCoordinator(
+            store: store,
+            presenter: FakeAuthorizationPresenter.succeeding(),
+            session: server.makeSession()
+        )
+
+        let account = try await coordinator.addAccount(origin: AuthFixtures.origin)
+        try await coordinator.signOut(account)
+
+        let revocation = try #require(server.requests(path: AuthFixtures.revokePath).first)
+        let fields = AuthFixtures.form(revocation.bodyText)
+        #expect(fields["token"] == "hqb_refresh_1")
+        #expect(fields["token_type_hint"] == "refresh_token")
+        #expect(fields["client_id"] == "cid_registered")
+        #expect(try store.tokens(for: account.id) == nil)
+    }
+
+    /// Fails if a server that rejects (or cannot answer) the revocation traps the
+    /// user in a signed-in state they explicitly asked to leave.
+    @Test("a failed revocation still signs the account out locally")
+    func failedRevocationStillSignsOut() async throws {
+        let server = AuthFixtures.revokingServer(
+            revocation: .error(500, code: "boom", message: "revocation is down")
+        )
+        let store = RecordingAccountStore()
+        let coordinator = AuthCoordinator(
+            store: store,
+            presenter: FakeAuthorizationPresenter.succeeding(),
+            session: server.makeSession()
+        )
+
+        let account = try await coordinator.addAccount(origin: AuthFixtures.origin)
+        try await coordinator.signOut(account)
+
+        #expect(server.requests(path: AuthFixtures.revokePath).count == 1)
+        #expect(try store.accounts().isEmpty)
+        #expect(try store.tokens(for: account.id) == nil)
     }
 
     /// The provider handed to ``HQBaseAPIClient`` must be able to refresh against the
@@ -150,7 +200,7 @@ import Testing
 
         let account = try await coordinator.addAccount(origin: AuthFixtures.origin)
         let provider = try await coordinator.tokenProvider(for: account)
-        #expect(try await provider.refreshAccessToken() == "hqb_access_1")
+        #expect(try await provider.refreshAccessToken(failedToken: "hqb_access_1") == "hqb_access_1")
 
         let refresh = try #require(server.requests(path: AuthFixtures.tokenPath).last)
         let fields = AuthFixtures.form(refresh.bodyText)

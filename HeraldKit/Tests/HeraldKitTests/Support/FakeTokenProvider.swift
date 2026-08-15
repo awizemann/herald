@@ -10,7 +10,7 @@ actor FakeTokenProvider: BearerTokenProvider {
     private var refreshed: [String]
     private(set) var accessTokenCallCount = 0
     private(set) var refreshCallCount = 0
-    /// When set, `refreshAccessToken()` throws it instead of returning a token.
+    /// When set, `refreshAccessToken(failedToken:)` throws it instead of a token.
     var refreshFailure: (any Error)?
 
     /// - Parameters:
@@ -26,7 +26,7 @@ actor FakeTokenProvider: BearerTokenProvider {
         return current
     }
 
-    func refreshAccessToken() async throws -> String {
+    func refreshAccessToken(failedToken: String) async throws -> String {
         refreshCallCount += 1
         if let refreshFailure { throw refreshFailure }
         current = refreshed[min(refreshCallCount - 1, refreshed.count - 1)]

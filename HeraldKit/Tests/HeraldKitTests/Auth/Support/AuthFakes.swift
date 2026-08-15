@@ -57,6 +57,30 @@ nonisolated enum AuthFixtures {
         scopes: OAuthDiscovery.defaultScopes
     )
 
+    static let revokePath = "/api/auth/oauth2/revoke"
+
+    /// The same document, plus RFC 7009 revocation.
+    static let serverMetadataWithRevocationJSON = """
+    {"issuer":"https://mail.test.invalid/api/auth",
+     "authorization_endpoint":"https://mail.test.invalid\(authorizePath)",
+     "token_endpoint":"https://mail.test.invalid\(tokenPath)",
+     "registration_endpoint":"https://mail.test.invalid\(registerPath)",
+     "revocation_endpoint":"https://mail.test.invalid\(revokePath)",
+     "code_challenge_methods_supported":["S256"]}
+    """
+
+    /// The happy path on a server that also advertises revocation. `revocation` is
+    /// what `POST /revoke` answers with.
+    static func revokingServer(revocation: FakeResponse = .json(200, "{}")) -> FakeServer {
+        let server = FakeServer()
+        server.route("GET", protectedResourcePath, .json(200, protectedResourceJSON))
+        server.route("GET", suffixedMetadataPath, .json(200, serverMetadataWithRevocationJSON))
+        server.route("POST", registerPath, .json(201, #"{"client_id":"cid_registered","scope":"mail:read mail:write mail:send offline_access"}"#))
+        server.route("POST", tokenPath, .json(200, tokenJSON()))
+        server.route("POST", revokePath, revocation)
+        return server
+    }
+
     /// A server wired for the whole happy path.
     static func fullServer() -> FakeServer {
         let server = FakeServer()

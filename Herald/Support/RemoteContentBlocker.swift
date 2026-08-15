@@ -21,8 +21,12 @@ enum RemoteContentBlocker {
     /// substitute ourselves) match none of them.
     nonisolated static let blockedSchemePrefixes = ["^http", "^ws", "^ftp"]
 
+    /// `ping`, `websocket`, `fetch` and `popup` were missing: an `<a ping>`, a
+    /// beacon or a WebSocket is a perfectly serviceable tracking pixel, and none
+    /// of them are classified as `image` or `raw`.
     nonisolated static let resourceTypes = [
         "image", "media", "font", "script", "style-sheet", "raw", "document", "svg-document",
+        "ping", "popup", "websocket", "fetch",
     ]
 
     nonisolated static var ruleJSON: String {

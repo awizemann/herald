@@ -57,6 +57,28 @@ import Testing
         #expect(stored?.content.subject == "Hello again")
     }
 
+    /// The service documents itself as serializing a compose window's saves, but
+    /// nothing enforced it: `POST /drafts` is not idempotent, so an autosave racing
+    /// an attach (or two autosaves) on a draft with no server id created TWO server
+    /// drafts and orphaned one. Fails on any implementation without the per-draft
+    /// in-flight create.
+    @Test("Two concurrent first-saves of one draft create exactly one server draft")
+    func concurrentFirstSaveCreatesOneDraft() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = Self.draft()
+
+        async let first = outbox.saveDraft(draft)
+        async let second = outbox.saveDraft(draft)
+        let saved = try await [first, second]
+
+        let creates = await api.calls.count { if case .createDraft = $0 { true } else { false } }
+        #expect(creates == 1, "A second POST /drafts orphans a draft on the server")
+        #expect(await api.storedDraftCount() == 1)
+        // Both callers come back bound to the same server draft.
+        #expect(Set(saved.compactMap(\.serverDraft?.id)) == ["drf_1"])
+    }
+
     /// Fails on "no retry" (a lost edit surfaced as an error the user cannot fix)
     /// and on a retry loop: exactly one refetch + one retry are expected.
     @Test("A 409 refetches once and retries once, then succeeds")
@@ -111,6 +133,26 @@ import Testing
             try await outbox.saveDraft(Self.draft(to: ["ada@example.net", "not-an-address"]))
         }
         #expect(await api.calls.isEmpty)
+    }
+
+    /// Compose logs used to interpolate `String(describing: error)`, which prints
+    /// the enum's payloads: the rejected recipient address, the attachment
+    /// filename, and the server's message (upstream echoes subjects into it).
+    /// Fails the moment `logCode` starts carrying any of them.
+    @Test("logCode carries no address, filename or server message")
+    func logCodeIsPayloadFree() {
+        #expect(!OutboxError.invalidRecipient("a@b").logCode.contains("a@b"))
+        #expect(OutboxError.invalidRecipient("a@b").logCode == "invalid_recipient")
+        #expect(!OutboxError.fileUnreadable(URL(fileURLWithPath: "/Users/ada/secret-plans.pdf")).logCode
+            .contains("secret-plans"))
+        #expect(
+            !OutboxError.api(.server(code: "BAD_RECIPIENT", message: "ada@example.net was rejected")).logCode
+                .contains("ada@example.net")
+        )
+        // The stable classifier survives, so logs stay diagnosable.
+        #expect(OutboxError.api(.server(code: "BAD_RECIPIENT", message: "x")).logCode == "api(server(BAD_RECIPIENT))")
+        #expect(MailAPIError.unauthorized.logCode == "unauthorized")
+        #expect(!MailAPIError.server(code: "X", message: "Subject: Q3 layoffs").logCode.contains("layoffs"))
     }
 
     // MARK: - Attachments

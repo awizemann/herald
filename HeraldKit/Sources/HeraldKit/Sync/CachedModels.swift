@@ -64,8 +64,12 @@ public nonisolated final class CachedMailbox {
 @Model
 public nonisolated final class CachedConversation {
     #Unique<CachedConversation>([\.accountID, \.threadID, \.listFolder, \.mailboxKey])
+    // Column order matters: the hot query is (accountID, listFolder) with the
+    // mailbox left open ("All Mailboxes"), so `listFolder` must precede
+    // `mailboxKey` for that query to be served by an index prefix. `sortDate`
+    // trails so the newest-first ordering comes out of the index too.
     #Index<CachedConversation>(
-        [\.accountID, \.mailboxKey, \.listFolder],
+        [\.accountID, \.listFolder, \.mailboxKey, \.sortDate],
         [\.accountID, \.threadID]
     )
 
@@ -119,8 +123,10 @@ public nonisolated final class CachedConversation {
 @Model
 public nonisolated final class CachedMessage {
     #Unique<CachedMessage>([\.accountID, \.id])
+    // Same prefix rule as `CachedConversation`: folder first, mailbox second, so
+    // a mailbox-nil folder query is prefix-served.
     #Index<CachedMessage>(
-        [\.accountID, \.mailboxKey, \.folderRaw],
+        [\.accountID, \.folderRaw, \.mailboxKey, \.sortDate],
         [\.accountID, \.threadID]
     )
 

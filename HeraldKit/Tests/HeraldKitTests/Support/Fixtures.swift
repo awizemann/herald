@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 
 /// Realistic response bodies shaped exactly like the v1 spec's schemas.
 /// Nullable fields are present-and-null on purpose so mapping tests can prove
@@ -155,4 +156,20 @@ nonisolated enum Fixtures {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)!
     }
+}
+
+/// Polls `condition` with early exit until it holds, then returns; records an
+/// issue on timeout. Never "sleep then assert": the wait ends the moment the
+/// state under test is reached.
+func waitUntil(
+    _ description: Comment,
+    timeout: Duration = .seconds(2),
+    _ condition: () async -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await condition() { return }
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    Issue.record("Timed out waiting: \(description)")
 }

@@ -17,9 +17,19 @@ import Testing
             .appendingPathComponent("Sources/HeraldKit")
     }
 
+    /// Each guard below is one "no file matched" away from passing vacuously — a
+    /// moved source tree, a bad `#filePath` walk or a failed enumerator would keep
+    /// all three green forever. So the file list itself is checked first:
+    /// non-empty, and containing a file we know is there.
     private static func swiftFiles() throws -> [URL] {
         let enumerator = FileManager.default.enumerator(at: sourcesDirectory, includingPropertiesForKeys: nil)
-        return (enumerator?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "swift" }
+        let files = (enumerator?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "swift" }
+        try #require(!files.isEmpty, "Source enumeration found nothing at \(sourcesDirectory.path)")
+        try #require(
+            files.contains { $0.lastPathComponent == "MailStore.swift" },
+            "Source enumeration missed known sources"
+        )
+        return files
     }
 
     @Test("Generated HeraldAPI types stay behind the mapping boundary")

@@ -95,28 +95,51 @@ final class AppEnvironment {
         guard let store else { return }
         do {
             let tokens = try await auth.tokenProvider(for: account)
-            let api = HQBaseAPIClient(origin: account.origin, tokens: tokens)
-            let engine = SyncEngine(api: api, store: store)
-            let viewModel = MailViewModel(
-                accountID: account.id,
-                accountLabel: account.label,
-                api: api,
-                store: store,
-                actions: MailActionService(api: api, store: store),
-                sync: engine,
-                events: engine.events
+            await install(
+                account: account,
+                api: HQBaseAPIClient(origin: account.origin, tokens: tokens),
+                store: store
             )
-            self.account = account
-            self.syncEngine = engine
-            self.outbox = OutboxService(api: api)
-            self.mail = viewModel
-            phase = .ready
-            await viewModel.start()
-            await engine.start(accountID: account.id)
         } catch {
             logger.error("Account activation failed: \(error.localizedDescription, privacy: .public)")
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Replaces the live per-account graph. Internal so tests can drive it with a
+    /// fake API client instead of a real signed-in account.
+    func install(account: Account, api: any MailAPIClient, store: MailStore) async {
+        // Adding a second account (or re-authenticating) used to build a new graph
+        // on top of the old one: the previous SyncEngine kept polling forever and
+        // the previous MailViewModel kept consuming its events.
+        await teardownGraph()
+        let engine = SyncEngine(api: api, store: store)
+        let viewModel = MailViewModel(
+            accountID: account.id,
+            accountLabel: account.label,
+            api: api,
+            store: store,
+            actions: MailActionService(api: api, store: store),
+            sync: engine,
+            events: engine.events
+        )
+        self.account = account
+        self.syncEngine = engine
+        self.outbox = OutboxService(api: api)
+        self.mail = viewModel
+        phase = .ready
+        await viewModel.start()
+        await engine.start(accountID: account.id)
+    }
+
+    /// Stops and drops whatever account graph is currently live.
+    private func teardownGraph() async {
+        mail?.stop()
+        if let engine = syncEngine { await engine.stop() }
+        syncEngine = nil
+        outbox = nil
+        composeContexts.removeAll()
+        mail = nil
     }
 
     // MARK: - Onboarding
@@ -162,11 +185,10 @@ final class AppEnvironment {
     }
 
     func signOut() async {
-        mail?.stop()
-        if let engine = syncEngine { await engine.stop() }
+        await teardownGraph()
         if let account {
             do {
-                try auth.signOut(account)
+                try await auth.signOut(account)
             } catch {
                 logger.error("Sign-out failed: \(error.localizedDescription, privacy: .public)")
                 signInError = error.localizedDescription
@@ -179,10 +201,6 @@ final class AppEnvironment {
                 logger.error("Cache purge failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        syncEngine = nil
-        outbox = nil
-        composeContexts.removeAll()
-        mail = nil
         account = nil
         phase = .signedOut
     }

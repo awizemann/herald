@@ -45,6 +45,18 @@ private struct Harness {
         await api.setDetail(MailFixtures.detail(b, htmlAvailable: false))
     }
 
+    /// Adds thread `t3`/`m3` to mailbox A's ARCHIVED scope, so a folder switch
+    /// actually changes which rows the list should show.
+    func seedArchivedThread() async throws {
+        let archived = MailFixtures.message(
+            id: "m3", threadID: "t3", mailboxID: "mbA", folder: .archived, subject: "Filed"
+        )
+        try await store.upsertMessages([archived], accountID: "acct")
+        try await store.upsertConversations(
+            [MailFixtures.conversation(archived)], accountID: "acct", mailboxID: "mbA", folder: .archived
+        )
+    }
+
     static func mailbox(_ id: String) -> Mailbox {
         Mailbox(
             id: id,
@@ -61,14 +73,14 @@ private struct Harness {
 
 /// Polls with early exit — never "sleep then assert".
 @MainActor
-private func wait(
+func wait(
     _ description: Comment,
     timeout: Duration = .seconds(2),
-    until condition: @MainActor () -> Bool
+    until condition: @MainActor () async -> Bool
 ) async throws {
     let deadline = ContinuousClock.now.advanced(by: timeout)
     while ContinuousClock.now < deadline {
-        if condition() { return }
+        if await condition() { return }
         try await Task.sleep(for: .milliseconds(2))
     }
     Issue.record("Timed out waiting: \(description)")
@@ -161,6 +173,44 @@ private func wait(
 }
 
 @MainActor
+@Suite struct MailViewModelSelectionTests {
+    /// Two folder switches in a row used to leave the first reload running: it
+    /// finishes against the OLD scope and assigns its rows while the selection has
+    /// already moved on. Fails if the superseded reload is merely replaced rather
+    /// than cancelled, or if the final list does not match the final selection.
+    @Test func switchingFoldersCancelsTheSupersededReload() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedArchivedThread()
+
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        let superseded = try #require(harness.model.reloadTask)
+        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        #expect(superseded.isCancelled, "The superseded reload was left running to finish last")
+
+        await (try #require(harness.model.reloadTask)).value
+        // Selection survives, and the list is the one the selection asks for.
+        #expect(harness.model.selection.folder == .archived)
+        #expect(harness.model.conversations.map(\.id) == ["t3"])
+    }
+
+    /// The server 400s a conversation action with no folder, and answers the wrong
+    /// thing when given the wrong one. Fails if the view-model sends a hardcoded
+    /// (or stale) folder rather than the selected scope.
+    @Test func conversationActionsCarryTheSelectedFolder() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedArchivedThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        await harness.model.start()
+        #expect(harness.model.conversations.map(\.id) == ["t3"])
+
+        await harness.model.perform(.read, onThread: "t3")
+        #expect(await harness.api.actionFolders("read", on: "t3") == [.archived])
+    }
+}
+
+@MainActor
 @Suite struct MailViewModelMarkReadTests {
     /// Fails if the dwell task is not cancelled when the selection moves: with a
     /// live task the await below would run the full delay and then mark `m1`
@@ -170,13 +220,15 @@ private func wait(
         try await harness.seedTwoMailboxes()
         await harness.model.start()
         harness.model.selectedMessageID = "m1"
-        let dwell = harness.model.markReadTask
+        // #require, not `dwell?`: if the task were nil the optional await is a
+        // no-op and this test would pass without ever running the dwell timer.
+        let dwell = try #require(harness.model.markReadTask)
 
         harness.model.selectedMessageID = "m2"
-        await dwell?.value
+        await dwell.value
 
         #expect(await harness.api.actionCount("read", on: "m1") == 0)
-        #expect(try await harness.store.message(id: "m1")?.isUnread == true)
+        #expect(try await harness.store.message(id: "m1", accountID: "acct")?.isUnread == true)
     }
 
     /// Fails if a message that holds the selection past the dwell is never marked
@@ -186,10 +238,10 @@ private func wait(
         try await harness.seedTwoMailboxes()
         await harness.model.start()
         harness.model.selectedMessageID = "m1"
-        await harness.model.markReadTask?.value
+        await (try #require(harness.model.markReadTask)).value
 
         #expect(await harness.api.actionCount("read", on: "m1") == 1)
-        #expect(try await harness.store.message(id: "m1")?.isUnread == false)
+        #expect(try await harness.store.message(id: "m1", accountID: "acct")?.isUnread == false)
     }
 }
 

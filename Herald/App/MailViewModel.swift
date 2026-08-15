@@ -80,6 +80,9 @@ final class MailViewModel {
         didSet {
             guard selection != oldValue else { return }
             selectedThreadID = nil
+            // Cancel first: replacing a running task leaves the older, slower
+            // reload alive to finish last and overwrite the newer scope's rows.
+            reloadTask?.cancel()
             reloadTask = Task { await reloadConversations() }
         }
     }
@@ -113,6 +116,9 @@ final class MailViewModel {
             markReadTask?.cancel()
             detail = nil
             body = nil
+            // The superseded load no longer owns the flag (see `loadDetail`), so
+            // the selection change is what clears it.
+            isLoadingBody = false
             guard let messageID = selectedMessageID else { return }
             detailTask = Task { await loadDetail(messageID) }
             markReadTask = Task { await markReadAfterDwell(messageID) }
@@ -136,7 +142,9 @@ final class MailViewModel {
 
     // MARK: Tasks
 
-    private var reloadTask: Task<Void, Never>?
+    /// Exposed so tests can assert the superseded reload was cancelled, not just
+    /// dropped on the floor.
+    @ObservationIgnored private(set) var reloadTask: Task<Void, Never>?
     private var threadTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
@@ -281,7 +289,7 @@ final class MailViewModel {
             reloadMailboxList = true
         } else {
             for id in changes.inserted.union(changes.updated) {
-                guard let message = try? await store.message(id: id) else {
+                guard let message = try? await store.message(id: id, accountID: accountID) else {
                     // Not a message id — a mailbox or a thread-only row.
                     if visibleThreads.contains(id) { reloadConversationList = true }
                     if id == selectedThreadID { reloadThread = true }
@@ -332,14 +340,21 @@ final class MailViewModel {
 
     func reloadConversations() async {
         conversationReloadCount += 1
+        // The scope is captured BEFORE the await: two selection flips in a row
+        // otherwise race, and whichever store read finishes last wins — showing
+        // the previous folder's rows under the current selection.
+        let scope = selection
         do {
-            allConversations = try await store.conversations(
+            let rows = try await store.conversations(
                 accountID: accountID,
-                mailboxID: selection.mailboxID,
-                folder: selection.folder
+                mailboxID: scope.mailboxID,
+                folder: scope.folder
             )
+            guard scope == selection, !Task.isCancelled else { return }
+            allConversations = rows
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .public)")
+            guard scope == selection, !Task.isCancelled else { return }
             allConversations = []
         }
         if let selectedThreadID, !allConversations.contains(where: { $0.id == selectedThreadID }) {
@@ -388,7 +403,9 @@ final class MailViewModel {
 
     private func loadDetail(_ messageID: String) async {
         isLoadingBody = true
-        defer { isLoadingBody = false }
+        // Only the load for the CURRENT selection may clear the flag: a superseded
+        // load finishing late would otherwise hide the spinner for the new one.
+        defer { if selectedMessageID == messageID { isLoadingBody = false } }
         do {
             // Attachments and the full recipient list are not cached, so the
             // single-message route is the source here (never a list route).
@@ -424,7 +441,10 @@ final class MailViewModel {
             let raw = payload.html
             // Substitution walks the whole body; never on the main actor.
             let substituted = await Task.detached(priority: .userInitiated) { @Sendable in
-                Self.document(wrapping: Self.substituteInlineImages(in: raw, with: inline))
+                Self.document(
+                    wrapping: Self.substituteInlineImages(in: raw, with: inline),
+                    allowsRemote: allowRemote
+                )
             }.value
             guard selectedMessageID == messageID else { return }
             body = RenderedBody(
@@ -438,7 +458,7 @@ final class MailViewModel {
             logger.warning("Message HTML failed: \(error.localizedDescription, privacy: .public)")
             guard selectedMessageID == messageID else { return }
             // Fall back to the cached copy so an offline read still shows something.
-            if let cached = try? await store.cachedBody(messageID: messageID), let html = cached.html {
+            if let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID), let html = cached.html {
                 let wrapped = await Task.detached(priority: .userInitiated) { @Sendable in
                     Self.document(wrapping: html)
                 }.value
@@ -468,6 +488,13 @@ final class MailViewModel {
             guard let contentID = part.contentID else { continue }
             do {
                 let payload = try await api.inlineImage(messageID: detail.id, attachmentID: part.id)
+                // The MIME type rides into a `data:` URL the web view will honour.
+                // A part claiming `text/html` (or anything scriptable) must never
+                // become a substitutable data: URL, whatever the part metadata says.
+                guard Self.isRenderableInlineMedia(payload.mimeType) else {
+                    logger.warning("Inline part \(part.id, privacy: .public) is not renderable media; skipped")
+                    continue
+                }
                 let encoded = await Task.detached(priority: .userInitiated) { @Sendable [payload] in
                     "data:\(payload.mimeType);base64,\(payload.data.base64EncodedString())"
                 }.value
@@ -615,7 +642,7 @@ final class MailViewModel {
             return
         }
         guard !Task.isCancelled, selectedMessageID == messageID else { return }
-        guard let message = try? await store.message(id: messageID), message.isUnread else { return }
+        guard let message = try? await store.message(id: messageID, accountID: accountID), message.isUnread else { return }
         do {
             try await actions.perform(.read, on: messageID, accountID: accountID)
         } catch {
@@ -627,6 +654,17 @@ final class MailViewModel {
     }
 
     // MARK: - HTML assembly
+
+    /// Only media types a mail body may legitimately inline. Anything else
+    /// (`text/html`, `application/*`, an empty type) is skipped rather than turned
+    /// into a `data:` URL.
+    nonisolated static func isRenderableInlineMedia(_ mimeType: String) -> Bool {
+        let type = mimeType
+            .prefix { $0 != ";" }
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        return ["image/", "video/", "audio/"].contains { type.hasPrefix($0) && type.count > $0.count }
+    }
 
     nonisolated static func normalizedContentID(_ raw: String) -> String {
         raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
@@ -643,9 +681,28 @@ final class MailViewModel {
         return output
     }
 
-    nonisolated static func document(wrapping bodyHTML: String) -> String {
+    /// Defence in depth behind the rule list and the navigation delegate: even a
+    /// render where the blocker is somehow absent cannot fetch, frame, submit or
+    /// rebase anything. `allowsRemote` is only ever true once the user has
+    /// explicitly trusted the sender's remote media.
+    nonisolated static func contentSecurityPolicy(allowsRemote: Bool) -> String {
+        let img = allowsRemote ? "data: cid: https: http:" : "data: cid:"
+        return [
+            "default-src 'none'",
+            "img-src \(img)",
+            "style-src 'unsafe-inline'",
+            "font-src data:",
+            "media-src data:",
+            "form-action 'none'",
+            "frame-src 'none'",
+            "base-uri 'none'",
+        ].joined(separator: "; ")
+    }
+
+    nonisolated static func document(wrapping bodyHTML: String, allowsRemote: Bool = false) -> String {
         """
         <!doctype html><html><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy(allowsRemote: allowsRemote))">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>\(styleSheet)</style></head><body>\(bodyHTML)</body></html>
         """

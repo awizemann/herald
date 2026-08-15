@@ -105,6 +105,67 @@ import Testing
         }
     }
 
+    /// Discovery runs BEFORE anything about the origin is trusted, so a
+    /// `.well-known` document is attacker-influenced input. One naming someone
+    /// else's authorization endpoint would send the user's credentials — and the
+    /// minted token — to that host. Fails if off-origin endpoints are accepted.
+    @Test("metadata pointing off-origin is rejected as .discoveryFailed(.untrustedEndpoints)")
+    func offOriginEndpointsAreRejected() async throws {
+        let hostile = """
+        {"issuer":"https://mail.test.invalid/api/auth",
+         "authorization_endpoint":"https://evil.example.com/api/auth/oauth2/authorize",
+         "token_endpoint":"https://mail.test.invalid\(AuthFixtures.tokenPath)"}
+        """
+        let server = FakeServer()
+        server.route("GET", AuthFixtures.protectedResourcePath, .json(200, AuthFixtures.protectedResourceJSON))
+        server.route("GET", AuthFixtures.suffixedMetadataPath, .json(200, hostile))
+        server.route("GET", AuthFixtures.bareMetadataPath, .json(200, hostile))
+
+        do {
+            _ = try await OAuthDiscovery(session: server.makeSession())
+                .configuration(for: AuthFixtures.origin)
+            Issue.record("expected discovery to reject the off-origin document")
+        } catch let error as OAuthError {
+            guard case .discoveryFailed(_, let reason) = error else {
+                Issue.record("expected .discoveryFailed, got \(error)")
+                return
+            }
+            #expect(reason == .untrustedEndpoints)
+        }
+    }
+
+    /// The unit form, so each endpoint's rule is pinned individually rather than
+    /// only through the one document above.
+    @Test("every contacted endpoint must be https on the origin's own host")
+    func endpointTrustRules() {
+        let origin = AuthFixtures.origin
+        func metadata(
+            issuer: String = "https://mail.test.invalid/api/auth",
+            authorization: String = "https://mail.test.invalid/a",
+            token: String = "https://mail.test.invalid/t",
+            registration: String? = "https://mail.test.invalid/r",
+            revocation: String? = nil
+        ) -> OAuthServerMetadata {
+            OAuthServerMetadata(
+                issuer: issuer,
+                authorizationEndpoint: URL(string: authorization)!,
+                tokenEndpoint: URL(string: token)!,
+                registrationEndpoint: registration.flatMap(URL.init(string:)),
+                revocationEndpoint: revocation.flatMap(URL.init(string:))
+            )
+        }
+        #expect(OAuthDiscovery.endpointsAreTrusted(metadata(), for: origin))
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(issuer: "https://evil.example.com/api/auth"), for: origin))
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(authorization: "https://evil.example.com/a"), for: origin))
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(token: "https://evil.example.com/t"), for: origin))
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(registration: "https://evil.example.com/r"), for: origin))
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(revocation: "https://evil.example.com/x"), for: origin))
+        // Plain http on the right host is still a downgrade.
+        #expect(!OAuthDiscovery.endpointsAreTrusted(metadata(token: "http://mail.test.invalid/t"), for: origin))
+        // An endpoint the server does not publish is simply never contacted.
+        #expect(OAuthDiscovery.endpointsAreTrusted(metadata(registration: nil), for: origin))
+    }
+
     /// Fails if the RFC 8414 insertion is written as a suffix append.
     @Test("metadataURL inserts .well-known before the issuer path")
     func metadataURLInsertion() throws {

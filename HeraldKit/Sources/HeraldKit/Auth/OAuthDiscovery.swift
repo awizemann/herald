@@ -12,6 +12,9 @@ public nonisolated struct OAuthServerMetadata: Sendable, Codable, Hashable {
     /// RFC 8628; HQBase exposes a device flow (verification at `/device`) that
     /// Herald does not use yet but records so a headless mode can.
     public let deviceAuthorizationEndpoint: URL?
+    /// RFC 7009. Absent on servers with no revocation support, in which case
+    /// sign-out skips revocation silently.
+    public let revocationEndpoint: URL?
 
     enum CodingKeys: String, CodingKey {
         case issuer
@@ -19,6 +22,7 @@ public nonisolated struct OAuthServerMetadata: Sendable, Codable, Hashable {
         case tokenEndpoint = "token_endpoint"
         case registrationEndpoint = "registration_endpoint"
         case deviceAuthorizationEndpoint = "device_authorization_endpoint"
+        case revocationEndpoint = "revocation_endpoint"
     }
 
     public init(
@@ -26,13 +30,15 @@ public nonisolated struct OAuthServerMetadata: Sendable, Codable, Hashable {
         authorizationEndpoint: URL,
         tokenEndpoint: URL,
         registrationEndpoint: URL? = nil,
-        deviceAuthorizationEndpoint: URL? = nil
+        deviceAuthorizationEndpoint: URL? = nil,
+        revocationEndpoint: URL? = nil
     ) {
         self.issuer = issuer
         self.authorizationEndpoint = authorizationEndpoint
         self.tokenEndpoint = tokenEndpoint
         self.registrationEndpoint = registrationEndpoint
         self.deviceAuthorizationEndpoint = deviceAuthorizationEndpoint
+        self.revocationEndpoint = revocationEndpoint
     }
 }
 
@@ -137,13 +143,40 @@ public nonisolated struct OAuthDiscovery: Sendable {
                     lastFailure = .discoveryFailed(url: url.absoluteString, reason: .status)
                     continue
                 }
-                return try decode(OAuthServerMetadata.self, from: response.body, url: url)
+                let metadata = try decode(OAuthServerMetadata.self, from: response.body, url: url)
+                guard Self.endpointsAreTrusted(metadata, for: origin) else {
+                    logger.error(
+                        "metadata at \(url.absoluteString, privacy: .public) points off-origin; refusing it"
+                    )
+                    lastFailure = .discoveryFailed(url: url.absoluteString, reason: .untrustedEndpoints)
+                    continue
+                }
+                return metadata
             } catch let error as OAuthError {
                 lastFailure = error
             }
         }
         logger.error("no authorization server metadata at \(origin.absoluteString, privacy: .public)")
         throw lastFailure ?? .discoveryFailed(url: origin.absoluteString, reason: .status)
+    }
+
+    /// Every endpoint the flow will actually contact must be https on the origin's
+    /// own host. A `.well-known` document is fetched before anything is trusted,
+    /// so without this check a server (or anything that can answer for it) could
+    /// send the authorization request — and therefore the user's credentials and
+    /// the minted token — to a host of its choosing.
+    static func endpointsAreTrusted(_ metadata: OAuthServerMetadata, for origin: URL) -> Bool {
+        let host = origin.host?.lowercased()
+        guard host != nil else { return false }
+        func sameOrigin(_ url: URL?) -> Bool {
+            guard let url else { return true } // Absent endpoints are simply unused.
+            return url.scheme?.lowercased() == "https" && url.host?.lowercased() == host
+        }
+        guard let issuer = URL(string: metadata.issuer), sameOrigin(issuer) else { return false }
+        return sameOrigin(metadata.authorizationEndpoint)
+            && sameOrigin(metadata.tokenEndpoint)
+            && sameOrigin(metadata.registrationEndpoint)
+            && sameOrigin(metadata.revocationEndpoint)
     }
 
     /// Replaces an origin's path outright. `appendingPathComponent` would collapse

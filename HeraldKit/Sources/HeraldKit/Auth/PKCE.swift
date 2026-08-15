@@ -55,7 +55,7 @@ public nonisolated struct PKCE: Sendable, Hashable {
     }
 }
 
-extension Data {
+nonisolated extension Data {
     /// base64url, unpadded (RFC 4648 §5) — the encoding every OAuth/PKCE value uses.
     nonisolated func base64URLEncodedString() -> String {
         base64EncodedString()

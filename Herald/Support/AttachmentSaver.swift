@@ -23,6 +23,28 @@ enum AttachmentSaver {
         return name.isEmpty ? "attachment" : String(name.prefix(255))
     }
 
+    /// Marks a written file as "downloaded from the internet".
+    ///
+    /// `LSFileQuarantineEnabled` only covers files the app creates; an atomic
+    /// write replaces the file, so the flag is stamped explicitly afterwards.
+    /// Best effort: a volume that cannot carry the attribute must not turn a
+    /// successful save into an error.
+    nonisolated static func quarantine(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeEmailAttachment as String,
+            kLSQuarantineAgentNameKey as String: "Herald",
+        ]
+        do {
+            try url.setResourceValues(values)
+        } catch {
+            logger.warning(
+                "Could not quarantine the saved attachment: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     /// Returns an error message for the UI, or `nil` on success/cancel.
     static func save(_ attachment: Attachment, using api: any MailAPIClient) async -> String? {
         let panel = NSSavePanel()
@@ -36,6 +58,7 @@ enum AttachmentSaver {
             let destination = url
             try await Task.detached(priority: .userInitiated) { @Sendable [payload] in
                 try payload.data.write(to: destination, options: .atomic)
+                quarantine(destination)
             }.value
             return nil
         } catch {

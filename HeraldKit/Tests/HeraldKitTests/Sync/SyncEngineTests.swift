@@ -132,6 +132,65 @@ struct SyncEngineTests {
         #expect(calls == 1, "The loop kept polling after a 401")
     }
 
+    /// URLSession reports a cancelled request as `MailAPIError.transport(URLError
+    /// .cancelled)`, not `CancellationError` — so a sign-out or account switch used
+    /// to surface in the UI as a sync FAILURE and push the loop into exponential
+    /// backoff. Fails on any pass that treats a cancellation as a server error.
+    @Test("A cancelled pass emits no .failed and does not arm the backoff")
+    func cancelledPassIsNotAFailure() async throws {
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setListFailure(.transport(.init(URLError(.cancelled))))
+
+        let store = try MailStore.inMemory()
+        let engine = SyncEngine(api: api, store: store, scope: Self.inboxOnly)
+        var iterator = engine.events.makeAsyncIterator()
+        await engine.start(accountID: account)
+
+        // Pass 1 is the cancelled one; it must publish nothing but `.began`.
+        var kinds: [EventKind] = []
+        kinds.append(EventKind(await iterator.next()!))
+        try await waitUntil("the cancelled pass to end") { await engine.isParkedOnCadenceWait }
+        #expect(await engine.consecutiveFailureCount == 0, "A cancellation must not arm the backoff")
+
+        // Pass 2 succeeds, so the stream has a terminator to assert against.
+        await api.setListFailure(nil)
+        await engine.refreshNow()
+        while let event = await iterator.next() {
+            let kind = EventKind(event)
+            kinds.append(kind)
+            if kind == .finished { break }
+        }
+        await engine.stop()
+
+        #expect(!kinds.contains(.failed), "The cancelled pass reported a sync failure")
+    }
+
+    /// The timer/wake race: a cadence timer armed for a wait that `refreshNow()`
+    /// already ended used to latch `wakeSignalled`, so the NEXT wait returned
+    /// instantly — a free extra pass, and at speed a spin loop. Fails on any
+    /// implementation whose timer signals without checking whose wait it belongs to.
+    @Test("A stale cadence timer does not wake the loop")
+    func staleTimerDoesNotWakeTheLoop() async throws {
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+
+        let store = try MailStore.inMemory()
+        let engine = SyncEngine(api: api, store: store, scope: Self.inboxOnly)
+        await engine.start(accountID: account)
+        _ = await awaitPasses(engine, count: 1)
+        try await waitUntil("the loop to park after pass 1") { await engine.isParkedOnCadenceWait }
+
+        // A timer armed for a wait that has already ended.
+        await engine.timerFired(generation: 0)
+        #expect(await engine.isParkedOnCadenceWait, "A stale timer woke the loop")
+
+        // The current wait's timer still works, so the guard is not "ignore everything".
+        await engine.timerFired(generation: 1)
+        #expect(await engine.isParkedOnCadenceWait == false)
+        await engine.stop()
+    }
+
     /// Fails if `.changed` is emitted on an unchanged poll (which would
     /// invalidate the whole list every 15 seconds).
     @Test("A second identical pass emits no .changed event")
@@ -186,9 +245,26 @@ struct MailActionServiceTests {
         await #expect(throws: MailAPIError.self) {
             try await service.perform(.read, on: "m1", accountID: account)
         }
-        #expect(try await store.message(id: "m1")?.readAt == nil, "Revert must undo the optimistic read")
+        #expect(try await store.message(id: "m1", accountID: account)?.readAt == nil, "Revert must undo the optimistic read")
         let attempted = await api.callCount { $0 == .performMessage(.read, "m1") }
         #expect(attempted == 1)
+    }
+
+    /// The mirror of `rejectedActionReverts`, and the case no test could reach
+    /// while the fake's `perform(onMessage:)` always threw: a server that ACCEPTS
+    /// the action must leave the optimistic write in place, and must not fire the
+    /// revert path.
+    @Test("A successful message action sticks and does not revert")
+    func successfulMessageActionSticks() async throws {
+        let api = FakeMailAPIClient()
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
+
+        let service = MailActionService(api: api, store: store)
+        try await service.perform(.star, on: "m1", accountID: account)
+
+        #expect(try await store.message(id: "m1", accountID: account)?.starredAt != nil, "The accepted star was rolled back")
+        #expect(await api.callCount { $0 == .performMessage(.star, "m1") } == 1)
     }
 
     /// Fails if a successful action rolls the cache back anyway.

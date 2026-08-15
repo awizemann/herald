@@ -63,10 +63,41 @@ public final class AuthCoordinator {
 
     /// Forgets Herald's tokens for the account. The shared web session the browser
     /// holds is not ours to clear — see ``WebAuthenticationPresenter``.
-    public func signOut(_ account: Account) throws {
+    /// Revocation is best effort and happens BEFORE the local removal: dropping
+    /// the tokens first would leave a live refresh token on the server that
+    /// nothing can ever revoke. A failure is logged and removal proceeds anyway —
+    /// the user asked to sign out.
+    public func signOut(_ account: Account) async throws {
+        await revokeRefreshToken(for: account)
         try store.remove(account.id)
         configurations[account.id] = nil
         logger.info("signed out \(account.origin.absoluteString, privacy: .public)")
+    }
+
+    /// RFC 7009. Silently skipped when the server publishes no
+    /// `revocation_endpoint`, or when there is no refresh token to revoke.
+    private func revokeRefreshToken(for account: Account) async {
+        guard let refreshToken = try? store.tokens(for: account.id)?.refreshToken else { return }
+        guard let configuration = try? await configuration(for: account.origin),
+              let endpoint = configuration.server.revocationEndpoint
+        else { return }
+        do {
+            let response = try await OAuthHTTP.postForm(
+                endpoint,
+                fields: [
+                    ("token", refreshToken),
+                    ("token_type_hint", "refresh_token"),
+                    ("client_id", account.clientID),
+                ],
+                using: session
+            )
+            guard (200..<300).contains(response.status) else {
+                logger.warning("revocation returned HTTP \(response.status); signing out locally anyway")
+                return
+            }
+        } catch {
+            logger.warning("revocation request failed; signing out locally anyway")
+        }
     }
 
     /// The provider ``HQBaseAPIClient`` is constructed with.

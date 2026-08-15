@@ -34,6 +34,12 @@ public actor OutboxService {
     private let api: any MailAPIClient
     private let attachmentByteLimit: Int
 
+    /// Server-draft creations in flight, keyed by the compose window's local draft
+    /// id. `POST /drafts` is the one non-idempotent call here: an autosave racing
+    /// an `attach` (or two autosaves) on a draft with no server id yet would
+    /// otherwise create two drafts and orphan one. Later callers join this task.
+    private var pendingCreates: [ComposeDraft.ID: Task<Draft, any Error>] = [:]
+
     public init(api: any MailAPIClient, attachmentByteLimit: Int = OutboxService.defaultAttachmentByteLimit) {
         self.api = api
         self.attachmentByteLimit = attachmentByteLimit
@@ -53,12 +59,44 @@ public actor OutboxService {
         var draft = draft
 
         guard let existing = draft.serverDraft else {
-            let created = try await call { try await api.createDraft(draft.draftInput) }
+            let (created, joined) = try await createServerDraft(for: draft)
             draft.applySaved(created)
-            logger.info("Created draft \(created.id, privacy: .public)")
-            return draft
+            guard joined else {
+                logger.info("Created draft \(created.id, privacy: .public)")
+                return draft
+            }
+            // We joined someone else's create, so the server holds THEIR content:
+            // push ours on top of the identity they established.
+            return try await update(draft, existing: created)
         }
 
+        return try await update(draft, existing: existing)
+    }
+
+    /// The create half, deduplicated per compose window. The `Bool` says whether
+    /// this caller joined an existing create rather than starting it.
+    private func createServerDraft(for draft: ComposeDraft) async throws(OutboxError) -> (Draft, joined: Bool) {
+        if let running = pendingCreates[draft.id] {
+            return (try await join(running), joined: true)
+        }
+        let input = draft.draftInput
+        let api = self.api
+        let task = Task<Draft, any Error> { try await api.createDraft(input) }
+        pendingCreates[draft.id] = task
+        defer { pendingCreates[draft.id] = nil }
+        return (try await join(task), joined: false)
+    }
+
+    /// Awaits a shared create task with the same error mapping ``call(_:)`` gives.
+    private func join(_ task: Task<Draft, any Error>) async throws(OutboxError) -> Draft {
+        try await call { try await task.value }
+    }
+
+    private func update(
+        _ draft: ComposeDraft,
+        existing: Draft
+    ) async throws(OutboxError) -> ComposeDraft {
+        var draft = draft
         do {
             let updated = try await call { try await api.updateDraft(id: existing.id, with: draft.draftInput) }
             draft.applySaved(updated)
@@ -229,7 +267,7 @@ public actor OutboxService {
         do {
             return try await body()
         } catch let error as MailAPIError {
-            logger.warning("Outbox API call failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Outbox API call failed: \(error.logCode, privacy: .public)")
             throw OutboxError.api(error)
         } catch {
             logger.error("Outbox API call failed unexpectedly: \(error.localizedDescription, privacy: .public)")

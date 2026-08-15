@@ -8,7 +8,13 @@ public nonisolated protocol BearerTokenProvider: Sendable {
     /// The current access token, minting one if necessary.
     func accessToken() async throws -> String
     /// Exchanges the refresh token for a new access token and returns it.
-    func refreshAccessToken() async throws -> String
+    ///
+    /// `failedToken` is the access token the caller actually sent and got a 401
+    /// for. If the stored token has already moved on (a concurrent request
+    /// refreshed while this one was in flight) the stored one is returned as-is:
+    /// refreshing again would redeem an already-rotated grant and sign the
+    /// account out.
+    func refreshAccessToken(failedToken: String) async throws -> String
 }
 
 /// Binary payload plus the MIME type the caller needs to render or save it.
@@ -70,7 +76,7 @@ public nonisolated protocol MailAPIClient: Sendable {
     func reply(_ input: ReplyInput) async throws -> MessageSummary
 }
 
-extension MailAPIClient {
+nonisolated extension MailAPIClient {
     /// Convenience for the common unfiltered listing.
     public func listMessages(folder: MailFolder? = nil, mailboxID: String? = nil) async throws -> [MessageSummary] {
         try await listMessages(folder: folder, mailboxID: mailboxID, search: nil)

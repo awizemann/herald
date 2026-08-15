@@ -164,7 +164,7 @@ final class ComposeViewModel {
             draft = try await outbox.saveDraft(draft)
             if status == .saving { status = .idle }
         } catch {
-            logger.warning("Draft autosave failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
             status = .failed(error.localizedDescription)
         }
     }
@@ -197,7 +197,7 @@ final class ComposeViewModel {
             return true
         } catch {
             // Nothing is discarded: the window stays open with everything in it.
-            logger.warning("Send failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Send failed: \(error.logCode, privacy: .public)")
             status = .failed(error.localizedDescription)
             return false
         }
@@ -209,7 +209,7 @@ final class ComposeViewModel {
         do {
             try await outbox.discard(draft)
         } catch {
-            logger.warning("Discarding the draft failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Discarding the draft failed: \(error.logCode, privacy: .public)")
         }
     }
 
@@ -264,7 +264,7 @@ final class ComposeViewModel {
             draft = try await outbox.attach(url, to: draft)
             if status == .saving { status = .idle }
         } catch {
-            logger.warning("Attachment failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Attachment failed: \(error.logCode, privacy: .public)")
             status = .failed(error.localizedDescription)
         }
     }
@@ -273,7 +273,7 @@ final class ComposeViewModel {
         do {
             draft = try await outbox.removeAttachment(attachment.id, from: draft)
         } catch {
-            logger.warning("Removing an attachment failed: \(String(describing: error), privacy: .public)")
+            logger.warning("Removing an attachment failed: \(error.logCode, privacy: .public)")
             status = .failed(error.localizedDescription)
         }
     }

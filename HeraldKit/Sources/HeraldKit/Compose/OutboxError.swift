@@ -15,7 +15,23 @@ public nonisolated enum OutboxError: Error, Sendable, Hashable {
     case fileUnreadable(URL)
 }
 
-extension OutboxError: LocalizedError {
+nonisolated extension OutboxError {
+    /// A payload-free classifier for logs: the recipient address, the filename and
+    /// the server's message are all user data, and none of them appear here.
+    /// `String(describing:)` on this enum leaks every one of them.
+    public var logCode: String {
+        switch self {
+        case .invalidRecipient: "invalid_recipient"
+        case .noRecipients: "no_recipients"
+        case .attachmentTooLarge(_, let limit): "attachment_too_large(limit:\(limit))"
+        case .draftConflict: "draft_conflict"
+        case .api(let error): "api(\(error.logCode))"
+        case .fileUnreadable: "file_unreadable"
+        }
+    }
+}
+
+nonisolated extension OutboxError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidRecipient(let address):

@@ -39,8 +39,16 @@ public actor AccountTokenProvider: BearerTokenProvider {
         return try await refreshTokens(from: stored).accessToken
     }
 
-    public func refreshAccessToken() async throws -> String {
-        try await refreshTokens(from: try store.tokens(for: accountID)).accessToken
+    public func refreshAccessToken(failedToken: String) async throws -> String {
+        let stored = try store.tokens(for: accountID)
+        // The 401 was for a token we have since replaced: a concurrent request
+        // already refreshed. Refreshing again would redeem an already-rotated
+        // refresh token and sign the account out.
+        if let stored, stored.accessToken != failedToken {
+            logger.warning("stale 401 for \(self.accountID, privacy: .public); reusing the refreshed token")
+            return stored.accessToken
+        }
+        return try await refreshTokens(from: stored).accessToken
     }
 
     private func refreshTokens(from stored: OAuthTokens?) async throws -> OAuthTokens {

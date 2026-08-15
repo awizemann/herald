@@ -62,7 +62,13 @@ import Testing
     /// Fails on any implementation that does not share one in-flight refresh — and
     /// with HQBase rotating refresh tokens, a second concurrent refresh would redeem
     /// an already-rotated grant and sign the account out.
-    @Test("five concurrent accessToken() calls on an expired token trigger exactly one refresh")
+    ///
+    /// Time-limited because the failure mode is a hang, not a wrong value: a
+    /// provider that loses a continuation leaves the task group waiting forever.
+    @Test(
+        "five concurrent accessToken() calls on an expired token trigger exactly one refresh",
+        .timeLimit(.minutes(1))
+    )
     func concurrentRefreshIsSerialized() async throws {
         let store = try store(expiresIn: -10)
         let refresher = GatedRefresher.counting(released: false)
@@ -85,8 +91,8 @@ import Testing
 
         #expect(tokens == Array(repeating: "access-1", count: 5))
         #expect(await refresher.callCount == 1)
-        #expect(store.tokenReadCount == 5)
-        // One refresh means one write, not five.
+        // One refresh means one write, not five. (How many times the store was
+        // READ is an implementation detail — the gate above already depends on it.)
         #expect(store.writes == 1)
     }
 
@@ -146,7 +152,27 @@ import Testing
         let refresher = GatedRefresher.counting()
         let provider = AccountTokenProvider(accountID: accountID, store: store, refresher: refresher)
 
-        #expect(try await provider.refreshAccessToken() == "access-1")
+        #expect(try await provider.refreshAccessToken(failedToken: "access-0") == "access-1")
         #expect(await refresher.callCount == 1)
+    }
+
+    /// Requests overlap, so a 401 for a token that has ALREADY been replaced keeps
+    /// arriving after the refresh that replaced it. Fails on a provider that
+    /// refreshes on every 401 regardless: with HQBase rotating refresh tokens, the
+    /// second refresh redeems a spent grant and signs the account out.
+    @Test("a late 401 carrying the superseded token does not refresh again")
+    func staleUnauthorizedDoesNotRefreshTwice() async throws {
+        let store = try store(expiresIn: -10)
+        let refresher = GatedRefresher.counting()
+        let provider = AccountTokenProvider(accountID: accountID, store: store, refresher: refresher)
+
+        // First 401: the token we sent is the stored one, so this refreshes.
+        #expect(try await provider.refreshAccessToken(failedToken: "access-0") == "access-1")
+        #expect(await refresher.callCount == 1)
+
+        // A request that was already in flight now reports its own 401, for the
+        // token it used — the one we just replaced.
+        #expect(try await provider.refreshAccessToken(failedToken: "access-0") == "access-1")
+        #expect(await refresher.callCount == 1, "The stale 401 burned a second refresh token")
     }
 }

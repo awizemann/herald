@@ -50,6 +50,9 @@ enum WebAuthenticationRunner {
     private final class LiveSession {
         let anchorProvider = KeyWindowAnchorProvider()
         var session: ASWebAuthenticationSession?
+        /// Cleared by ``finish(_:with:)``, which is also what makes double
+        /// resumption impossible when the callback and a cancellation race.
+        var continuation: CheckedContinuation<URL, any Error>?
     }
 
     static func authorize(
@@ -58,34 +61,66 @@ enum WebAuthenticationRunner {
         prefersEphemeralWebBrowserSession: Bool
     ) async throws -> URL {
         let token = UUID()
-        let holder = LiveSession()
-        live[token] = holder
+        live[token] = LiveSession()
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(
-                url: url,
-                callbackURLScheme: callbackScheme
-            ) { callbackURL, error in
-                MainActor.assumeIsolated { live[token] = nil }
-                if let callbackURL {
-                    continuation.resume(returning: callbackURL)
-                } else if let error {
-                    continuation.resume(throwing: Self.mapped(error))
-                } else {
-                    continuation.resume(throwing: OAuthError.missingAuthorizationCode)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, any Error>) in
+                guard let holder = live[token] else {
+                    // Cancelled before the sheet even existed.
+                    continuation.resume(throwing: OAuthError.userCancelled)
+                    return
+                }
+                holder.continuation = continuation
+
+                let session = ASWebAuthenticationSession(
+                    url: url,
+                    callbackURLScheme: callbackScheme
+                ) { callbackURL, error in
+                    // The completion handler is nonisolated; hop to the main actor
+                    // rather than asserting isolation we were never promised.
+                    Task { @MainActor in
+                        if let callbackURL {
+                            finish(token, with: .success(callbackURL))
+                        } else if let error {
+                            finish(token, with: .failure(mapped(error)))
+                        } else {
+                            finish(token, with: .failure(OAuthError.missingAuthorizationCode))
+                        }
+                    }
+                }
+                session.presentationContextProvider = holder.anchorProvider
+                session.prefersEphemeralWebBrowserSession = prefersEphemeralWebBrowserSession
+                holder.session = session
+
+                guard session.start() else {
+                    logger.error("ASWebAuthenticationSession refused to start")
+                    finish(
+                        token,
+                        with: .failure(
+                            OAuthError.webAuthenticationFailed("Herald could not open the sign-in window.")
+                        )
+                    )
+                    return
                 }
             }
-            session.presentationContextProvider = holder.anchorProvider
-            session.prefersEphemeralWebBrowserSession = prefersEphemeralWebBrowserSession
-            holder.session = session
-
-            guard session.start() else {
-                live[token] = nil
-                logger.error("ASWebAuthenticationSession refused to start")
-                continuation.resume(throwing: OAuthError.webAuthenticationFailed("Herald could not open the sign-in window."))
-                return
+        } onCancel: {
+            // The sheet has to be torn down on main, and the awaiting task has to
+            // be resumed — without this, cancelling sign-in leaks both the window
+            // and the continuation.
+            Task { @MainActor in
+                live[token]?.session?.cancel()
+                finish(token, with: .failure(OAuthError.userCancelled))
             }
         }
+    }
+
+    /// The single resumption point. Resuming a `CheckedContinuation` twice traps,
+    /// so the callback, the start failure and cancellation all funnel through here.
+    private static func finish(_ token: UUID, with result: Result<URL, any Error>) {
+        guard let holder = live[token], let continuation = holder.continuation else { return }
+        holder.continuation = nil
+        live[token] = nil
+        continuation.resume(with: result)
     }
 
     private static func mapped(_ error: any Error) -> OAuthError {

@@ -17,11 +17,16 @@ public nonisolated struct KeychainStore: SecretStore {
         self.service = service
     }
 
+    /// `kSecUseDataProtectionKeychain` opts every operation into the modern,
+    /// app-group-scoped keychain instead of the legacy file-based one — on macOS
+    /// that is what keeps these items out of the user's login keychain, where any
+    /// other signed app could prompt for them.
     private func baseQuery(for key: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
+            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 
@@ -51,7 +56,10 @@ public nonisolated struct KeychainStore: SecretStore {
         let query = baseQuery(for: key)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            // ThisDeviceOnly: OAuth tokens are bound to this device's registration,
+            // so syncing them to another Mac via iCloud Keychain or a backup would
+            // spread a live credential for no benefit.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)

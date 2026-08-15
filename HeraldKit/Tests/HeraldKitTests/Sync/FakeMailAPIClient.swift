@@ -125,11 +125,43 @@ actor FakeMailAPIClient: MailAPIClient {
         return conversationPages[cursor ?? ""] ?? ConversationPage(conversations: [], nextCursor: nil, totalCount: nil)
     }
 
+    /// Answers the way the server does: with the updated summary. A fake that
+    /// always threw made "a successful action is NOT reverted" untestable — the
+    /// revert path was the only one any test could reach.
     @discardableResult
     func perform(_ action: MessageAction, onMessage id: String) async throws -> MessageSummary {
         calls.append(.performMessage(action, id))
         if let actionFailure { throw actionFailure }
-        throw MailAPIError.notFound
+        return Self.applying(action, to: SyncFixtures.message(id))
+    }
+
+    private nonisolated static func applying(
+        _ action: MessageAction,
+        to summary: MessageSummary
+    ) -> MessageSummary {
+        let now = Date(timeIntervalSince1970: 4_000)
+        let folder: MailFolder = switch action {
+        case .archive: .archived
+        case .trash: .trash
+        default: summary.folder
+        }
+        return MessageSummary(
+            id: summary.id,
+            threadID: summary.threadID,
+            mailboxID: summary.mailboxID,
+            direction: summary.direction,
+            folder: folder,
+            fromAddress: summary.fromAddress,
+            to: summary.to,
+            subject: summary.subject,
+            snippet: summary.snippet,
+            receivedAt: summary.receivedAt,
+            sentAt: summary.sentAt,
+            readAt: action == .read ? now : (action == .unread ? nil : summary.readAt),
+            starredAt: action == .star ? now : (action == .unstar ? nil : summary.starredAt),
+            hasAttachments: summary.hasAttachments,
+            createdAt: summary.createdAt
+        )
     }
 
     @discardableResult

@@ -69,6 +69,9 @@ targets:
           - CFBundleURLName: com.wizemann.herald
             CFBundleURLSchemes: [herald]
         LSMinimumSystemVersion: "26.0"
+        # Everything this app writes came off the network (mail attachments), so it
+        # must carry the quarantine flag and get the Gatekeeper prompt on open.
+        LSFileQuarantineEnabled: true
   HeraldTests:
     type: bundle.unit-test
     platform: macOS

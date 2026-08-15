@@ -90,6 +90,11 @@ public actor SyncEngine {
     /// timer or `refreshNow()`/`stop()` resumes it.
     private var wakeContinuation: CheckedContinuation<Void, Never>?
     private var wakeSignalled = false
+    /// Bumped on every wait. A cadence timer carries the generation it was armed
+    /// for, so a timer that outlived its wait (the loop was woken by
+    /// `refreshNow()`) cannot latch `wakeSignalled` and make the NEXT wait return
+    /// instantly — which is a free extra pass, and at speed a spin loop.
+    private var waitGeneration = 0
 
     public init(
         api: any MailAPIClient,
@@ -173,6 +178,8 @@ public actor SyncEngine {
 
     /// Parks the loop until the cadence timer fires or someone signals a wake.
     private func waitForNextTick() async {
+        waitGeneration &+= 1
+        let generation = waitGeneration
         let interval = backoffInterval ?? cadence.interval
         let timer = Task { [weak self] in
             // A cancelled timer must NOT signal: swallowing the cancellation and
@@ -183,7 +190,7 @@ public actor SyncEngine {
             } catch {
                 return
             }
-            await self?.signalWake()
+            await self?.timerFired(generation: generation)
         }
         defer { timer.cancel() }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -195,6 +202,22 @@ public actor SyncEngine {
             }
         }
     }
+
+    /// The cadence timer's only entry point. A stale generation, or a wait that is
+    /// no longer parked, means this timer belongs to a wait that already ended:
+    /// it must do nothing at all, not even latch.
+    func timerFired(generation: Int) {
+        guard generation == waitGeneration, wakeContinuation != nil else { return }
+        signalWake()
+    }
+
+    /// Whether the loop is currently parked on a cadence wait. Test seam: it is
+    /// what makes "a stale timer did NOT wake the loop" assertable.
+    var isParkedOnCadenceWait: Bool { wakeContinuation != nil }
+
+    /// Test seam: a cancelled pass must not count as a failure (which would put
+    /// the loop into exponential backoff for something the user did).
+    var consecutiveFailureCount: Int { consecutiveFailures }
 
     private func signalWake() {
         if let continuation = wakeContinuation {
@@ -234,6 +257,12 @@ public actor SyncEngine {
             stop()
         } catch is CancellationError {
             logger.warning("Sync pass cancelled")
+        } catch where Task.isCancelled || Self.isCancellation(error) {
+            // A pass torn down by `stop()` is not a server failure: reporting it
+            // as `.failed` shows the user a sync error for their own sign-out or
+            // account switch, and bumping the backoff would slow the NEXT account
+            // down for minutes.
+            logger.warning("Sync pass cancelled")
         } catch {
             consecutiveFailures += 1
             logger.warning(
@@ -241,6 +270,13 @@ public actor SyncEngine {
             )
             emit(.failed(error))
         }
+    }
+
+    /// URLSession reports a cancelled request as a transport error, not as
+    /// `CancellationError`, so the typed form has to be recognized too.
+    nonisolated static func isCancellation(_ error: any Error) -> Bool {
+        guard let apiError = error as? MailAPIError, case .transport(let failure) = apiError else { return false }
+        return failure.domain == URLError.errorDomain && failure.code == URLError.cancelled.rawValue
     }
 
     private func syncEverything(accountID: String) async throws -> ChangeSet {

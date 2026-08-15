@@ -42,11 +42,14 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
             return try await next(request, replayBytes.map { HTTPBody($0) }, baseURL)
         }
 
-        var (response, responseBody) = try await attempt(token: try await tokens.accessToken())
+        let used = try await tokens.accessToken()
+        var (response, responseBody) = try await attempt(token: used)
 
         if response.status.code == 401, Self.isRefreshable(response) {
             logger.warning("401 invalid_token on \(operationID, privacy: .public); refreshing once")
-            let refreshed = try await tokens.refreshAccessToken()
+            // The provider needs to know WHICH token was rejected: a 401 for a
+            // token another request already replaced must not refresh again.
+            let refreshed = try await tokens.refreshAccessToken(failedToken: used)
             (response, responseBody) = try await attempt(token: refreshed)
         }
 

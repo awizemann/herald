@@ -35,7 +35,25 @@ public nonisolated enum MailAPIError: Error, Sendable, Hashable {
     }
 }
 
-extension MailAPIError: LocalizedError {
+nonisolated extension MailAPIError {
+    /// A payload-free classifier for logs.
+    ///
+    /// `String(describing:)` on this enum interpolates the server's `message` —
+    /// which upstream echoes recipient addresses and subjects into — straight into
+    /// the log. `errorDescription` has the same problem. Log this instead.
+    public var logCode: String {
+        switch self {
+        case .unauthorized: "unauthorized"
+        case .insufficientScope: "insufficient_scope"
+        case .notFound: "not_found"
+        case .server(let code, _): "server(\(code))"
+        case .transport(let failure): "transport(\(failure.domain)/\(failure.code))"
+        case .decoding: "decoding"
+        }
+    }
+}
+
+nonisolated extension MailAPIError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unauthorized:

@@ -141,9 +141,11 @@ public actor MailStore {
         }
     }
 
-    public func message(id: String) throws -> MessageSummary? {
+    /// The `#Unique` key is (accountID, messageID): two accounts may legitimately
+    /// hold the same server id, so every single-row lookup is account-scoped.
+    public func message(id: String, accountID: String) throws -> MessageSummary? {
         do {
-            return try fetchMessage(id: id).map(Self.message(from:))
+            return try fetchMessage(id: id, accountID: accountID).map(Self.message(from:))
         } catch {
             logger.error("Message fetch failed: \(error.localizedDescription, privacy: .public)")
             throw error
@@ -152,9 +154,9 @@ public actor MailStore {
 
     // MARK: - Bodies (sidecar)
 
-    public func cachedBody(messageID: String) throws -> CachedBody? {
+    public func cachedBody(messageID: String, accountID: String) throws -> CachedBody? {
         var descriptor = FetchDescriptor<CachedMessageBody>(
-            predicate: #Predicate { $0.messageID == messageID }
+            predicate: #Predicate { $0.accountID == accountID && $0.messageID == messageID }
         )
         descriptor.fetchLimit = 1
         do {
@@ -180,7 +182,7 @@ public actor MailStore {
         fetchedAt: Date = Date()
     ) throws -> ChangeSet {
         var descriptor = FetchDescriptor<CachedMessageBody>(
-            predicate: #Predicate { $0.messageID == messageID }
+            predicate: #Predicate { $0.accountID == accountID && $0.messageID == messageID }
         )
         descriptor.fetchLimit = 1
         do {
@@ -385,7 +387,7 @@ public actor MailStore {
         accountID: String
     ) throws -> LocalActionUndo {
         do {
-            guard let row = try fetchMessage(id: messageID) else {
+            guard let row = try fetchMessage(id: messageID, accountID: accountID) else {
                 logger.warning("Local action \(action.rawValue, privacy: .public) on uncached message")
                 return LocalActionUndo(accountID: accountID)
             }
@@ -483,8 +485,10 @@ public actor MailStore {
         try modelContext.save()
     }
 
-    private func fetchMessage(id: String) throws -> CachedMessage? {
-        var descriptor = FetchDescriptor<CachedMessage>(predicate: #Predicate { $0.id == id })
+    private func fetchMessage(id: String, accountID: String) throws -> CachedMessage? {
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.accountID == accountID && $0.id == id }
+        )
         descriptor.fetchLimit = 1
         return try modelContext.fetch(descriptor).first
     }

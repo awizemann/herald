@@ -37,9 +37,19 @@ public nonisolated struct MailActionService: Sendable {
         in folder: ConversationFolder,
         accountID: String
     ) async throws {
+        // REAL-SERVER FACT: `POST /conversations/{id}/{action}` takes a MESSAGE id
+        // (the server looks up the message's mailbox for the access check and
+        // derives the thread from it). Sending the thread id resolved to no
+        // mailbox → 403 "You do not have access to this mailbox" for star/archive.
+        // Any message in the thread works; the newest is the natural pick.
+        guard let representative = try await store.messages(accountID: accountID, threadID: threadID)
+            .max(by: { ($0.receivedAt ?? $0.sentAt ?? .distantPast) < ($1.receivedAt ?? $1.sentAt ?? .distantPast) })
+        else {
+            throw MailAPIError.notFound
+        }
         let undo = try await store.applyLocalAction(action, threadID: threadID, accountID: accountID)
         do {
-            _ = try await api.perform(action, onConversation: threadID, in: folder)
+            _ = try await api.perform(action, onConversation: representative.id, in: folder)
         } catch {
             logger.warning(
                 "Conversation action \(action.rawValue, privacy: .public) rejected; reverting: \(error.localizedDescription, privacy: .public)"

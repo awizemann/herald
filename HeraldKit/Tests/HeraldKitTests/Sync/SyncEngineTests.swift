@@ -283,4 +283,29 @@ struct MailActionServiceTests {
         let messages = try await store.messages(accountID: account, threadID: "thr_1")
         #expect(messages.allSatisfy { $0.readAt != nil }, "Every message in the thread must be read")
     }
+
+    /// REAL-SERVER regression (2026-08-15): the server's conversation-action `id`
+    /// is a MESSAGE id — it resolves the mailbox for the access check from it.
+    /// Sending the thread id yielded 403 MAILBOX_FORBIDDEN on star/archive.
+    /// Fails if the service ever puts the thread id on the wire again.
+    @Test("Conversation actions go to the server keyed by a message in the thread")
+    func conversationActionSendsAMessageIDNotTheThreadID() async throws {
+        let api = FakeMailAPIClient()
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages(
+            [SyncFixtures.message("m1"), SyncFixtures.message("m2")],
+            accountID: account
+        )
+
+        let service = MailActionService(api: api, store: store)
+        try await service.perform(.star, onConversation: "thr_1", in: .inbox, accountID: account)
+
+        let sent = await api.calls.compactMap { call -> String? in
+            if case let .performConversation(_, id, _) = call { return id }
+            return nil
+        }
+        #expect(sent.count == 1)
+        #expect(["m1", "m2"].contains(sent.first ?? ""), "wire id must be a member message, got \(sent)")
+        #expect(sent.first != "thr_1")
+    }
 }

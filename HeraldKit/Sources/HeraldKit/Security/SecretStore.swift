@@ -10,7 +10,9 @@ public nonisolated protocol SecretStore: Sendable {
     func removeValue(for key: String) throws
 }
 
-extension SecretStore {
+// `nonisolated` on the protocol does NOT propagate to extensions under default-MainActor
+// isolation — without it these helpers become @MainActor and actors cannot call them.
+nonisolated extension SecretStore {
     /// Reads and JSON-decodes a stored value; returns `nil` when nothing is stored.
     public func value<T: Decodable>(_ type: T.Type = T.self, for key: String) throws -> T? {
         guard let data = try data(for: key) else { return nil }

@@ -73,6 +73,10 @@ final class MailViewModel {
     // MARK: Published state
 
     private(set) var mailboxes: [Mailbox] = []
+    /// mailbox id → the name a row should attribute a message to. Built once per
+    /// mailbox reload: the "All Mailboxes" list draws this on EVERY row, and a
+    /// `mailboxes.first(where:)` per row is a linear scan per row per render.
+    private(set) var mailboxNames: [String: String] = [:]
     /// Unread conversation counts per (mailbox, folder) scope.
     private(set) var unreadCounts: [FolderSelection: Int] = [:]
 
@@ -136,10 +140,30 @@ final class MailViewModel {
             let threadID = selectedThreadID
             threadMessages = []
             selectedMessageID = nil
+            // Moving the selection NEVER drills in. Arrowing down the list has to
+            // stay a browse: each conversation previews its latest message in the
+            // reading pane and the list keeps the focus. Drilling in is an
+            // EXPLICIT act — a click, ⏎, or the row's chevron — and every one of
+            // those goes through `openSelectedThread()`.
+            isShowingThread = false
             guard let threadID else { return }
             threadTask = Task { await loadThread(threadID) }
         }
     }
+
+    /// Whether the middle column is showing the selected thread's messages
+    /// instead of the conversation list.
+    ///
+    /// Only ``openSelectedThread()`` / ``openThread(_:)`` ever turn this on, and
+    /// only for a multi-message conversation. Selecting a row does not: that
+    /// would make arrowing through the list impossible to do without being
+    /// yanked into the first long thread you passed.
+    ///
+    /// VM state, deliberately NOT a `NavigationStack` push: a push rebuilds the
+    /// column (and would need an `.id()`-shaped reset to come back to the same
+    /// scroll position), where a flag lets both lists stay lazy and keeps the
+    /// selection exactly where it was.
+    private(set) var isShowingThread = false
 
     private(set) var threadMessages: [MessageSummary] = []
 
@@ -163,6 +187,9 @@ final class MailViewModel {
     private(set) var body: RenderedBody?
     private(set) var isLoadingBody = false
     private(set) var status: SyncStatus = .idle
+    /// When the last pass finished cleanly. The sidebar's status slot is always
+    /// present, so idle needs something quiet to say.
+    private(set) var lastSyncedAt: Date?
     /// Last user-visible action error; the UI clears it by setting nil.
     var actionError: String?
     /// P0.5 reads this; ⌘R writes it.
@@ -255,6 +282,84 @@ final class MailViewModel {
         return threadMessages.first { $0.id == selectedMessageID }
     }
 
+    /// Whether a thread is worth drilling into. Resolved against
+    /// ``allConversations`` (the unfiltered source), never the presented list: a
+    /// search that hides the row must not change what selecting it does.
+    private func isMultiMessage(_ threadID: String) -> Bool {
+        (allConversations.first { $0.id == threadID }?.messageCount ?? 1) > 1
+    }
+
+    /// The back chevron / ⎋ / ⌘[: leave the thread, keep the row selected.
+    func exitThread() {
+        isShowingThread = false
+    }
+
+    /// Drills into the selected conversation — the ⏎ and chevron path. A
+    /// single-message conversation has nothing to drill into and is a no-op:
+    /// it is already fully shown in the reading pane.
+    func openSelectedThread() {
+        guard let selectedThreadID, isMultiMessage(selectedThreadID) else { return }
+        isShowingThread = true
+    }
+
+    /// Drills into a specific row — the mouse-click path, where the click both
+    /// selects and opens. Selecting first is deliberate: it is what loads the
+    /// thread, and re-clicking the row that is already selected must still open
+    /// it (the selection binding would report no change at all).
+    func openThread(_ threadID: String) {
+        selectedThreadID = threadID
+        openSelectedThread()
+    }
+
+    /// The name a row in the "All Mailboxes" scope is attributed to. A dictionary
+    /// lookup, built at mailbox-reload time — the alternative is a linear scan of
+    /// `mailboxes` per row per render.
+    func mailboxName(for id: String?) -> String? {
+        guard let id else { return nil }
+        return mailboxNames[id]
+    }
+
+    /// Unread count behind one picker entry (`nil` = every mailbox). Inbox only:
+    /// that is the scope ``unreadCounts`` carries per mailbox.
+    func pickerUnread(forMailbox id: String?) -> Int {
+        unreadCounts[FolderSelection(mailboxID: id, folder: .inbox)] ?? 0
+    }
+
+    /// One line of the mailbox picker. Pure and static so the label the popup
+    /// shows is assertable without a rendered `Picker`.
+    nonisolated static func pickerLabel(for mailbox: Mailbox, unread: Int) -> String {
+        let name = mailbox.displayName.isEmpty ? mailbox.address : mailbox.displayName
+        let base = name == mailbox.address ? name : "\(name) — \(mailbox.address)"
+        return unread > 0 ? "\(base) (\(unread))" : base
+    }
+
+    nonisolated static func allMailboxesPickerLabel(unread: Int) -> String {
+        unread > 0 ? "All mailboxes (\(unread))" : "All mailboxes"
+    }
+
+    /// What the sidebar's fixed-height status slot says. Pure and static: the
+    /// slot must ALWAYS have text (an empty one is what made the sidebar jump),
+    /// and that is only assertable off-screen if the text is a function.
+    nonisolated static func statusDescription(
+        for status: SyncStatus,
+        lastSyncedAt: Date?
+    ) -> String {
+        switch status {
+        case .syncing: "Syncing…"
+        case .failed: "Sync problem"
+        case .needsReauth: "Sign in again"
+        // A wall-clock stamp, not a relative one: "0 seconds ago" would be wrong
+        // within a second of being drawn and nothing re-renders it until the next
+        // pass. Never empty — an empty slot is what made the sidebar reflow.
+        case .idle:
+            if let lastSyncedAt {
+                "Updated \(lastSyncedAt.formatted(date: .omitted, time: .shortened))"
+            } else {
+                "Up to date"
+            }
+        }
+    }
+
     /// A local archive/trash leaves the row in its old listing scope with a new
     /// message folder; the list must stop showing it immediately.
     nonisolated static func belongs(_ row: ConversationSummary, to folder: ConversationFolder) -> Bool {
@@ -291,7 +396,10 @@ final class MailViewModel {
             case .began:
                 if status != .needsReauth { status = .syncing }
             case .finished:
-                if status != .needsReauth { status = .idle }
+                if status != .needsReauth {
+                    status = .idle
+                    lastSyncedAt = .now
+                }
             case .changed(let changes):
                 await apply(changes)
             case .failed(let error):
@@ -380,7 +488,9 @@ final class MailViewModel {
 
     func reloadMailboxes() async {
         do {
-            mailboxes = try await store.mailboxes(accountID: accountID)
+            let loaded = try await store.mailboxes(accountID: accountID)
+            mailboxes = loaded
+            mailboxNames = Self.makeMailboxNames(loaded)
         } catch {
             logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -435,12 +545,34 @@ final class MailViewModel {
         unreadCounts = counts
     }
 
+    /// The scopes a badge is actually drawn for:
+    /// - every folder of the PICKED mailbox (the one folder list the sidebar now
+    ///   shows), including Starred;
+    /// - the inbox of every mailbox plus the all-mailboxes inbox, which is what
+    ///   the picker's own labels read.
+    ///
     /// "All Mailboxes" is its own count rather than the sum of the others: the
     /// nil-mailbox listing shows every row, including any whose mailbox the
-    /// sidebar does not list.
+    /// picker does not list.
     private var unreadBadgeScopes: [FolderSelection] {
-        [FolderSelection(mailboxID: nil, folder: .inbox)]
-            + mailboxes.map { FolderSelection(mailboxID: $0.id, folder: .inbox) }
+        var scopes = MailTheme.sidebarFolders.map {
+            FolderSelection(mailboxID: selection.mailboxID, folder: $0)
+        }
+        scopes.append(FolderSelection(mailboxID: nil, folder: .inbox))
+        scopes.append(contentsOf: mailboxes.map { FolderSelection(mailboxID: $0.id, folder: .inbox) })
+        // The picked mailbox is in both halves; counting it twice is one wasted
+        // fetchCount per reload.
+        var seen: Set<FolderSelection> = []
+        return scopes.filter { seen.insert($0).inserted }
+    }
+
+    private nonisolated static func makeMailboxNames(_ mailboxes: [Mailbox]) -> [String: String] {
+        var names: [String: String] = [:]
+        names.reserveCapacity(mailboxes.count)
+        for mailbox in mailboxes {
+            names[mailbox.id] = mailbox.displayName.isEmpty ? mailbox.address : mailbox.displayName
+        }
+        return names
     }
 
     func loadThread(_ threadID: String) async {

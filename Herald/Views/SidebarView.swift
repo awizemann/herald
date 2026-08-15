@@ -1,35 +1,113 @@
 import HeraldKit
 import SwiftUI
 
-/// Accounts header + mailboxes with their folders.
+/// Account header + mailbox picker + ONE folder list for the picked scope.
+///
+/// The old shape was "All Mailboxes" plus a section per mailbox, which grew a
+/// full folder list per mailbox and pushed everything below the fold on an
+/// account with more than two or three of them.
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
     @Bindable var model: MailViewModel
 
+    /// The picked mailbox, per account, so relaunch comes back to where the user
+    /// was. `""` means "All mailboxes" — `AppStorage` has no optional String and
+    /// a sentinel beats a second "did the user ever pick one" flag.
+    @AppStorage private var storedMailboxID: String
+
+    init(model: MailViewModel) {
+        self.model = model
+        _storedMailboxID = AppStorage(wrappedValue: "", Self.storageKey(accountID: model.accountID))
+    }
+
+    static func storageKey(accountID: String) -> String { "sidebar.mailbox.\(accountID)" }
+
     var body: some View {
         List(selection: $model.selection) {
-            Section("All Mailboxes") {
-                ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
-                    FolderRow(
-                        scope: MailViewModel.FolderSelection(mailboxID: nil, folder: folder),
-                        unread: model.unreadCounts
-                    )
-                }
-            }
-            ForEach(model.mailboxes) { mailbox in
-                Section(mailbox.displayName.isEmpty ? mailbox.address : mailbox.displayName) {
-                    ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
-                        FolderRow(
-                            scope: MailViewModel.FolderSelection(mailboxID: mailbox.id, folder: folder),
-                            unread: model.unreadCounts
-                        )
-                    }
-                }
+            ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
+                FolderRow(
+                    scope: MailViewModel.FolderSelection(
+                        mailboxID: model.selection.mailboxID,
+                        folder: folder
+                    ),
+                    unread: model.unreadCounts
+                )
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .top, spacing: 0) { accountHeader }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                accountHeader
+                mailboxPicker
+                Divider()
+            }
+        }
+        // Restore once the mailbox list is known; a mailbox that no longer exists
+        // falls back to "All mailboxes" rather than an empty scope forever.
+        .task(id: model.mailboxes.map(\.id)) { restorePickedMailbox() }
     }
+
+    // MARK: Picker
+
+    /// Reads the model, writes BOTH the model and the store. The folder is
+    /// preserved deliberately: picking a mailbox changes the scope, it is not a
+    /// jump back to the inbox.
+    private var pickedMailboxID: Binding<String> {
+        Binding(
+            get: { model.selection.mailboxID ?? "" },
+            set: { newValue in
+                storedMailboxID = newValue
+                model.selection = MailViewModel.FolderSelection(
+                    mailboxID: newValue.isEmpty ? nil : newValue,
+                    folder: model.selection.folder
+                )
+            }
+        )
+    }
+
+    private var mailboxPicker: some View {
+        Picker(selection: pickedMailboxID) {
+            Text(MailViewModel.allMailboxesPickerLabel(unread: model.pickerUnread(forMailbox: nil)))
+                .tag("")
+            ForEach(model.mailboxes) { mailbox in
+                Text(
+                    MailViewModel.pickerLabel(
+                        for: mailbox,
+                        unread: model.pickerUnread(forMailbox: mailbox.id)
+                    )
+                )
+                .tag(mailbox.id)
+            }
+        } label: {
+            Text("Mailbox")
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        // A `Picker` is a real pop-up button, so Full Keyboard Access reaches it
+        // already — but with `labelsHidden()` it has nothing to announce, and
+        // Voice Control nothing to say.
+        .help("Choose which mailbox the folder list shows")
+        .accessibilityLabel("Mailbox")
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    private func restorePickedMailbox() {
+        guard !storedMailboxID.isEmpty else { return }
+        guard model.mailboxes.contains(where: { $0.id == storedMailboxID }) else {
+            // Access was revoked, or this is a different account's leftover key:
+            // don't strand the user on a scope the store can never fill.
+            if !model.mailboxes.isEmpty { storedMailboxID = "" }
+            return
+        }
+        guard model.selection.mailboxID != storedMailboxID else { return }
+        model.selection = MailViewModel.FolderSelection(
+            mailboxID: storedMailboxID,
+            folder: model.selection.folder
+        )
+    }
+
+    // MARK: Header
 
     private var accountHeader: some View {
         HStack(spacing: 8) {
@@ -40,7 +118,7 @@ struct SidebarView: View {
                 Text(model.accountLabel)
                     .font(.headline)
                     .lineLimit(1)
-                SyncStatusLabel(status: model.status)
+                SyncStatusLabel(status: model.status, lastSyncedAt: model.lastSyncedAt)
             }
             Spacer()
             // The help tag and the label belong on the MENU, not on its label
@@ -66,21 +144,39 @@ struct SidebarView: View {
     }
 }
 
+/// The sync status, in a slot that is ALWAYS the same height.
+///
+/// It used to render `EmptyView()` when idle, so the line appeared on every poll
+/// and vanished after it — pushing the picker and the whole folder list down and
+/// back, twice per cadence tick.
 struct SyncStatusLabel: View {
     let status: MailViewModel.SyncStatus
+    let lastSyncedAt: Date?
 
     var body: some View {
+        HStack(spacing: 4) {
+            if status == .syncing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityHidden(true)
+            }
+            Text(MailViewModel.statusDescription(for: status, lastSyncedAt: lastSyncedAt))
+                .font(isProblem ? .caption.bold() : .caption)
+                .foregroundStyle(isProblem ? MailTheme.failure : MailTheme.syncing)
+                .lineLimit(1)
+        }
+        // The slot, not the text, owns the height: whatever is inside it, nothing
+        // below moves.
+        .frame(height: MailTheme.statusSlotHeight, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Bold and a system red: caption-sized `.red` on the sidebar material does
+    /// not clear 4.5:1, and this is the only signal that sync is broken.
+    private var isProblem: Bool {
         switch status {
-        case .idle:
-            EmptyView()
-        case .syncing:
-            Text("Syncing…").font(.caption).foregroundStyle(MailTheme.syncing)
-        // Bold and a system red: caption-sized `.red` on the sidebar material
-        // does not clear 4.5:1, and this is the only signal that sync is broken.
-        case .failed:
-            Text("Sync problem").font(.caption.bold()).foregroundStyle(MailTheme.failure)
-        case .needsReauth:
-            Text("Sign in again").font(.caption.bold()).foregroundStyle(MailTheme.failure)
+        case .failed, .needsReauth: true
+        case .idle, .syncing: false
         }
     }
 }

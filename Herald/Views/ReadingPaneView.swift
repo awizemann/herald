@@ -1,7 +1,11 @@
 import HeraldKit
 import SwiftUI
 
-/// Detail pane: the selected thread, with the selected message expanded.
+/// Detail pane: the ONE selected message, full height.
+///
+/// The in-pane list of every message in the thread is gone — picking a message
+/// is the middle column's job now (see `ThreadMessageListView`), and keeping a
+/// second copy here both duplicated the control and stole ~160pt from the body.
 struct ReadingPaneView: View {
     @Bindable var model: MailViewModel
 
@@ -21,10 +25,13 @@ struct ReadingPaneView: View {
             // Only the subject goes in: the header used to take the whole
             // view-model and so re-rendered on every unrelated change to it.
             ThreadHeader(model: model, subject: model.selectedConversation?.latest.subject ?? "")
-            Divider()
-            // The picker and the body are siblings, never `.id()`-reset: the web
-            // view is reused and only reloads when its rendered body changes.
-            ThreadMessageList(model: model)
+            // One header for the message being read, then the body. Siblings,
+            // never `.id()`-reset: the web view is reused and only reloads when
+            // its rendered body changes.
+            if let message = model.selectedMessage {
+                Divider()
+                SelectedMessageHeader(message: message)
+            }
             Divider()
             MessageBodySection(model: model)
         }
@@ -62,56 +69,17 @@ private struct ThreadHeader: View {
     }
 }
 
-/// Every message in the thread; picking one loads it below.
-private struct ThreadMessageList: View {
-    @Bindable var model: MailViewModel
-
-    var body: some View {
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                ForEach(model.threadMessages) { message in
-                    // A Button, not a tap gesture: a gesture is invisible to
-                    // Full Keyboard Access, VoiceOver and Switch Control, so the
-                    // messages in a thread could only be picked with a mouse.
-                    Button {
-                        model.selectedMessageID = message.id
-                    } label: {
-                        MessageHeaderRow(message: message, isSelected: message.id == model.selectedMessageID)
-                    }
-                    .buttonStyle(.plain)
-                    Divider()
-                }
-            }
-        }
-        .frame(maxHeight: model.threadMessages.count > 1 ? 160 : 76)
-        // Arrowing through the thread, the way the conversation list works.
-        .onKeyPress(.upArrow) { move(by: -1) }
-        .onKeyPress(.downArrow) { move(by: 1) }
-    }
-
-    private func move(by offset: Int) -> KeyPress.Result {
-        let messages = model.threadMessages
-        guard messages.count > 1,
-              let current = messages.firstIndex(where: { $0.id == model.selectedMessageID })
-        else { return .ignored }
-        let next = current + offset
-        guard messages.indices.contains(next) else { return .handled }
-        model.selectedMessageID = messages[next].id
-        return .handled
-    }
-}
-
-private struct MessageHeaderRow: View {
-    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+/// Who the message being read is from and to. Static: picking WHICH message is
+/// the middle column's job, so this is a header, not a control.
+private struct SelectedMessageHeader: View {
     let message: MessageSummary
-    let isSelected: Bool
 
-    /// Hoisted: building a `Date.FormatStyle` per row per render is pure waste in
-    /// a list that re-renders on every selection change.
+    /// Hoisted: building a `Date.FormatStyle` per render is pure waste.
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
+            // Unread is a dot AND the bold weight below: never colour alone.
             Circle()
                 .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
                 .frame(width: 7, height: 7)
@@ -133,18 +101,7 @@ private struct MessageHeaderRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(isSelected ? MailTheme.selectionHighlight : .clear)
-        // A 12% tint is the ONLY selection signal here; when the user has asked
-        // for shape as well as colour it needs an outline too.
-        .overlay {
-            if isSelected && differentiateWithoutColor {
-                Rectangle()
-                    .strokeBorder(Color.accentColor, lineWidth: MailTheme.selectionBorderWidth)
-            }
-        }
-        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
         .accessibilityValue(message.isUnread ? "Unread" : "")
     }
 }

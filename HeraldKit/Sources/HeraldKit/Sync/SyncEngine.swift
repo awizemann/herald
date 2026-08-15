@@ -12,14 +12,20 @@ public nonisolated enum SyncEvent: Sendable {
     case failed(any Error)
 }
 
-/// One folder the engine keeps in sync, plus the conversation-listing folder it
-/// maps to. `drafts` has no conversation counterpart (the conversation surface
-/// swaps `drafts` for `starred`), so its conversation walk is skipped.
+/// One folder the engine keeps in sync: a message-listing folder, a
+/// conversation-listing folder, or both.
+///
+/// The two surfaces do not line up. `drafts` has no conversation counterpart
+/// (the conversation surface swaps `drafts` for `starred`), and `starred` is the
+/// mirror image: a real server-side `ConversationFolder` with NO message folder
+/// behind it — starred messages keep living in inbox/sent/archived and the
+/// starred list is derived from `starredAt`. Both halves are therefore optional,
+/// and a pass walks whichever ones the folder actually has.
 public nonisolated struct SyncFolder: Sendable, Hashable {
-    public let message: MailFolder
+    public let message: MailFolder?
     public let conversation: ConversationFolder?
 
-    public init(message: MailFolder, conversation: ConversationFolder?) {
+    public init(message: MailFolder?, conversation: ConversationFolder?) {
         self.message = message
         self.conversation = conversation
     }
@@ -30,6 +36,8 @@ public nonisolated struct SyncFolder: Sendable, Hashable {
     public static let trash = SyncFolder(message: .trash, conversation: .trash)
     public static let drafts = SyncFolder(message: .drafts, conversation: nil)
     public static let catchall = SyncFolder(message: .catchall, conversation: .catchall)
+    /// Conversation-only: `GET /messages?folder=starred` does not exist.
+    public static let starred = SyncFolder(message: nil, conversation: .starred)
 }
 
 /// Which folders one pass covers.
@@ -38,10 +46,12 @@ public nonisolated struct SyncScope: Sendable, Hashable {
 
     public init(folders: [SyncFolder]) { self.folders = folders }
 
-    /// The four folders the UI shows by default.
-    public static let `default` = SyncScope(folders: [.inbox, .sent, .archived, .trash])
+    /// The folders the sidebar shows by default, in sidebar order.
+    public static let `default` = SyncScope(folders: [.inbox, .starred, .sent, .archived, .trash])
     /// Adds the optional surfaces.
-    public static let complete = SyncScope(folders: [.inbox, .sent, .archived, .trash, .drafts, .catchall])
+    public static let complete = SyncScope(
+        folders: [.inbox, .starred, .sent, .archived, .trash, .drafts, .catchall]
+    )
 }
 
 /// Polling cadence. The server has no delta endpoint and no push, so the client
@@ -296,9 +306,11 @@ public actor SyncEngine {
                         )
                     )
                 }
-                changes.formUnion(
-                    try await syncMessages(accountID: accountID, mailboxID: mailbox.id, folder: folder.message)
-                )
+                if let messageFolder = folder.message {
+                    changes.formUnion(
+                        try await syncMessages(accountID: accountID, mailboxID: mailbox.id, folder: messageFolder)
+                    )
+                }
             }
         }
         return changes

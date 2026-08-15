@@ -263,4 +263,37 @@ struct MailStoreTests {
         #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a", folder: .archived) == 1)
         #expect(try await store.unreadCount(accountID: "other_account", mailboxID: nil) == 0)
     }
+
+    /// The Starred sidebar folder reads the same `conversations(folder:)` path as
+    /// every other one, and starred rows are keyed by `listFolder == "starred"`.
+    /// Fails if a starred upsert lands in the inbox scope instead (which is what
+    /// happens if `starred` is treated as a message folder), or if the Starred
+    /// badge stops counting.
+    @Test("A conversation upserted into the starred folder shows up under the Starred scope")
+    func starredConversationsListAndCountUnderTheirOwnScope() async throws {
+        let store = try MailStore.inMemory()
+        let starred = ConversationSummary(
+            latest: SyncFixtures.message("m_star", threadID: "thr_star", starredAt: Date(timeIntervalSince1970: 3_000)),
+            isStarred: true,
+            messageCount: 1,
+            unreadCount: 1
+        )
+        let plain = SyncFixtures.conversation(threadID: "thr_plain", latestID: "m_plain")
+
+        _ = try await store.upsertConversations(
+            [starred], accountID: account, mailboxID: "mbx_a", folder: .starred
+        )
+        _ = try await store.upsertConversations(
+            [plain], accountID: account, mailboxID: "mbx_a", folder: .inbox
+        )
+
+        let starredScope = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .starred)
+        #expect(starredScope.map(\.id) == ["thr_star"])
+        // …and it did NOT leak into the inbox scope.
+        let inboxScope = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .inbox)
+        #expect(inboxScope.map(\.id) == ["thr_plain"])
+        // The all-mailboxes Starred scope resolves too, and the badge counts it.
+        #expect(try await store.conversations(accountID: account, mailboxID: nil, folder: .starred).count == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a", folder: .starred) == 1)
+    }
 }

@@ -83,7 +83,7 @@ struct MailWindow: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 360)
         } content: {
-            ConversationListView(model: model)
+            MiddleColumnView(model: model)
                 .navigationSplitViewColumnWidth(min: 280, ideal: Self.listWidth, max: 520)
         } detail: {
             ReadingPaneView(model: model)

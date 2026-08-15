@@ -226,6 +226,40 @@ struct SyncEngineTests {
 
         #expect(secondPass == [.began, .finished], "Unchanged data must not publish a ChangeSet")
     }
+    /// Starred is a real server-side `ConversationFolder` with NO message folder
+    /// behind it. Fails if the default scope stops walking it (the Starred
+    /// sidebar folder then stays permanently empty), or if the engine tries to
+    /// list `GET /messages?folder=starred`, which does not exist.
+    @Test("The default scope walks starred conversations and asks for no starred messages")
+    func defaultScopeWalksStarredConversations() async throws {
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setConversationPages([
+            ConversationPage(conversations: [], nextCursor: nil, totalCount: nil),
+        ])
+
+        let store = try MailStore.inMemory()
+        let engine = SyncEngine(api: api, store: store, scope: .default)
+        await engine.start(accountID: account)
+        _ = await awaitPasses(engine, count: 1)
+        await engine.stop()
+
+        let calls = await api.calls
+        let conversationFolders = calls.compactMap { call -> ConversationFolder? in
+            guard case let .listConversations(folder, _, _) = call else { return nil }
+            return folder
+        }
+        #expect(Set(conversationFolders) == [.inbox, .starred, .sent, .archived, .trash])
+
+        let messageFolders = calls.compactMap { call -> MailFolder? in
+            guard case let .listMessages(folder, _) = call else { return nil }
+            return folder
+        }
+        #expect(
+            Set(messageFolders) == [.inbox, .sent, .archived, .trash],
+            "starred has no message folder; a message list for it would 400"
+        )
+    }
 }
 
 @Suite("MailActionService")
@@ -308,4 +342,5 @@ struct MailActionServiceTests {
         #expect(["m1", "m2"].contains(sent.first ?? ""), "wire id must be a member message, got \(sent)")
         #expect(sent.first != "thr_1")
     }
+
 }

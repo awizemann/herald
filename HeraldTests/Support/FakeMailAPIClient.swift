@@ -152,11 +152,15 @@ nonisolated enum MailFixtures {
         )
     }
 
-    static func conversation(_ latest: MessageSummary, unread: Int = 1) -> ConversationSummary {
+    static func conversation(
+        _ latest: MessageSummary,
+        unread: Int = 1,
+        messageCount: Int = 1
+    ) -> ConversationSummary {
         ConversationSummary(
             latest: latest,
             isStarred: latest.isStarred,
-            messageCount: 1,
+            messageCount: messageCount,
             unreadCount: unread
         )
     }

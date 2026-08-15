@@ -28,8 +28,10 @@ enum MailTheme {
         }
     }
 
-    /// Folders the P0 sidebar shows, in order. Drafts arrives with the composer.
-    static let sidebarFolders: [ConversationFolder] = [.inbox, .sent, .archived, .trash]
+    /// Folders the sidebar shows, in order. Drafts arrives with the composer.
+    /// `starred` is conversation-only on the server (there is no starred *message*
+    /// folder — the list is derived from `starredAt`), see `SyncFolder.starred`.
+    static let sidebarFolders: [ConversationFolder] = [.inbox, .starred, .sent, .archived, .trash]
 
     // MARK: Status
 
@@ -55,11 +57,22 @@ enum MailTheme {
     /// colour (Differentiate Without Color).
     static let selectionBorderWidth: CGFloat = 1
 
+    /// Foreground for the mailbox attribution chip on a row in the "All
+    /// Mailboxes" scope. A token, not `.secondary` spelled inline, and paired
+    /// with the chip background so the chip is never colour-only.
+    static let attributionForeground: Color = .secondary
+
     // MARK: Metrics
 
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).
     static let hitTarget: CGFloat = 28
+
+    /// Height of the sidebar's sync-status slot. FIXED and always occupied: the
+    /// status used to appear and disappear, pushing the whole folder list down
+    /// and back on every poll.
+    static let statusSlotHeight: CGFloat = 16
+
     static let minWindow = CGSize(width: 900, height: 560)
 }
 

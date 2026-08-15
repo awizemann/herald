@@ -81,6 +81,39 @@ private struct Harness {
         for message in messages { await api.setDetail(MailFixtures.detail(message, htmlAvailable: false)) }
     }
 
+    /// A two-message thread (`t9`), so "drills in" and "does not drill in" are
+    /// both reachable from one harness.
+    func seedMultiMessageThread() async throws {
+        let first = MailFixtures.message(id: "m9a", threadID: "t9", mailboxID: "mbA", subject: "Long thread")
+        let second = MailFixtures.message(
+            id: "m9b",
+            threadID: "t9",
+            mailboxID: "mbA",
+            subject: "Long thread",
+            date: MailFixtures.epoch.addingTimeInterval(120)
+        )
+        try await store.upsertMessages([first, second], accountID: "acct")
+        try await store.upsertConversations(
+            [MailFixtures.conversation(second, messageCount: 2)],
+            accountID: "acct",
+            mailboxID: "mbA",
+            folder: .inbox
+        )
+        await api.setDetail(MailFixtures.detail(first, htmlAvailable: false))
+        await api.setDetail(MailFixtures.detail(second, htmlAvailable: false))
+    }
+
+    /// One unread starred conversation in mailbox A's STARRED listing scope.
+    func seedStarredThread() async throws {
+        let starred = MailFixtures.message(
+            id: "m4", threadID: "t4", mailboxID: "mbA", subject: "Pinned", starred: true
+        )
+        try await store.upsertMessages([starred], accountID: "acct")
+        try await store.upsertConversations(
+            [MailFixtures.conversation(starred)], accountID: "acct", mailboxID: "mbA", folder: .starred
+        )
+    }
+
     static func mailbox(_ id: String) -> Mailbox {
         Mailbox(
             id: id,
@@ -194,7 +227,11 @@ func wait(
 
         await harness.model.perform(.archive, onThread: "t1")
         #expect(harness.model.presentedConversations.isEmpty)
-        #expect(await harness.api.actionCount("archive", on: "t1") == 1)
+        // The wire id is a MEMBER MESSAGE id, not the thread id: the server
+        // resolves the mailbox for its access check from it (see the API contract
+        // note). Asserting "t1" here was left over from before that fix.
+        #expect(await harness.api.actionCount("archive", on: "m1") == 1)
+        #expect(await harness.api.actionCount("archive", on: "t1") == 0)
 
         // Undo the local move so the second attempt starts from the inbox again.
         let restored = MailFixtures.message(id: "m1", threadID: "t1", mailboxID: "mbA")
@@ -246,7 +283,9 @@ func wait(
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
 
         await harness.model.perform(.read, onThread: "t3")
-        #expect(await harness.api.actionFolders("read", on: "t3") == [.archived])
+        // `m3` is t3's only message, and the member message id is what goes on
+        // the wire; the FOLDER is what this test is about.
+        #expect(await harness.api.actionFolders("read", on: "m3") == [.archived])
     }
 }
 
@@ -413,5 +452,263 @@ func wait(
         #expect(harness.model.presentedConversations.isEmpty)
         #expect(harness.model.selectedThreadID == "t1")
         #expect(harness.model.selectedConversation?.id == "t1")
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelStatusSlotTests {
+    /// The sidebar's status line used to render `EmptyView()` when idle, so it
+    /// appeared and vanished on every poll and pushed the folder list down and
+    /// back. The slot is only jump-free if it ALWAYS has something to draw.
+    /// Fails the moment any status maps to an empty string.
+    @Test func everyStatusHasSomethingToSayInTheSlot() {
+        let states: [MailViewModel.SyncStatus] = [.idle, .syncing, .failed("boom"), .needsReauth]
+        for status in states {
+            #expect(
+                MailViewModel.statusDescription(for: status, lastSyncedAt: nil).isEmpty == false,
+                "\(status) left the fixed-height status slot empty"
+            )
+        }
+        #expect(MailViewModel.statusDescription(for: .syncing, lastSyncedAt: nil) == "Syncing…")
+        #expect(MailViewModel.statusDescription(for: .idle, lastSyncedAt: nil) == "Up to date")
+    }
+
+    /// Idle-with-a-history is the common case, and it must say WHEN. Fails if the
+    /// finished event stops stamping `lastSyncedAt` (the slot would then be stuck
+    /// on "Up to date" forever) or if the idle text ignores the stamp.
+    @Test func afinishedPassStampsTheSlotWithTheTime() async throws {
+        let harness = try await Harness.make()
+        await harness.model.start()
+        #expect(harness.model.lastSyncedAt == nil)
+
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        try await wait("the pass to be recorded") { harness.model.lastSyncedAt != nil }
+
+        let text = MailViewModel.statusDescription(
+            for: harness.model.status,
+            lastSyncedAt: harness.model.lastSyncedAt
+        )
+        #expect(text.hasPrefix("Updated "), "idle after a real pass should carry the time, got \(text)")
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelMailboxPickerTests {
+    /// The picker replaced one sidebar section per mailbox, so switching mailbox
+    /// must be a scope change — not a jump back to the inbox. Fails if the folder
+    /// is dropped when the picker writes `mailboxID`.
+    @Test func pickingAMailboxKeepsTheFolder() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedArchivedThread()
+        await harness.model.start()
+        harness.model.selection = .init(mailboxID: nil, folder: .archived)
+
+        // Exactly what the picker's binding does.
+        harness.model.selection = .init(mailboxID: "mbA", folder: harness.model.selection.folder)
+
+        #expect(harness.model.selection.folder == .archived)
+        await (try #require(harness.model.reloadTask)).value
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
+    }
+
+    /// The picker's labels are the only place a mailbox's address and its unread
+    /// count are shown now. Fails if either is dropped, or if a zero count starts
+    /// rendering as a noisy "(0)".
+    @Test func pickerLabelsCarryTheAddressAndTheUnreadCount() {
+        let mailbox = Harness.mailbox("mbA")
+        #expect(MailViewModel.pickerLabel(for: mailbox, unread: 3) == "mbA — mbA@example.com (3)")
+        #expect(MailViewModel.pickerLabel(for: mailbox, unread: 0) == "mbA — mbA@example.com")
+        #expect(MailViewModel.allMailboxesPickerLabel(unread: 7) == "All mailboxes (7)")
+        #expect(MailViewModel.allMailboxesPickerLabel(unread: 0) == "All mailboxes")
+    }
+
+    /// The sidebar draws a badge per folder now, not just the inbox. Fails if the
+    /// counted scopes go back to inbox-only — Starred and the rest would show a
+    /// permanent 0 whatever the store holds.
+    @Test func everySidebarFolderOfThePickedScopeIsCounted() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedStarredThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        #expect(harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .starred)] == 1)
+        #expect(harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .inbox)] == 1)
+    }
+
+    /// Starred is a real listing scope on the server, so selecting it has to
+    /// resolve to the starred rows. Fails if `.starred` is filtered out by the
+    /// presentation rule (`belongs(_:to:)`) or never loaded at all.
+    @Test func theStarredScopeShowsStarredConversations() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedStarredThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .starred)
+        await harness.model.start()
+
+        #expect(harness.model.presentedConversations.map(\.id) == ["t4"])
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelThreadDrillInTests {
+    /// Drilling in is EXPLICIT. Selecting a row — all an arrow key does — only
+    /// previews the conversation's latest message; the middle column stays on the
+    /// list. Fails if selection alone drills in (arrowing past a long thread would
+    /// yank the user into it), or if an explicit open does nothing, or if a
+    /// single-message row can be drilled into at all.
+    @Test func onlyMultiMessageConversationsDrillIn() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        // Arrowing onto a two-message thread: selected and previewed, NOT drilled.
+        harness.model.selectedThreadID = "t9"
+        #expect(harness.model.isShowingThread == false, "an arrow-key selection drilled in")
+        try await wait("the thread to load for the preview") { harness.model.threadMessages.count == 2 }
+        #expect(harness.model.selectedMessageID == "m9b", "the preview is the latest message")
+
+        // ⏎ / the chevron / a click: now it drills.
+        harness.model.openSelectedThread()
+        #expect(harness.model.isShowingThread)
+
+        // Arrowing on to a one-message row leaves the thread, and it cannot be
+        // drilled into either.
+        harness.model.selectedThreadID = "t1"
+        #expect(harness.model.isShowingThread == false)
+        harness.model.openSelectedThread()
+        #expect(harness.model.isShowingThread == false)
+    }
+
+    /// The mouse path: a click both selects and opens — including a click on the
+    /// row that is ALREADY selected, where the selection binding reports no change
+    /// at all and nothing else would fire.
+    @Test func clickingARowOpensItEvenWhenItIsAlreadySelected() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        harness.model.openThread("t9")
+        #expect(harness.model.selectedThreadID == "t9")
+        #expect(harness.model.isShowingThread)
+
+        harness.model.exitThread()
+        harness.model.openThread("t9") // the same row, clicked again
+        #expect(harness.model.isShowingThread, "re-clicking the selected row did not reopen it")
+    }
+
+    /// Backing out (the chevron, ⎋, ⌘[) returns to the list WITHOUT losing the
+    /// row — that is the whole reason the drill-in is VM state and not a
+    /// NavigationStack push. Fails if `exitThread` clears the selection, or if
+    /// re-entering the same row is impossible (its selection never changes, so
+    /// nothing else would put the user back).
+    @Test func backingOutKeepsTheSelectionAndTheThreadCanBeReEntered() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        harness.model.selectedThreadID = "t9"
+        try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
+        harness.model.openSelectedThread()
+        #expect(harness.model.isShowingThread)
+        let loads = harness.model.threadReloadCount
+
+        harness.model.exitThread()
+        #expect(harness.model.isShowingThread == false)
+        #expect(harness.model.selectedThreadID == "t9", "backing out dropped the row")
+        #expect(harness.model.threadMessages.count == 2, "backing out threw the loaded thread away")
+
+        harness.model.openSelectedThread()
+        #expect(harness.model.isShowingThread)
+        #expect(harness.model.threadReloadCount == loads, "re-entering re-fetched a thread it already had")
+    }
+
+    /// A single-message row can never be drilled into, from the keyboard either.
+    @Test func returnDoesNotDrillIntoASingleMessageConversation() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        harness.model.selectedThreadID = "t1"
+
+        harness.model.openSelectedThread()
+        #expect(harness.model.isShowingThread == false)
+    }
+
+    /// Changing scope while drilled in has to come back out: the thread belongs to
+    /// the folder the user just left. Fails if the flag survives a scope change
+    /// and the middle column shows another folder's thread.
+    @Test func changingScopeLeavesTheThread() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedArchivedThread()
+        try await harness.seedMultiMessageThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        harness.model.openThread("t9")
+        #expect(harness.model.isShowingThread)
+
+        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        #expect(harness.model.isShowingThread == false)
+        #expect(harness.model.selectedThreadID == nil)
+    }
+
+    /// The dwell mark-read rule is per MESSAGE, and inside a drilled thread the
+    /// message selection is the only thing that moves. Fails if drilling in
+    /// bypasses the dwell timer for the messages the user actually reads.
+    @Test func theDwellRuleStillAppliesToAMessagePickedInsideTheThread() async throws {
+        let harness = try await Harness.make(markReadDelay: .zero)
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        harness.model.openThread("t9")
+        try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
+        #expect(harness.model.isShowingThread)
+
+        harness.model.selectedMessageID = "m9a"
+        await (try #require(harness.model.markReadTask)).value
+
+        #expect(await harness.api.actionCount("read", on: "m9a") == 1)
+        #expect(try await harness.store.message(id: "m9a", accountID: "acct")?.isUnread == false)
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelMailboxAttributionTests {
+    /// Rows in the all-mailboxes scope have to say which mailbox they came from,
+    /// and the lookup is a dictionary because the list draws it on EVERY row.
+    /// Fails if the index is not rebuilt when mailboxes reload.
+    @Test func mailboxNamesResolveAfterTheMailboxListLoads() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        #expect(harness.model.mailboxName(for: "mbA") == nil)
+
+        await harness.model.start()
+        #expect(harness.model.mailboxName(for: "mbA") == "mbA")
+        #expect(harness.model.mailboxName(for: "nope") == nil)
+        #expect(harness.model.mailboxName(for: nil) == nil)
+    }
+
+    /// The chip is text on a neutral surface — VoiceOver reads none of it. Fails
+    /// if the attribution is left out of the row's spoken summary, or if it is
+    /// spoken when a specific mailbox is picked (where the view passes nil).
+    @Test func theRowSummarySpeaksTheMailboxOnlyWhenItIsGiven() {
+        let row = MailFixtures.conversation(
+            MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup")
+        )
+        #expect(ConversationRow.accessibilitySummary(for: row, mailboxName: "Support").contains("in Support"))
+        #expect(ConversationRow.accessibilitySummary(for: row).contains("in ") == false)
+
+        let message = MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup")
+        #expect(ThreadMessageRow.accessibilitySummary(for: message, mailboxName: "Support").contains("in Support"))
+        #expect(ThreadMessageRow.accessibilitySummary(for: message).contains("in ") == false)
     }
 }

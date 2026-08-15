@@ -1,7 +1,33 @@
 import HeraldKit
 import SwiftUI
 
-/// Middle pane: the conversation rows for the selected scope.
+/// The middle column. It is either the conversation list for the current scope
+/// or, once the user explicitly opens a multi-message conversation, that
+/// thread's messages. Selecting a row only previews it in the reading pane.
+///
+/// The swap is a VM flag (`isShowingThread`), never a `NavigationStack` push:
+/// both lists stay lazy, neither is `.id()`-reset, and coming back lands on the
+/// same row with the same selection.
+struct MiddleColumnView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Bindable var model: MailViewModel
+
+    var body: some View {
+        ZStack {
+            if model.isShowingThread {
+                ThreadMessageListView(model: model)
+                    .transition(.opacity)
+            } else {
+                ConversationListView(model: model)
+                    .transition(.opacity)
+            }
+        }
+        // A cross-fade, and none at all when the user asked for less motion.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.isShowingThread)
+    }
+}
+
+/// The conversation rows for the selected scope.
 struct ConversationListView: View {
     @Bindable var model: MailViewModel
     /// Search lives here and is debounced before it reaches the view-model, so a
@@ -12,11 +38,32 @@ struct ConversationListView: View {
         List(model.presentedConversations, selection: $model.selectedThreadID) { row in
             ConversationRow(
                 row: row,
+                // Only in the all-mailboxes scope: with a mailbox picked, every
+                // row would carry the same chip and say nothing.
+                mailboxName: model.selection.mailboxID == nil
+                    ? model.mailboxName(for: row.latest.mailboxID)
+                    : nil,
                 toggleStar: { Task { await model.toggleStar(row) } },
                 archive: { Task { await model.perform(.archive, onThread: row.id) } },
-                trash: { Task { await model.perform(.trash, onThread: row.id) } }
+                trash: { Task { await model.perform(.trash, onThread: row.id) } },
+                openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
             )
             .tag(row.id)
+            // A CLICK drills in; an arrow-key selection change does not. The
+            // selection binding cannot tell the two apart — both just hand back a
+            // new id — so the mouse gets its own gesture. `simultaneousGesture`,
+            // not `onTapGesture`: the latter eats the click and the row stops
+            // selecting at all.
+            //
+            // A gesture is invisible to Full Keyboard Access, VoiceOver and
+            // Switch Control, which is precisely why it is not the only way in:
+            // ⏎ and the row's chevron button cover the keyboard and the rotor.
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    guard row.messageCount > 1 else { return }
+                    model.openThread(row.id)
+                }
+            )
         }
         .listStyle(.inset)
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or
@@ -24,6 +71,13 @@ struct ConversationListView: View {
         // in the search field — which is how a bare ⌫ deletes the wrong thing.
         .onKeyPress("e") { act(.archive) }
         .onKeyPress(.delete) { act(.trash) }
+        // Re-entering a thread the user already backed out of: the selection is
+        // unchanged, so nothing else would fire.
+        .onKeyPress(.return) {
+            guard model.selectedThreadID != nil else { return .ignored }
+            model.openSelectedThread()
+            return .handled
+        }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search mail")
         .task(id: searchText) {
             guard searchText != model.searchQuery else { return }
@@ -67,11 +121,168 @@ struct ConversationListView: View {
     }
 }
 
+/// One drilled-into thread: a header that gets back out, then a row per message.
+///
+/// A `List` with a selection binding, not a hand-rolled `LazyVStack` of buttons:
+/// arrowing between messages is then the list's own behaviour rather than two
+/// `.onKeyPress` handlers that only work while the stack happens to be focused.
+struct ThreadMessageListView: View {
+    @Bindable var model: MailViewModel
+
+    private var folderTitle: String { MailTheme.title(for: model.selection.folder) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            List(model.threadMessages, selection: $model.selectedMessageID) { message in
+                ThreadMessageRow(
+                    message: message,
+                    // Same rule as the conversation list: attribution only where
+                    // the scope is ambiguous.
+                    mailboxName: model.selection.mailboxID == nil
+                        ? model.mailboxName(for: message.mailboxID)
+                        : nil,
+                    toggleStar: {
+                        Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id) }
+                    }
+                )
+                .tag(message.id)
+            }
+            .listStyle(.inset)
+        }
+        // ⎋ backs out, as it does everywhere else on macOS. ⌘[ rides on the back
+        // button itself so the shortcut and the control cannot drift apart.
+        .onExitCommand { model.exitThread() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Button { model.exitThread() } label: {
+                Image(systemName: "chevron.left")
+                    .iconButtonStyle("Back to \(folderTitle)")
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("[", modifiers: .command)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(subject)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                Text("\(model.threadMessages.count) messages")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.trailing, 12)
+        .padding(.vertical, 4)
+    }
+
+    private var subject: String {
+        let subject = model.selectedConversation?.latest.subject ?? ""
+        return subject.isEmpty ? "(No subject)" : subject
+    }
+}
+
+/// One message inside a drilled-into thread.
+struct ThreadMessageRow: View {
+    let message: MessageSummary
+    let mailboxName: String?
+    let toggleStar: () -> Void
+
+    private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            // Unread is bold text AND a dot: never color alone.
+            Circle()
+                .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(message.fromAddress)
+                        .font(.subheadline)
+                        .fontWeight(message.isUnread ? .bold : .regular)
+                        .lineLimit(1)
+                    if let mailboxName {
+                        MailboxChip(name: mailboxName)
+                    }
+                    Spacer(minLength: 4)
+                    Text(message.displayDate, format: Self.dateFormat)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("To: \(message.to.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(message.snippet)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilitySummary(for: message, mailboxName: mailboxName))
+            .accessibilityValue(Text(message.displayDate, format: Self.dateFormat))
+
+            Button(action: toggleStar) {
+                Image(systemName: message.isStarred ? "star.fill" : "star")
+                    .foregroundStyle(message.isStarred ? MailTheme.starred : .secondary)
+                    .iconButtonStyle(message.isStarred ? "Unstar" : "Star")
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 2)
+        .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
+    }
+
+    /// What VoiceOver reads for one message row: on screen the state is a dot, a
+    /// bold weight and a star, none of which say anything out loud.
+    nonisolated static func accessibilitySummary(
+        for message: MessageSummary,
+        mailboxName: String? = nil
+    ) -> String {
+        var parts = [message.fromAddress, "To: \(message.to.joined(separator: ", "))"]
+        if let mailboxName { parts.append("in \(mailboxName)") }
+        if message.isUnread { parts.append("unread") }
+        if message.isStarred { parts.append("starred") }
+        parts.append(message.snippet)
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// Which mailbox a row belongs to, shown only in the all-mailboxes scope. Text in
+/// a chip, never a colour swatch: the attribution has to survive greyscale, and
+/// it is already in the row's accessibility label for VoiceOver.
+struct MailboxChip: View {
+    let name: String
+
+    var body: some View {
+        Text(name)
+            .font(.caption2)
+            .foregroundStyle(MailTheme.attributionForeground)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(MailTheme.chipBackground, in: Capsule())
+            .accessibilityHidden(true)
+    }
+}
+
 struct ConversationRow: View {
     let row: ConversationSummary
+    /// Non-nil only in the all-mailboxes scope.
+    let mailboxName: String?
     let toggleStar: () -> Void
     let archive: () -> Void
     let trash: () -> Void
+    /// Non-nil when the conversation has more than one message.
+    let openThread: (() -> Void)?
 
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
@@ -96,6 +307,9 @@ struct ConversationRow: View {
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(MailTheme.chipBackground, in: Capsule())
+                    }
+                    if let mailboxName {
+                        MailboxChip(name: mailboxName)
                     }
                     Spacer(minLength: 4)
                     Text(row.latest.displayDate, format: Self.dateFormat)
@@ -123,8 +337,20 @@ struct ConversationRow: View {
             // stopped on each Text separately and the row's own label — the only
             // place unread/starred/attachments were spoken — was never read.
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilitySummary(for: row))
+            .accessibilityLabel(Self.accessibilitySummary(for: row, mailboxName: mailboxName))
             .accessibilityValue(Text(row.latest.displayDate, format: Self.dateFormat))
+
+            if let openThread {
+                // A real button, not a decorative chevron: re-entering a thread has
+                // to work from the keyboard and the rotor, not only by re-clicking
+                // a row that is already selected (which fires nothing).
+                Button(action: openThread) {
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.secondary)
+                        .iconButtonStyle("Show \(row.messageCount) messages")
+                }
+                .buttonStyle(.plain)
+            }
 
             // Its own element on purpose: it is a control, and folding it into the
             // row would cost the only way to star without the mouse.
@@ -152,13 +378,17 @@ struct ConversationRow: View {
     }
 
     /// What VoiceOver reads for one row. Internal and pure so the states that are
-    /// easiest to drop — unread, starred, attachments — are assertable without a
-    /// rendered list.
-    nonisolated static func accessibilitySummary(for row: ConversationSummary) -> String {
+    /// easiest to drop — unread, starred, attachments, and the mailbox a row is
+    /// attributed to — are assertable without a rendered list.
+    nonisolated static func accessibilitySummary(
+        for row: ConversationSummary,
+        mailboxName: String? = nil
+    ) -> String {
         var parts = [
             participants(for: row),
             row.latest.subject.isEmpty ? "No subject" : row.latest.subject,
         ]
+        if let mailboxName { parts.append("in \(mailboxName)") }
         if row.messageCount > 1 { parts.append("\(row.messageCount) messages") }
         if row.isUnread { parts.append("unread") }
         if row.isStarred { parts.append("starred") }

@@ -14,6 +14,15 @@ actor FakeMailAPIClient: MailAPIClient {
         case listMessages(folder: MailFolder?, mailboxID: String?)
         case performMessage(MessageAction, String)
         case performConversation(ConversationAction, String, ConversationFolder)
+        // Compose surface (P0.5). Additive: the sync suite matches its own cases.
+        case createDraft(DraftInput)
+        case fetchDraft(String)
+        case updateDraft(id: String, version: Int?)
+        case deleteDraft(String)
+        case addAttachment(draftID: String, filename: String, bytes: Int)
+        case removeAttachment(draftID: String, attachmentID: String)
+        case sendMessage(SendInput)
+        case replyToMessage(ReplyInput)
     }
 
     private(set) var calls: [Call] = []
@@ -144,20 +153,137 @@ actor FakeMailAPIClient: MailAPIClient {
     }
     func attachmentData(id: String) async throws -> BinaryPayload { throw MailAPIError.notFound }
     func trustRemoteMedia(messageID: String) async throws { throw MailAPIError.notFound }
-    func listDrafts() async throws -> [Draft] { throw MailAPIError.notFound }
-    func draft(id: String) async throws -> Draft { throw MailAPIError.notFound }
-    func createDraft(_ input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
-    func updateDraft(id: String, with input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
-    func deleteDraft(id: String) async throws { throw MailAPIError.notFound }
+    func listDrafts() async throws -> [Draft] { Array(storedDrafts.values) }
+
+    // MARK: - Compose surface (P0.5)
+    //
+    // A small in-memory drafts server: ids, version stamps and 404s behave the
+    // way the real one does, so the outbox tests exercise real save/send flows
+    // rather than a stub that always says yes.
+
+    private var storedDrafts: [String: Draft] = [:]
+    private var draftSequence = 0
+    private var forcedConflicts = 0
+    private var sendFailure: MailAPIError?
+    private var attachmentFailure: MailAPIError?
+    private var sentSummary: MessageSummary?
+
+    /// The next `n` PATCHes answer 409 the way upstream's `DRAFT_CONFLICT` does.
+    func setForcedConflicts(_ count: Int) { forcedConflicts = count }
+    func setSendFailure(_ failure: MailAPIError?) { sendFailure = failure }
+    func setAttachmentFailure(_ failure: MailAPIError?) { attachmentFailure = failure }
+    func setSentSummary(_ summary: MessageSummary?) { sentSummary = summary }
+    func storedDraft(id: String) -> Draft? { storedDrafts[id] }
+    func storedDraftCount() -> Int { storedDrafts.count }
+
+    /// Simulates another session saving the draft (bumps the server version).
+    func bumpStoredDraftVersion(id: String) {
+        guard let draft = storedDrafts[id] else { return }
+        storedDrafts[id] = Draft(
+            id: draft.id,
+            version: draft.version + 1,
+            updatedAt: draft.updatedAt,
+            attachments: draft.attachments,
+            content: draft.content
+        )
+    }
+
+    func draft(id: String) async throws -> Draft {
+        calls.append(.fetchDraft(id))
+        guard let draft = storedDrafts[id] else { throw MailAPIError.notFound }
+        return draft
+    }
+
+    func createDraft(_ input: DraftInput) async throws -> Draft {
+        calls.append(.createDraft(input))
+        draftSequence += 1
+        let draft = Draft(
+            id: "drf_\(draftSequence)",
+            version: 1,
+            updatedAt: Date(timeIntervalSince1970: 3_000),
+            attachments: [],
+            content: input
+        )
+        storedDrafts[draft.id] = draft
+        return draft
+    }
+
+    func updateDraft(id: String, with input: DraftInput) async throws -> Draft {
+        calls.append(.updateDraft(id: id, version: input.version))
+        guard let existing = storedDrafts[id] else { throw MailAPIError.notFound }
+        if forcedConflicts > 0 {
+            forcedConflicts -= 1
+            throw MailAPIError.server(code: "DRAFT_CONFLICT", message: "This draft changed in another session.")
+        }
+        guard input.version == existing.version else {
+            throw MailAPIError.server(code: "DRAFT_CONFLICT", message: "This draft changed in another session.")
+        }
+        let updated = Draft(
+            id: id,
+            version: existing.version + 1,
+            updatedAt: Date(timeIntervalSince1970: 3_100),
+            attachments: existing.attachments,
+            content: input
+        )
+        storedDrafts[id] = updated
+        return updated
+    }
+
+    func deleteDraft(id: String) async throws {
+        calls.append(.deleteDraft(id))
+        guard storedDrafts.removeValue(forKey: id) != nil else { throw MailAPIError.notFound }
+    }
+
     func addDraftAttachment(
         draftID: String,
         filename: String,
         mimeType: String,
         data: Data
-    ) async throws -> DraftAttachment { throw MailAPIError.notFound }
-    func removeDraftAttachment(draftID: String, attachmentID: String) async throws { throw MailAPIError.notFound }
-    func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
-    func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
+    ) async throws -> DraftAttachment {
+        calls.append(.addAttachment(draftID: draftID, filename: filename, bytes: data.count))
+        if let attachmentFailure { throw attachmentFailure }
+        guard let draft = storedDrafts[draftID] else { throw MailAPIError.notFound }
+        let attachment = DraftAttachment(
+            id: "att_\(draft.attachments.count + 1)",
+            filename: filename,
+            contentType: mimeType,
+            sizeBytes: data.count
+        )
+        storedDrafts[draftID] = Draft(
+            id: draft.id,
+            version: draft.version,
+            updatedAt: draft.updatedAt,
+            attachments: draft.attachments + [attachment],
+            content: draft.content
+        )
+        return attachment
+    }
+
+    func removeDraftAttachment(draftID: String, attachmentID: String) async throws {
+        calls.append(.removeAttachment(draftID: draftID, attachmentID: attachmentID))
+        guard let draft = storedDrafts[draftID],
+              draft.attachments.contains(where: { $0.id == attachmentID })
+        else { throw MailAPIError.notFound }
+        storedDrafts[draftID] = Draft(
+            id: draft.id,
+            version: draft.version,
+            updatedAt: draft.updatedAt,
+            attachments: draft.attachments.filter { $0.id != attachmentID },
+            content: draft.content
+        )
+    }
+
+    func send(_ input: SendInput) async throws -> MessageSummary {
+        calls.append(.sendMessage(input))
+        if let sendFailure { throw sendFailure }
+        return sentSummary ?? SyncFixtures.message("msg_sent", folder: .sent)
+    }
+
+    func reply(_ input: ReplyInput) async throws -> MessageSummary {
+        calls.append(.replyToMessage(input))
+        if let sendFailure { throw sendFailure }
+        return sentSummary ?? SyncFixtures.message("msg_reply", folder: .sent)
+    }
 }
 
 // MARK: - DTO builders

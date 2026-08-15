@@ -1,0 +1,173 @@
+import Foundation
+
+/// What the user is composing, and what the server needs to know about it.
+///
+/// `.forward` maps to `DraftInput.forwardOfMessageID` (the v1 spec has the field)
+/// but sends through `POST /send` — v1 has no forward route.
+public nonisolated enum ComposeMode: Sendable, Hashable {
+    case new(mailboxID: String?)
+    case reply(toMessageID: String, replyAll: Bool)
+    case forward(messageID: String)
+
+    /// The message this compose answers, when the server needs it.
+    public var replyToMessageID: String? {
+        if case .reply(let id, _) = self { return id }
+        return nil
+    }
+
+    public var forwardOfMessageID: String? {
+        if case .forward(let id) = self { return id }
+        return nil
+    }
+}
+
+/// The local editing model for one compose window.
+///
+/// A value type: the UI owns a copy, ``OutboxService`` returns an updated copy
+/// after every server round trip. `isDirty` flips whenever an editable field is
+/// mutated and is cleared by a successful save.
+public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
+    /// Stable local identity; survives the first server save.
+    public let id: UUID
+    public let mode: ComposeMode
+    /// Mailbox the draft belongs to (`nil` until the user picks one).
+    public var mailboxID: String? { didSet { markDirty(oldValue != mailboxID) } }
+    public var fromAddress: String { didSet { markDirty(oldValue != fromAddress) } }
+    public var to: [String] { didSet { markDirty(oldValue != to) } }
+    public var cc: [String] { didSet { markDirty(oldValue != cc) } }
+    public var bcc: [String] { didSet { markDirty(oldValue != bcc) } }
+    public var subject: String { didSet { markDirty(oldValue != subject) } }
+    /// Plain-text body. Herald composes text only; the server derives HTML.
+    public var body: String { didSet { markDirty(oldValue != body) } }
+    /// Files the user picked that are not uploaded yet.
+    public private(set) var pendingAttachments: [URL]
+    /// Files already uploaded to the server draft.
+    public private(set) var uploadedAttachments: [DraftAttachment]
+    /// The server-side draft, once ``OutboxService/saveDraft(_:)`` has created one.
+    public private(set) var serverDraft: Draft?
+    public private(set) var isDirty: Bool
+
+    public init(
+        id: UUID = UUID(),
+        mode: ComposeMode,
+        mailboxID: String? = nil,
+        fromAddress: String = "",
+        to: [String] = [],
+        cc: [String] = [],
+        bcc: [String] = [],
+        subject: String = "",
+        body: String = "",
+        pendingAttachments: [URL] = [],
+        uploadedAttachments: [DraftAttachment] = [],
+        serverDraft: Draft? = nil,
+        isDirty: Bool = true
+    ) {
+        self.id = id
+        self.mode = mode
+        self.mailboxID = mailboxID ?? mode.newMailboxID
+        self.fromAddress = fromAddress
+        self.to = to
+        self.cc = cc
+        self.bcc = bcc
+        self.subject = subject
+        self.body = body
+        self.pendingAttachments = pendingAttachments
+        self.uploadedAttachments = uploadedAttachments
+        self.serverDraft = serverDraft
+        self.isDirty = isDirty
+    }
+
+    private mutating func markDirty(_ changed: Bool) {
+        if changed { isDirty = true }
+    }
+
+    /// Every address the message will go to, in `to`, `cc`, `bcc` order.
+    public var allRecipients: [String] { to + cc + bcc }
+
+    public var attachmentIDs: [String] { uploadedAttachments.map(\.id) }
+
+    /// Body of `POST /drafts` / `PATCH /drafts/{id}`.
+    ///
+    /// The version stamp comes from ``serverDraft`` — omitting it is what the
+    /// server answers with 409, so it is set here rather than at each call site.
+    public var draftInput: DraftInput {
+        DraftInput(
+            mailboxID: mailboxID,
+            replyToMessageID: mode.replyToMessageID,
+            forwardOfMessageID: mode.forwardOfMessageID,
+            from: fromAddress,
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            text: body,
+            html: "",
+            version: serverDraft?.version
+        )
+    }
+
+    // MARK: - Mutation used by OutboxService
+
+    public mutating func addPendingAttachment(_ url: URL) {
+        guard !pendingAttachments.contains(url) else { return }
+        pendingAttachments.append(url)
+        isDirty = true
+    }
+
+    mutating func applySaved(_ draft: Draft) {
+        serverDraft = draft
+        uploadedAttachments = draft.attachments
+        isDirty = false
+    }
+
+    mutating func applyUpload(_ attachment: DraftAttachment, from url: URL?) {
+        if let url { pendingAttachments.removeAll { $0 == url } }
+        if let index = uploadedAttachments.firstIndex(where: { $0.id == attachment.id }) {
+            uploadedAttachments[index] = attachment
+        } else {
+            uploadedAttachments.append(attachment)
+        }
+    }
+
+    mutating func applyRemoval(attachmentID: String) {
+        uploadedAttachments.removeAll { $0.id == attachmentID }
+    }
+
+    mutating func clearServerDraft() {
+        serverDraft = nil
+    }
+}
+
+nonisolated extension ComposeMode {
+    fileprivate var newMailboxID: String? {
+        if case .new(let mailboxID) = self { return mailboxID }
+        return nil
+    }
+}
+
+/// Deliberately small address check: enough to stop obvious typos before a
+/// round trip, never strict enough to reject a legal address the server accepts.
+public nonisolated enum EmailAddress {
+    public static func isValid(_ address: String) -> Bool {
+        let trimmed = address.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.count <= 320 else { return false }
+        guard trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return false }
+        let parts = trimmed.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else { return false }
+        let domain = parts[1]
+        guard domain.contains("."), !domain.hasPrefix("."), !domain.hasSuffix(".") else { return false }
+        return !domain.contains("..")
+    }
+
+    /// Case-insensitive dedupe that preserves both order and original spelling.
+    public static func dedupe(_ addresses: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for address in addresses {
+            let key = address.lowercased()
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            result.append(address)
+        }
+        return result
+    }
+}

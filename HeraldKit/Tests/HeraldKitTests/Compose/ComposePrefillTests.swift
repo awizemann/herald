@@ -89,6 +89,18 @@ import Testing
 
     /// Fails if empty lines lose their quote marker or the header is dropped —
     /// both make the quoted block unreadable once the recipient replies again.
+    /// Real-server regression (2026-08-15): HQBase quotes the original itself on
+    /// /reply and forward, so a client-side quote produced a doubled history.
+    /// Fails if reply/forward prefill ever puts quoted text in the body again.
+    @Test func replyAndForwardBodiesCarryNoClientSideQuote() {
+        let detail = Self.detail()
+        let reply = ComposePrefill.reply(to: detail, replyAll: false, from: "me@example.com")
+        let fwd = ComposePrefill.forward(detail, from: "me@example.com")
+        #expect(reply.body.isEmpty)
+        #expect(fwd.body.isEmpty)
+        #expect(!reply.body.contains("wrote:") && !fwd.body.contains("> "))
+    }
+
     @Test("Quoted body carries an attribution header and quotes every line")
     func quotedBody() {
         let quoted = ComposePrefill.quotedBody(of: Self.detail(), locale: Locale(identifier: "en_US_POSIX"))

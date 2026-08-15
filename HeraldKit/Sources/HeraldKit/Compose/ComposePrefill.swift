@@ -114,7 +114,10 @@ public nonisolated enum ComposePrefill {
             to: recipients.to,
             cc: recipients.cc,
             subject: replySubject(message.summary.subject),
-            body: "\n\n\(quotedBody(of: message, locale: locale))"
+            // The SERVER appends attribution + quoted original on POST /reply
+            // (worker/features/send/reply-body.ts) — quoting here doubled the
+            // history in the first real run. Send only the authored text.
+            body: ""
         )
     }
 
@@ -130,7 +133,8 @@ public nonisolated enum ComposePrefill {
             mailboxID: mailboxID ?? message.summary.mailboxID,
             fromAddress: address,
             subject: forwardSubject(message.summary.subject),
-            body: "\n\n\(quotedBody(of: message, locale: locale))"
+            // Server quotes the forwarded message too (worker/features/send/forward.ts).
+            body: ""
         )
     }
 }

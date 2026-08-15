@@ -101,7 +101,10 @@ final class ComposeViewModel {
 
     /// Whether closing would lose work the server has not seen.
     var hasUnsavedChanges: Bool {
-        guard draft.isDirty else { return false }
+        // A sent or discarded composer owns nothing anymore: the programmatic
+        // dismissal that follows `send()` still passes through windowShouldClose,
+        // and must never turn into a "save or discard?" sheet (real-run finding).
+        guard !isClosed, draft.isDirty else { return false }
         return draft.to != initialDraft.to
             || draft.cc != initialDraft.cc
             || draft.bcc != initialDraft.bcc

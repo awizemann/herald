@@ -113,6 +113,9 @@ actor FakeOutbox: Outboxing {
         await outbox.setSendError(nil)
         #expect(await model.send() == true)
         #expect(model.isClosed)
+        // Real-run regression: the post-send dismissal must not prompt to save —
+        // fails if a sent composer still reports unsaved work.
+        #expect(!model.hasUnsavedChanges)
     }
 
     /// A server that normalises the body (or a save that lands after the user has

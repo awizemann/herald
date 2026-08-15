@@ -108,6 +108,7 @@ struct ComposeView: View {
     /// The single close rule, shared by ⌘W and the title-bar button. Returns
     /// whether the window may go: unsaved work turns into the sheet instead.
     private func closeRequested() -> Bool {
+        if model.isClosed { return true }
         let hasUnsaved = model.hasUnsavedChanges
         model.requestClose()
         return !hasUnsaved

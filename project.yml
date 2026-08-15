@@ -1,0 +1,98 @@
+# Herald project spec — xcodegen owns Herald.xcodeproj (generated, gitignored). This file is the
+# source of truth; regenerate with `xcodegen generate` (build-detached.sh does it automatically).
+name: Herald
+options:
+  bundleIdPrefix: com.wizemann
+  deploymentTarget:
+    macOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  minimumXcodeGenVersion: "2.45.0"
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SDKROOT: macosx
+    ARCHS: arm64
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_UPCOMING_FEATURE_NONISOLATED_NONSENDING_BY_DEFAULT: YES
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Automatic
+  configs:
+    Debug:
+      ENABLE_TESTABILITY: YES
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"
+      ONLY_ACTIVE_ARCH: YES
+    Release:
+      SWIFT_COMPILATION_MODE: wholemodule
+      DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+
+configs:
+  Debug: debug
+  Release: release
+
+packages:
+  HeraldKit:
+    path: HeraldKit
+
+targets:
+  Herald:
+    type: application
+    platform: macOS
+    sources:
+      - path: Herald
+    dependencies:
+      - package: HeraldKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald
+        PRODUCT_NAME: Herald
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        CODE_SIGN_ENTITLEMENTS: Herald/Herald.entitlements
+        SWIFT_EMIT_LOC_STRINGS: YES
+    info:
+      path: Herald/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.wizemann.herald
+            CFBundleURLSchemes: [herald]
+        LSMinimumSystemVersion: "26.0"
+  HeraldTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: HeraldTests
+    dependencies:
+      - target: Herald
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Herald.app/Contents/MacOS/Herald"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Herald:
+    build:
+      targets:
+        Herald: all
+        HeraldTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HeraldTests
+        - package: HeraldKit/HeraldKitTests

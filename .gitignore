@@ -1,0 +1,10 @@
+.memophant/
+.claude/memophant-activity.log
+sessions/.raw/
+sessions/.index.json
+.DS_Store
+**/xcuserdata/
+.swiftpm/
+HeraldKit/.build/
+*.xcodeproj
+DerivedData/

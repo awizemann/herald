@@ -23,7 +23,11 @@ let package = Package(
         ),
         .target(
             name: "HeraldKit",
-            dependencies: ["HeraldAPI"],
+            dependencies: [
+                "HeraldAPI",
+                .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
+                .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
+            ],
             swiftSettings: [.defaultIsolation(MainActor.self), .swiftLanguageMode(.v6)]
         ),
         .testTarget(

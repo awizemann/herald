@@ -39,7 +39,9 @@
         "summary": "List mailboxes",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -110,7 +112,9 @@
             }
           }
         },
-        "tags": ["Mailboxes"],
+        "tags": [
+          "Mailboxes"
+        ],
         "operationId": "listMailboxes"
       }
     },
@@ -119,7 +123,9 @@
         "summary": "List or search messages",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -190,7 +196,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "listMessages",
         "parameters": [
           {
@@ -199,7 +207,14 @@
             "required": false,
             "schema": {
               "type": "string",
-              "enum": ["inbox", "sent", "drafts", "archived", "trash", "catchall"]
+              "enum": [
+                "inbox",
+                "sent",
+                "drafts",
+                "archived",
+                "trash",
+                "catchall"
+              ]
             },
             "description": "Folder to list."
           },
@@ -231,7 +246,9 @@
         "summary": "Get a message",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -299,7 +316,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "getMessage",
         "parameters": [
           {
@@ -320,7 +339,9 @@
         "summary": "Get a message thread",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -391,7 +412,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "getMessageThread",
         "parameters": [
           {
@@ -412,7 +435,9 @@
         "summary": "Get sanitized message HTML",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -480,7 +505,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "getMessageHtml",
         "parameters": [
           {
@@ -499,7 +526,9 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "enum": [1]
+              "enum": [
+                1
+              ]
             },
             "description": "Load remote images for this response only."
           }
@@ -511,7 +540,9 @@
         "summary": "Render a safe inline image",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -590,7 +621,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "getInlineAttachment",
         "parameters": [
           {
@@ -621,7 +654,9 @@
         "summary": "Download an attachment",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -690,7 +725,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "getAttachment",
         "parameters": [
           {
@@ -711,7 +748,9 @@
         "summary": "Trust remote media from this sender",
         "security": [
           {
-            "oauth2": ["mail:write"]
+            "oauth2": [
+              "mail:write"
+            ]
           },
           {
             "cookieSession": []
@@ -779,7 +818,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "trustRemoteMedia",
         "parameters": [
           {
@@ -800,7 +841,9 @@
         "summary": "Update message state",
         "security": [
           {
-            "oauth2": ["mail:write"]
+            "oauth2": [
+              "mail:write"
+            ]
           },
           {
             "cookieSession": []
@@ -868,7 +911,9 @@
             }
           }
         },
-        "tags": ["Messages"],
+        "tags": [
+          "Messages"
+        ],
         "operationId": "updateMessage",
         "parameters": [
           {
@@ -887,7 +932,14 @@
             "required": true,
             "schema": {
               "type": "string",
-              "enum": ["read", "unread", "star", "unstar", "archive", "trash"]
+              "enum": [
+                "read",
+                "unread",
+                "star",
+                "unstar",
+                "archive",
+                "trash"
+              ]
             }
           }
         ]
@@ -898,7 +950,9 @@
         "summary": "List or search conversations",
         "security": [
           {
-            "oauth2": ["mail:read"]
+            "oauth2": [
+              "mail:read"
+            ]
           },
           {
             "cookieSession": []
@@ -966,7 +1020,9 @@
             }
           }
         },
-        "tags": ["Conversations"],
+        "tags": [
+          "Conversations"
+        ],
         "operationId": "listConversations",
         "parameters": [
           {
@@ -975,7 +1031,14 @@
             "required": false,
             "schema": {
               "type": "string",
-              "enum": ["inbox", "sent", "starred", "archived", "trash", "catchall"]
+              "enum": [
+                "inbox",
+                "sent",
+                "starred",
+                "archived",
+                "trash",
+                "catchall"
+              ]
             },
             "description": "Folder to list."
           },
@@ -1017,7 +1080,9 @@
         "summary": "Update conversation state",
         "security": [
           {
-            "oauth2": ["mail:write"]
+            "oauth2": [
+              "mail:write"
+            ]
           },
           {
             "cookieSession": []
@@ -1085,7 +1150,9 @@
             }
           }
         },
-        "tags": ["Conversations"],
+        "tags": [
+          "Conversations"
+        ],
         "operationId": "updateConversation",
         "parameters": [
           {
@@ -1104,7 +1171,14 @@
             "required": true,
             "schema": {
               "type": "string",
-              "enum": ["read", "unread", "star", "unstar", "archive", "trash"]
+              "enum": [
+                "read",
+                "unread",
+                "star",
+                "unstar",
+                "archive",
+                "trash"
+              ]
             }
           }
         ],
@@ -1128,7 +1202,9 @@
         "summary": "List drafts",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1199,14 +1275,18 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "listDrafts"
       },
       "post": {
         "summary": "Create a draft",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1274,7 +1354,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "createDraft",
         "requestBody": {
           "required": true,
@@ -1305,7 +1387,9 @@
         "summary": "Get a draft",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1373,7 +1457,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "getDraft",
         "parameters": [
           {
@@ -1392,7 +1478,9 @@
         "summary": "Update a draft",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1470,7 +1558,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "updateDraft",
         "parameters": [
           {
@@ -1512,7 +1602,9 @@
         "summary": "Delete a draft",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1573,7 +1665,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "deleteDraft",
         "parameters": [
           {
@@ -1594,7 +1688,9 @@
         "summary": "Add a draft attachment",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1662,7 +1758,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "addDraftAttachment",
         "parameters": [
           {
@@ -1682,7 +1780,9 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": ["file"],
+                "required": [
+                  "file"
+                ],
                 "properties": {
                   "file": {
                     "type": "string",
@@ -1700,7 +1800,9 @@
         "summary": "Remove a draft attachment",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1761,7 +1863,9 @@
             }
           }
         },
-        "tags": ["Drafts"],
+        "tags": [
+          "Drafts"
+        ],
         "operationId": "removeDraftAttachment",
         "parameters": [
           {
@@ -1792,7 +1896,9 @@
         "summary": "Send a new message",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1860,7 +1966,9 @@
             }
           }
         },
-        "tags": ["Sending"],
+        "tags": [
+          "Sending"
+        ],
         "operationId": "sendMessage",
         "description": "Not idempotent. Do not retry blindly.",
         "requestBody": {
@@ -1872,7 +1980,9 @@
               },
               "example": {
                 "from": "support@example.com",
-                "to": ["person@example.net"],
+                "to": [
+                  "person@example.net"
+                ],
                 "cc": [],
                 "bcc": [],
                 "subject": "Hello",
@@ -1889,7 +1999,9 @@
         "summary": "Reply to a message",
         "security": [
           {
-            "oauth2": ["mail:send"]
+            "oauth2": [
+              "mail:send"
+            ]
           },
           {
             "cookieSession": []
@@ -1957,7 +2069,9 @@
             }
           }
         },
-        "tags": ["Sending"],
+        "tags": [
+          "Sending"
+        ],
         "operationId": "replyToMessage",
         "description": "Not idempotent. Do not retry blindly.",
         "requestBody": {
@@ -2010,11 +2124,16 @@
     "schemas": {
       "Error": {
         "type": "object",
-        "required": ["error"],
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "properties": {
               "code": {
                 "type": "string"
@@ -2074,7 +2193,6 @@
           "addresses",
           "displayName",
           "isActive",
-          "accessLevel",
           "createdAt",
           "updatedAt"
         ],
@@ -2099,14 +2217,11 @@
             "type": "boolean"
           },
           "accessLevel": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": ["read", "agent", "manager"]
-              },
-              {
-                "type": "null"
-              }
+            "type": "string",
+            "enum": [
+              "read",
+              "agent",
+              "manager"
             ]
           },
           "createdAt": {
@@ -2124,17 +2239,12 @@
         "required": [
           "id",
           "threadId",
-          "mailboxId",
           "direction",
           "folder",
           "fromAddress",
           "to",
           "subject",
           "snippet",
-          "receivedAt",
-          "sentAt",
-          "readAt",
-          "starredAt",
           "hasAttachments",
           "createdAt"
         ],
@@ -2146,22 +2256,25 @@
             "type": "string"
           },
           "mailboxId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "direction": {
             "type": "string",
-            "enum": ["inbound", "outbound"]
+            "enum": [
+              "inbound",
+              "outbound"
+            ]
           },
           "folder": {
             "type": "string",
-            "enum": ["inbox", "sent", "drafts", "archived", "trash", "catchall"]
+            "enum": [
+              "inbox",
+              "sent",
+              "drafts",
+              "archived",
+              "trash",
+              "catchall"
+            ]
           },
           "fromAddress": {
             "type": "string",
@@ -2180,48 +2293,20 @@
             "type": "string"
           },
           "receivedAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string",
+            "format": "date-time"
           },
           "sentAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string",
+            "format": "date-time"
           },
           "readAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string",
+            "format": "date-time"
           },
           "starredAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string",
+            "format": "date-time"
           },
           "hasAttachments": {
             "type": "boolean"
@@ -2240,7 +2325,6 @@
           "filename",
           "contentType",
           "sizeBytes",
-          "contentId",
           "createdAt"
         ],
         "properties": {
@@ -2260,14 +2344,7 @@
             "type": "integer"
           },
           "contentId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "createdAt": {
             "type": "string",
@@ -2285,11 +2362,8 @@
             "required": [
               "cc",
               "bcc",
-              "deliveredToAddress",
               "textBody",
               "htmlAvailable",
-              "messageId",
-              "inReplyTo",
               "references",
               "attachments"
             ],
@@ -2307,14 +2381,7 @@
                 }
               },
               "deliveredToAddress": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "string"
               },
               "textBody": {
                 "type": "string"
@@ -2323,24 +2390,10 @@
                 "type": "boolean"
               },
               "messageId": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "string"
               },
               "inReplyTo": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "string"
               },
               "references": {
                 "type": "array",
@@ -2360,7 +2413,11 @@
       },
       "MessageHtml": {
         "type": "object",
-        "required": ["hasRemoteImages", "html", "quotedHtml", "remoteMediaTrusted"],
+        "required": [
+          "hasRemoteImages",
+          "html",
+          "remoteMediaTrusted"
+        ],
         "properties": {
           "hasRemoteImages": {
             "type": "boolean"
@@ -2369,14 +2426,7 @@
             "type": "string"
           },
           "quotedHtml": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "remoteMediaTrusted": {
             "type": "boolean"
@@ -2385,7 +2435,9 @@
       },
       "RemoteMediaTrust": {
         "type": "object",
-        "required": ["remoteMediaTrusted"],
+        "required": [
+          "remoteMediaTrusted"
+        ],
         "properties": {
           "remoteMediaTrusted": {
             "type": "boolean",
@@ -2400,7 +2452,11 @@
           },
           {
             "type": "object",
-            "required": ["isStarred", "messageCount", "unreadCount"],
+            "required": [
+              "isStarred",
+              "messageCount",
+              "unreadCount"
+            ],
             "properties": {
               "isStarred": {
                 "type": "boolean"
@@ -2417,7 +2473,9 @@
       },
       "ConversationPage": {
         "type": "object",
-        "required": ["conversations", "nextCursor", "totalCount"],
+        "required": [
+          "conversations"
+        ],
         "properties": {
           "conversations": {
             "type": "array",
@@ -2426,40 +2484,38 @@
             }
           },
           "nextCursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "totalCount": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "integer"
           }
         }
       },
       "ConversationActionInput": {
         "type": "object",
-        "required": ["folder"],
+        "required": [
+          "folder"
+        ],
         "properties": {
           "folder": {
             "type": "string",
-            "enum": ["inbox", "sent", "starred", "archived", "trash", "catchall"]
+            "enum": [
+              "inbox",
+              "sent",
+              "starred",
+              "archived",
+              "trash",
+              "catchall"
+            ]
           }
         }
       },
       "ConversationActionResult": {
         "type": "object",
-        "required": ["affected", "threadId"],
+        "required": [
+          "affected",
+          "threadId"
+        ],
         "properties": {
           "affected": {
             "type": "integer"
@@ -2471,7 +2527,12 @@
       },
       "DraftAttachment": {
         "type": "object",
-        "required": ["id", "filename", "contentType", "sizeBytes"],
+        "required": [
+          "id",
+          "filename",
+          "contentType",
+          "sizeBytes"
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2490,9 +2551,6 @@
       "DraftInput": {
         "type": "object",
         "required": [
-          "mailboxId",
-          "replyToMessageId",
-          "forwardOfMessageId",
           "from",
           "to",
           "cc",
@@ -2503,34 +2561,13 @@
         ],
         "properties": {
           "mailboxId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "replyToMessageId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "forwardOfMessageId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string"
           },
           "from": {
             "type": "string"
@@ -2578,7 +2615,12 @@
           },
           {
             "type": "object",
-            "required": ["id", "version", "updatedAt", "attachments"],
+            "required": [
+              "id",
+              "version",
+              "updatedAt",
+              "attachments"
+            ],
             "properties": {
               "id": {
                 "type": "string"
@@ -2602,7 +2644,12 @@
       },
       "SendInput": {
         "type": "object",
-        "required": ["from", "to", "subject", "text"],
+        "required": [
+          "from",
+          "to",
+          "subject",
+          "text"
+        ],
         "properties": {
           "from": {
             "type": "string",
@@ -2658,7 +2705,11 @@
       },
       "ReplyInput": {
         "type": "object",
-        "required": ["messageId", "from", "text"],
+        "required": [
+          "messageId",
+          "from",
+          "text"
+        ],
         "properties": {
           "messageId": {
             "type": "string"

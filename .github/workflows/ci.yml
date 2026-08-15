@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_27.0.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+      - name: HeraldKit (SwiftPM)
+        working-directory: HeraldKit
+        run: swift build && swift test
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: App build + tests
+        run: |
+          xcodegen generate
+          xcodebuild -project Herald.xcodeproj -scheme Herald -destination 'platform=macOS' \
+            -derivedDataPath DerivedData -skipPackagePluginValidation \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            test

@@ -141,6 +141,22 @@ func wait(
         #expect(harness.model.conversationReloadCount == baseline + 1)
     }
 
+    /// Real-server regression (2026-08-15): after the FIRST sync of an account the
+    /// sidebar stayed empty, because a newly inserted mailbox id is not yet in
+    /// `mailboxes`, so the old `mailboxes.contains(id)` check never asked for a
+    /// reload. Fails on that code: `mailboxes` stays empty forever.
+    @Test func aFreshlyInsertedMailboxShowsUpInTheSidebar() async throws {
+        let harness = try await Harness.make()
+        await harness.model.start()
+        #expect(harness.model.mailboxes.isEmpty)
+
+        try await harness.store.upsertMailboxes([Harness.mailbox("mbNew")], accountID: "acct")
+        harness.events.yield(.changed(ChangeSet(inserted: ["mbNew"])))
+        try await wait("the new mailbox to appear") {
+            harness.model.mailboxes.map(\.id) == ["mbNew"]
+        }
+    }
+
     /// Fails if a change touching a message in the open thread is ignored (stale
     /// reading pane) or if an unrelated message reloads the thread anyway.
     @Test func changeInSelectedThreadReloadsTheThread() async throws {

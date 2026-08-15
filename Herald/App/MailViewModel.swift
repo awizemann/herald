@@ -338,7 +338,11 @@ final class MailViewModel {
                     // Not a message id — a mailbox or a thread-only row.
                     if visibleThreads.contains(id) { reloadConversationList = true }
                     if id == selectedThreadID { reloadThread = true }
-                    if mailboxes.contains(where: { $0.id == id }) { reloadMailboxList = true }
+                    // A brand-new mailbox is by definition NOT in `mailboxes` yet, so
+                    // any unresolved id that isn't a visible thread must reload the
+                    // (tiny) mailbox list — otherwise the sidebar stays empty after the
+                    // very first sync of an account. Real-server finding 2026-08-15.
+                    if !visibleThreads.contains(id) { reloadMailboxList = true }
                     continue
                 }
                 if message.threadID == selectedThreadID { reloadThread = true }

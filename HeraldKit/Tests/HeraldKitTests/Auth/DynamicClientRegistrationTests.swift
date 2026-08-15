@@ -23,7 +23,7 @@ import Testing
             try JSONSerialization.jsonObject(with: recorded.body) as? [String: Any]
         )
         #expect(body["client_name"] as? String == "Herald")
-        #expect(body["redirect_uris"] as? [String] == ["herald://oauth/callback"])
+        #expect(body["redirect_uris"] as? [String] == ["com.wizemann.herald:/oauth/callback"])
         #expect(body["grant_types"] as? [String] == ["authorization_code", "refresh_token"])
         #expect(body["response_types"] as? [String] == ["code"])
         #expect(body["token_endpoint_auth_method"] as? String == "none")

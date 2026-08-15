@@ -61,7 +61,7 @@ import Testing
         let coordinator = AuthCoordinator(
             store: store,
             presenter: FakeAuthorizationPresenter { _ in
-                URL(string: "herald://oauth/callback?code=stolen&state=attacker")!
+                URL(string: "com.wizemann.herald:/oauth/callback?code=stolen&state=attacker")!
             },
             session: server.makeSession()
         )

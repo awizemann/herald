@@ -10,8 +10,8 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// persisted per origin in the Keychain and reused forever after.
 public nonisolated struct DynamicClientRegistration: Sendable {
     /// Herald's custom-scheme redirect. Must match the app's `CFBundleURLTypes`.
-    public static let redirectURI = URL(string: "herald://oauth/callback")!
-    public static let callbackScheme = "herald"
+    public static let redirectURI = URL(string: "com.wizemann.herald:/oauth/callback")!
+    public static let callbackScheme = "com.wizemann.herald"
     public static let clientName = "Herald"
 
     private let session: URLSession

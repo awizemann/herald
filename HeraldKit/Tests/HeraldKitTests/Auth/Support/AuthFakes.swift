@@ -130,7 +130,7 @@ nonisolated final class FakeAuthorizationPresenter: AuthorizationPresenter, @unc
     static func succeeding(code: String = "auth_code_1") -> FakeAuthorizationPresenter {
         FakeAuthorizationPresenter { url in
             let state = AuthFixtures.query(url)["state"] ?? ""
-            return URL(string: "herald://oauth/callback?code=\(code)&state=\(state)")!
+            return URL(string: "com.wizemann.herald:/oauth/callback?code=\(code)&state=\(state)")!
         }
     }
 

@@ -26,7 +26,7 @@ import Testing
         #expect(request.url.path == AuthFixtures.authorizePath)
         #expect(query["response_type"] == "code")
         #expect(query["client_id"] == "cid_1")
-        #expect(query["redirect_uri"] == "herald://oauth/callback")
+        #expect(query["redirect_uri"] == "com.wizemann.herald:/oauth/callback")
         #expect(query["state"] == request.state)
         #expect(query["resource"] == AuthFixtures.resource)
         #expect(query["scope"] == "mail:read mail:write mail:send offline_access")
@@ -57,7 +57,7 @@ import Testing
         let server = AuthFixtures.fullServer()
         let oauth = session(server)
         let request = oauth.makeAuthorizationRequest()
-        let forged = URL(string: "herald://oauth/callback?code=stolen&state=not-the-right-state")!
+        let forged = URL(string: "com.wizemann.herald:/oauth/callback?code=stolen&state=not-the-right-state")!
 
         #expect(throws: OAuthError.stateMismatch) {
             _ = try oauth.authorizationCode(from: forged, for: request)
@@ -67,7 +67,7 @@ import Testing
 
         // A callback with no state at all is equally invalid.
         #expect(throws: OAuthError.stateMismatch) {
-            _ = try oauth.authorizationCode(from: URL(string: "herald://oauth/callback?code=x")!, for: request)
+            _ = try oauth.authorizationCode(from: URL(string: "com.wizemann.herald:/oauth/callback?code=x")!, for: request)
         }
         #expect(server.requests(path: AuthFixtures.tokenPath).isEmpty)
     }
@@ -78,7 +78,7 @@ import Testing
     func errorCallbackIsTyped() {
         let oauth = session(FakeServer())
         let request = oauth.makeAuthorizationRequest()
-        let denied = URL(string: "herald://oauth/callback?error=access_denied&error_description=Nope&state=\(request.state)")!
+        let denied = URL(string: "com.wizemann.herald:/oauth/callback?error=access_denied&error_description=Nope&state=\(request.state)")!
 
         #expect(throws: OAuthError.server(error: "access_denied", description: "Nope")) {
             _ = try oauth.authorizationCode(from: denied, for: request)
@@ -107,7 +107,7 @@ import Testing
         #expect(fields["code"] == "auth_code_1")
         #expect(fields["code_verifier"] == request.pkce.verifier)
         #expect(fields["client_id"] == "cid_1")
-        #expect(fields["redirect_uri"] == "herald://oauth/callback")
+        #expect(fields["redirect_uri"] == "com.wizemann.herald:/oauth/callback")
         #expect(fields["resource"] == AuthFixtures.resource)
         #expect(fields["client_secret"] == nil)
 

@@ -75,9 +75,12 @@ enum WebAuthenticationRunner {
                 let session = ASWebAuthenticationSession(
                     url: url,
                     callbackURLScheme: callbackScheme
-                ) { callbackURL, error in
-                    // The completion handler is nonisolated; hop to the main actor
-                    // rather than asserting isolation we were never promised.
+                ) { @Sendable callbackURL, error in
+                    // AuthenticationServices calls this on its XPC thread. Under default
+                    // MainActor isolation an un-annotated closure literal is inferred
+                    // @MainActor and the runtime TRAPS on the isolation check
+                    // (dispatch_assert_queue) — `@Sendable` makes it nonisolated; we then
+                    // hop to main explicitly.
                     Task { @MainActor in
                         if let callbackURL {
                             finish(token, with: .success(callbackURL))

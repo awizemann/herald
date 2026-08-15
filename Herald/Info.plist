@@ -23,7 +23,7 @@
 			<string>com.wizemann.herald</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>herald</string>
+				<string>com.wizemann.herald</string>
 			</array>
 		</dict>
 	</array>

@@ -50,3 +50,15 @@ public nonisolated enum SecretStoreError: Error, Sendable, Hashable {
     case decodingFailed
     case encodingFailed
 }
+
+nonisolated extension SecretStoreError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .keychain(let status):
+            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
+            return "Keychain error \(status): \(detail)"
+        case .decodingFailed: return "Stored value could not be decoded."
+        case .encodingFailed: return "Value could not be encoded for storage."
+        }
+    }
+}

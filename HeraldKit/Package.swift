@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "HeraldKit",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v15)],
     products: [.library(name: "HeraldKit", targets: ["HeraldKit"])],
     dependencies: [
         .package(url: "https://github.com/apple/swift-openapi-generator", from: "1.7.0"),

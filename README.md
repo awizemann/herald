@@ -25,7 +25,7 @@ Not yet: attachments in compose, drafts folder, search, multiple accounts UI, no
 
 ## Requirements
 
-- macOS 26 or later, Apple silicon
+- macOS 15 (Sequoia) or later, Apple silicon
 - An HQBase instance running **1.1.0 or later** (public Mail API + OAuth bearer support)
 - Xcode 27 to build
 

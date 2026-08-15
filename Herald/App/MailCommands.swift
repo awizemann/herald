@@ -21,14 +21,24 @@ struct MailCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Refresh") { Task { await model?.refresh() } }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("New Message") { model?.requestCompose(.new) }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(model == nil)
+            // ⇧⌘K, as in Mail: ⇧⌘R belongs to Reply All.
+            Button("Get New Mail") { Task { await model?.refresh() } }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(model == nil)
         }
 
         CommandMenu("Message") {
             Button("Reply") { model?.requestCompose(.reply) }
                 .keyboardShortcut("r", modifiers: .command)
+                .disabled(model?.selectedMessageID == nil)
+            Button("Reply All") { model?.requestCompose(.replyAll) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model?.selectedMessageID == nil)
+            Button("Forward") { model?.requestCompose(.forward) }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(model?.selectedMessageID == nil)
 
             Divider()

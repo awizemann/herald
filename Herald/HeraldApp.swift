@@ -10,8 +10,11 @@ struct HeraldApp: App {
         WindowGroup {
             RootView()
                 .environment(environment)
+                .presentsComposeWindows(environment)
         }
         .defaultSize(width: 1180, height: 720)
         .commands { MailCommands(environment: environment) }
+
+        ComposeScene(environment: environment)
     }
 }

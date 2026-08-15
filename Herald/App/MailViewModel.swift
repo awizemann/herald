@@ -556,6 +556,52 @@ final class MailViewModel {
         )
     }
 
+    // MARK: - Compose
+
+    /// Every address this account owns, across all its mailboxes. Reply-all
+    /// subtracts these, so passing an empty list would CC the user themselves.
+    var ownAddresses: [String] {
+        EmailAddress.dedupe(mailboxes.flatMap { [$0.address] + $0.addresses.map(\.address) })
+    }
+
+    /// The address a message from `mailboxID` should be sent from: the mailbox's
+    /// primary send-enabled address, falling back to its main address.
+    func sendAddress(forMailbox mailboxID: String?) -> String {
+        guard let mailbox = mailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first else { return "" }
+        return mailbox.sendableAddresses.first?.address ?? mailbox.address
+    }
+
+    /// Resolves a compose request into everything the composer needs.
+    ///
+    /// The already-loaded ``detail`` is reused when the request is about the
+    /// selected message (the common case: ⌘R on what you are reading); anything
+    /// else costs one message fetch.
+    func composeContext(for request: ComposeRequest) async -> ComposeContext? {
+        var message: MessageDetail?
+        if request.kind != .new, let messageID = request.messageID {
+            if detail?.id == messageID {
+                message = detail
+            } else {
+                do {
+                    message = try await api.message(id: messageID)
+                } catch {
+                    logger.warning("Compose could not load its message: \(error.localizedDescription, privacy: .public)")
+                    actionError = error.localizedDescription
+                    return nil
+                }
+            }
+        }
+        let mailboxID = message?.summary.mailboxID ?? request.mailboxID
+        return ComposeContext(
+            id: request.id,
+            kind: request.kind,
+            mailboxID: mailboxID,
+            fromAddress: sendAddress(forMailbox: mailboxID),
+            ownAddresses: ownAddresses,
+            message: message
+        )
+    }
+
     // MARK: - Mark read after dwell
 
     /// A message is only marked read once it has held the selection for

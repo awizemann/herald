@@ -4,6 +4,22 @@ import UniformTypeIdentifiers
 
 private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", category: "Outbox")
 
+/// Everything a compose window needs from the outbox.
+///
+/// `nonisolated` because ``OutboxService`` is an actor (and so are the test
+/// fakes): an actor cannot conform to a global-actor-isolated protocol.
+public nonisolated protocol Outboxing: Sendable {
+    @discardableResult
+    func saveDraft(_ draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
+    func discard(_ draft: ComposeDraft) async throws(OutboxError)
+    func attach(_ fileURL: URL, to draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
+    func removeAttachment(_ attachmentID: String, from draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
+    @discardableResult
+    func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary
+}
+
+extension OutboxService: Outboxing {}
+
 /// Drafts, attachments and sending.
 ///
 /// An actor because everything it does is off-main work (file reads, uploads)

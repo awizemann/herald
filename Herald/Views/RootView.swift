@@ -109,7 +109,7 @@ struct MailWindow: View {
                 Image(systemName: "arrow.clockwise")
                     .iconButtonStyle("Refresh")
             }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .keyboardShortcut("k", modifiers: [.command, .shift])
 
             Button { Task { await model.performOnSelection(.archive) } } label: {
                 Image(systemName: "archivebox")

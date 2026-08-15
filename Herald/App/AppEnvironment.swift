@@ -32,6 +32,12 @@ final class AppEnvironment {
     /// a time, so adding one replaces what the window is showing.
     var presentsAddAccount = false
 
+    /// Compose contexts waiting for (or backing) an open compose window, keyed by
+    /// the request that produced them. The window scene can only carry a Codable
+    /// id, so the resolved payload lives here.
+    private var composeContexts: [ComposeRequest.ID: ComposeContext] = [:]
+    private var outbox: OutboxService?
+
     private let auth: AuthCoordinator
     private var container: ModelContainer?
     private var store: MailStore?
@@ -102,6 +108,7 @@ final class AppEnvironment {
             )
             self.account = account
             self.syncEngine = engine
+            self.outbox = OutboxService(api: api)
             self.mail = viewModel
             phase = .ready
             await viewModel.start()
@@ -173,9 +180,31 @@ final class AppEnvironment {
             }
         }
         syncEngine = nil
+        outbox = nil
+        composeContexts.removeAll()
         mail = nil
         account = nil
         phase = .signedOut
+    }
+
+    // MARK: - Compose
+
+    /// Resolves a compose request into a context and returns the id the compose
+    /// window should be opened with. `nil` means there is nothing to compose
+    /// (no account yet, or the message could not be loaded).
+    func prepareCompose(_ request: ComposeRequest) async -> ComposeRequest.ID? {
+        guard let mail, outbox != nil else { return nil }
+        guard let context = await mail.composeContext(for: request) else { return nil }
+        composeContexts[request.id] = context
+        return request.id
+    }
+
+    /// Builds the window's view-model. Consumes the context, so reopening a
+    /// closed window shows the "no longer available" state instead of a
+    /// resurrected copy of a sent message.
+    func makeComposeViewModel(id: ComposeRequest.ID) -> ComposeViewModel? {
+        guard let outbox, let context = composeContexts.removeValue(forKey: id) else { return nil }
+        return ComposeViewModel(context: context, outbox: outbox)
     }
 
     func setWindowActive(_ active: Bool) async {

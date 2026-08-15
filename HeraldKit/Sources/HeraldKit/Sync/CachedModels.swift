@@ -1,0 +1,190 @@
+import Foundation
+import SwiftData
+
+// The SwiftData store is a REBUILDABLE CACHE, not the system of record — the
+// HQBase server is. That is why there is no `VersionedSchema` and no
+// `SchemaMigrationPlan` anywhere in this file: on an incompatible or corrupt
+// store we delete and re-sync (see `MailStoreContainer`).
+//
+// Every model is `nonisolated`: the package builds with
+// `.defaultIsolation(MainActor.self)`, and a `@MainActor` class cannot be
+// touched from the `MailStore` @ModelActor.
+//
+// Filterable/sortable columns are stored as raw `String`s (`folderRaw`,
+// `mailboxKey`) because `#Predicate` and `#Index` want concrete, non-optional
+// stored properties; the typed DTO shapes are rebuilt in the mapping helpers.
+
+/// A mailbox the account can see. Scoped by `accountID` like every cached row.
+@Model
+public nonisolated final class CachedMailbox {
+    #Unique<CachedMailbox>([\.accountID, \.id])
+    #Index<CachedMailbox>([\.accountID, \.id])
+
+    /// Server mailbox id.
+    public var id: String = ""
+    public var accountID: String = ""
+    public var address: String = ""
+    public var addresses: [MailboxAddress] = []
+    public var displayName: String = ""
+    public var isActive: Bool = false
+    /// Raw ``MailboxAccessLevel``; `nil` when the server reported none.
+    public var accessLevelRaw: String?
+    public var createdAt: Date = Date.distantPast
+    public var updatedAt: Date = Date.distantPast
+
+    public init(
+        id: String,
+        accountID: String,
+        address: String,
+        addresses: [MailboxAddress],
+        displayName: String,
+        isActive: Bool,
+        accessLevelRaw: String?,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.accountID = accountID
+        self.address = address
+        self.addresses = addresses
+        self.displayName = displayName
+        self.isActive = isActive
+        self.accessLevelRaw = accessLevelRaw
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// A thread as it appears in one listing scope.
+///
+/// Keyed by (`accountID`, `threadID`, `listFolder`, `mailboxKey`) rather than by
+/// thread alone: the same thread legitimately appears under `inbox` and
+/// `archived`, and `deleteMissing` has to be able to drop it from one scope
+/// without touching the other.
+@Model
+public nonisolated final class CachedConversation {
+    #Unique<CachedConversation>([\.accountID, \.threadID, \.listFolder, \.mailboxKey])
+    #Index<CachedConversation>(
+        [\.accountID, \.mailboxKey, \.listFolder],
+        [\.accountID, \.threadID]
+    )
+
+    public var threadID: String = ""
+    public var accountID: String = ""
+    /// Raw ``ConversationFolder`` this row was listed under.
+    public var listFolder: String = ""
+    /// `mailboxID ?? ""` — the indexable, predicate-friendly form.
+    public var mailboxKey: String = ""
+
+    // Denormalized latest-message summary (the row the list renders).
+    public var latestMessageID: String = ""
+    public var latestThreadID: String = ""
+    public var latestMailboxKey: String = ""
+    public var directionRaw: String = ""
+    public var folderRaw: String = ""
+    public var fromAddress: String = ""
+    public var toAddresses: [String] = []
+    public var subject: String = ""
+    public var snippet: String = ""
+    public var receivedAt: Date?
+    public var sentAt: Date?
+    public var readAt: Date?
+    public var starredAt: Date?
+    public var hasAttachments: Bool = false
+    public var createdAt: Date = Date.distantPast
+
+    // Thread-level counters.
+    public var isStarred: Bool = false
+    public var messageCount: Int = 0
+    public var unreadCount: Int = 0
+    /// Sort key, precomputed so list queries never sort in memory.
+    public var sortDate: Date = Date.distantPast
+
+    public init(
+        threadID: String,
+        accountID: String,
+        listFolder: String,
+        mailboxKey: String
+    ) {
+        self.threadID = threadID
+        self.accountID = accountID
+        self.listFolder = listFolder
+        self.mailboxKey = mailboxKey
+    }
+}
+
+/// A message summary row. Deliberately LEAN — no bodies here; the list query
+/// touches this table constantly and a fat row makes every fetch pay for text
+/// nobody is reading. Bodies live in ``CachedMessageBody``.
+@Model
+public nonisolated final class CachedMessage {
+    #Unique<CachedMessage>([\.accountID, \.id])
+    #Index<CachedMessage>(
+        [\.accountID, \.mailboxKey, \.folderRaw],
+        [\.accountID, \.threadID]
+    )
+
+    public var id: String = ""
+    public var accountID: String = ""
+    public var threadID: String = ""
+    /// `mailboxID ?? ""`.
+    public var mailboxKey: String = ""
+    public var directionRaw: String = ""
+    /// Raw ``MailFolder``.
+    public var folderRaw: String = ""
+    public var fromAddress: String = ""
+    public var toAddresses: [String] = []
+    public var subject: String = ""
+    public var snippet: String = ""
+    public var receivedAt: Date?
+    public var sentAt: Date?
+    public var readAt: Date?
+    public var starredAt: Date?
+    public var hasAttachments: Bool = false
+    public var createdAt: Date = Date.distantPast
+    /// Sort key, precomputed (`receivedAt ?? sentAt ?? createdAt`).
+    public var sortDate: Date = Date.distantPast
+
+    public init(id: String, accountID: String) {
+        self.id = id
+        self.accountID = accountID
+    }
+}
+
+/// On-demand body sidecar, keyed by message id. Kept out of ``CachedMessage``
+/// so the hot list row stays small; dropping this table entirely would only
+/// cost a refetch.
+@Model
+public nonisolated final class CachedMessageBody {
+    #Unique<CachedMessageBody>([\.accountID, \.messageID])
+    #Index<CachedMessageBody>([\.accountID, \.messageID])
+
+    public var messageID: String = ""
+    public var accountID: String = ""
+    public var textBody: String = ""
+    public var html: String?
+    public var fetchedAt: Date = Date.distantPast
+
+    public init(messageID: String, accountID: String, textBody: String, html: String?, fetchedAt: Date) {
+        self.messageID = messageID
+        self.accountID = accountID
+        self.textBody = textBody
+        self.html = html
+        self.fetchedAt = fetchedAt
+    }
+}
+
+/// A cached body handed back as a value type (no `@Model` escapes the store).
+public nonisolated struct CachedBody: Sendable, Hashable {
+    public let messageID: String
+    public let textBody: String
+    public let html: String?
+    public let fetchedAt: Date
+
+    public init(messageID: String, textBody: String, html: String?, fetchedAt: Date) {
+        self.messageID = messageID
+        self.textBody = textBody
+        self.html = html
+        self.fetchedAt = fetchedAt
+    }
+}

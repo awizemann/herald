@@ -65,6 +65,9 @@ public nonisolated struct DynamicClientRegistration: Sendable {
         let tokenEndpointAuthMethod: String
         let scope: String
         let resources: [String]
+        /// RFC 7591: without `native` the server treats us as a web client and rejects the
+        /// custom-scheme redirect ("web clients require https redirect URIs on non-loopback hosts").
+        let applicationType: String = "native"
 
         enum CodingKeys: String, CodingKey {
             case clientName = "client_name"
@@ -74,6 +77,7 @@ public nonisolated struct DynamicClientRegistration: Sendable {
             case tokenEndpointAuthMethod = "token_endpoint_auth_method"
             case scope
             case resources
+            case applicationType = "application_type"
         }
     }
 

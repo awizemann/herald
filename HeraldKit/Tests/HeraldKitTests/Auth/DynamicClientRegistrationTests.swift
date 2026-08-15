@@ -27,6 +27,8 @@ import Testing
         #expect(body["grant_types"] as? [String] == ["authorization_code", "refresh_token"])
         #expect(body["response_types"] as? [String] == ["code"])
         #expect(body["token_endpoint_auth_method"] as? String == "none")
+        // Real-server finding 2026-08-15: HQBase rejects herald:// redirects for non-native clients.
+        #expect(body["application_type"] as? String == "native")
         #expect(body["scope"] as? String == "mail:read mail:write mail:send offline_access")
         #expect(body["resources"] as? [String] == [AuthFixtures.resource])
         #expect(body["client_secret"] == nil)

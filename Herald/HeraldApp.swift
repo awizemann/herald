@@ -1,18 +1,17 @@
 import SwiftUI
-import HeraldKit
 
 @main
 struct HeraldApp: App {
+    /// Built here, but it does no work until `RootView`'s `.task` starts it —
+    /// `App.init` must never open a store or touch the Keychain.
+    @State private var environment = AppEnvironment()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(environment)
         }
-    }
-}
-
-struct ContentView: View {
-    var body: some View {
-        Text("Herald \(HeraldKit.version)")
-            .frame(minWidth: 400, minHeight: 300)
+        .defaultSize(width: 1180, height: 720)
+        .commands { MailCommands(environment: environment) }
     }
 }

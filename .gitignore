@@ -8,3 +8,4 @@ sessions/.index.json
 HeraldKit/.build/
 *.xcodeproj
 DerivedData/
+HeraldKit/.build-*/

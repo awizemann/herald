@@ -12,7 +12,14 @@ struct ComposeScene: Scene {
                 .environment(environment)
         }
         .defaultSize(width: 680, height: 520)
-        .commandsRemoved()
+        // NOT `.commandsRemoved()`: that also removes the scene from the Window
+        // menu, so an open compose window could not be brought back with the
+        // keyboard once it went behind the mail window.
+        //
+        // Drafts live on the server, so a relaunch re-fetches them; restoring the
+        // scene would instead reopen a window whose request id resolves to
+        // nothing and show "this draft is no longer available".
+        .restorationBehavior(.disabled)
     }
 }
 
@@ -37,7 +44,19 @@ private struct ComposeWindowRoot: View {
         .frame(minWidth: 600, minHeight: 440)
         .task(id: requestID) {
             guard let requestID else { return }
+            // Idempotent: this task re-runs whenever SwiftUI rebuilds the scene
+            // root, and it must find the SAME composer, with whatever the user
+            // has typed into it, rather than build a second one.
             model = environment.makeComposeViewModel(id: requestID)
+        }
+        .onDisappear {
+            guard let requestID, let model else { return }
+            Task {
+                // Flush before releasing: the window may be going away inside the
+                // autosave debounce.
+                await model.flushAndStop()
+                environment.releaseComposeViewModel(id: requestID)
+            }
         }
     }
 }
@@ -65,10 +84,14 @@ struct ComposeView: View {
         }
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
+        .background(WindowCloseInterceptor(shouldClose: closeRequested))
         .onChange(of: model.isClosed) { _, closed in
             if closed { dismiss() }
         }
-        .onDisappear { model.stop() }
+        .onChange(of: model.announcement) { _, message in
+            guard let message else { return }
+            AccessibilityNotification.Announcement(message).post()
+        }
         .confirmationDialog(
             "Save this message as a draft?",
             isPresented: $model.confirmsClose,
@@ -80,6 +103,14 @@ struct ComposeView: View {
         } message: {
             Text("Your message has changes that have not been saved.")
         }
+    }
+
+    /// The single close rule, shared by ⌘W and the title-bar button. Returns
+    /// whether the window may go: unsaved work turns into the sheet instead.
+    private func closeRequested() -> Bool {
+        let hasUnsaved = model.hasUnsavedChanges
+        model.requestClose()
+        return !hasUnsaved
     }
 
     // MARK: Pieces
@@ -137,16 +168,21 @@ struct ComposeView: View {
         text: Binding<String>,
         field: ComposeViewModel.Field
     ) -> some View {
-        LabeledField(label: label) {
+        let hint = model.hint(for: field)
+        return LabeledField(label: label) {
             VStack(alignment: .leading, spacing: 2) {
                 TextField(label, text: text)
                     .textFieldStyle(.plain)
                     .accessibilityLabel(label)
-                if let hint = model.hint(for: field) {
+                    // The hint belongs to the FIELD. As a sibling Text it was a
+                    // separate element the user only met after leaving the field
+                    // they had to go back and fix.
+                    .accessibilityHint(hint ?? "")
+                if let hint {
                     Text(hint)
                         .font(.caption)
                         .foregroundStyle(MailTheme.failure)
-                        .accessibilityLabel("\(label) field: \(hint)")
+                        .accessibilityHidden(true)
                 }
             }
         }
@@ -156,18 +192,13 @@ struct ComposeView: View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(model.attachments) { attachment in
-                    HStack(spacing: 4) {
-                        Image(systemName: "doc")
-                        Text(attachment.filename).lineLimit(1)
+                    AttachmentChip(filename: attachment.filename) {
                         Button { Task { await model.removeAttachment(attachment) } } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .iconButtonStyle("Remove \(attachment.filename)")
                         }
                         .buttonStyle(.borderless)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.quaternary, in: Capsule())
                 }
             }
             .padding(.horizontal, 12)
@@ -191,7 +222,7 @@ struct ComposeView: View {
     /// ⌘W has to route through the view-model so unsaved work gets a sheet
     /// instead of vanishing; Escape is deliberately not bound to anything.
     private var closeShortcut: some View {
-        Button("Close") { model.requestClose() }
+        Button("Close") { _ = closeRequested() }
             .keyboardShortcut("w", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)

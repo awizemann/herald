@@ -42,4 +42,38 @@ import Testing
             "The previous SyncEngine kept polling the previous server"
         )
     }
+
+    /// The compose window's `.task(id:)` re-runs whenever SwiftUI rebuilds the
+    /// scene root, and the old code CONSUMED the resolved context on the way
+    /// through: the second run built nothing, so a half-written message turned
+    /// into "this draft is no longer available". Fails if the same request id
+    /// stops resolving to the same composer, or if a closed composer is
+    /// resurrected instead of released.
+    @Test func theSameComposeRequestAlwaysResolvesToTheSameViewModel() async throws {
+        let environment = AppEnvironment()
+        let store = try MailStore.inMemory()
+        await environment.install(
+            account: Self.account("a.example.com"),
+            api: FakeMailAPIClient(),
+            store: store
+        )
+
+        let id = try #require(await environment.prepareCompose(ComposeRequest(kind: .new)))
+        let first = try #require(environment.makeComposeViewModel(id: id))
+        first.bodyText = "Half-written"
+        let second = try #require(environment.makeComposeViewModel(id: id))
+
+        #expect(first === second, "Rebuilding the compose window discarded the draft")
+        #expect(second.bodyText == "Half-written")
+
+        // Releasing an OPEN composer must not drop it either.
+        environment.releaseComposeViewModel(id: id)
+        #expect(environment.makeComposeViewModel(id: id) === first)
+
+        // Once it really is closed the window shows "no longer available" rather
+        // than a resurrected copy of a sent message.
+        first.close()
+        environment.releaseComposeViewModel(id: id)
+        #expect(environment.makeComposeViewModel(id: id) == nil)
+    }
 }

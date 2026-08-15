@@ -43,15 +43,22 @@ struct SidebarView: View {
                 SyncStatusLabel(status: model.status)
             }
             Spacer()
+            // The help tag and the label belong on the MENU, not on its label
+            // image: a `Menu`'s label view is not the accessibility element, so
+            // labelling the image left VoiceOver announcing an unnamed pop-up
+            // button and Voice Control with nothing to say.
             Menu {
                 Button("Add Account…") { environment.presentsAddAccount = true }
                 Button("Sign Out", role: .destructive) { Task { await environment.signOut() } }
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    .iconButtonStyle("Account options")
+                    .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                    .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .help("Account options")
+            .accessibilityLabel("Account options")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -68,10 +75,12 @@ struct SyncStatusLabel: View {
             EmptyView()
         case .syncing:
             Text("Syncing…").font(.caption).foregroundStyle(MailTheme.syncing)
+        // Bold and a system red: caption-sized `.red` on the sidebar material
+        // does not clear 4.5:1, and this is the only signal that sync is broken.
         case .failed:
-            Text("Sync problem").font(.caption).foregroundStyle(MailTheme.failure)
+            Text("Sync problem").font(.caption.bold()).foregroundStyle(MailTheme.failure)
         case .needsReauth:
-            Text("Sign in again").font(.caption).foregroundStyle(MailTheme.failure)
+            Text("Sign in again").font(.caption.bold()).foregroundStyle(MailTheme.failure)
         }
     }
 }

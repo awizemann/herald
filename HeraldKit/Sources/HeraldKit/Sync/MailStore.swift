@@ -105,6 +105,47 @@ public actor MailStore {
         }
     }
 
+    /// How many threads in a listing scope are unread, counted in the store.
+    ///
+    /// The sidebar badge used to fetch and map up to 100 whole rows per mailbox on
+    /// every reload just to count them; `fetchCount` never materialises a row.
+    ///
+    /// The unread test is `unreadCount > 0`, not `readAt == nil`: `readAt` is an
+    /// optional `Date` and optional comparison in `#Predicate` is unreliable here
+    /// (the same reason `mailboxKey` exists), while `unreadCount` is the
+    /// non-optional thread-level mirror the list already renders from.
+    /// The folder test mirrors the presentation rule — a row a local archive moved
+    /// out of the inbox must stop being counted there immediately.
+    public func unreadCount(
+        accountID: String,
+        mailboxID: String?,
+        folder: ConversationFolder = .inbox
+    ) throws -> Int {
+        let listFolder = folder.rawValue
+        let archived = MailFolder.archived.rawValue
+        let trash = MailFolder.trash.rawValue
+        let anyMailbox = mailboxID == nil
+        let mailboxKey = mailboxID ?? ""
+        let wantsExactFolder = folder == .archived || folder == .trash
+        let exactFolder = folder == .archived ? archived : trash
+        let descriptor = FetchDescriptor<CachedConversation>(
+            predicate: #Predicate {
+                $0.accountID == accountID
+                    && $0.listFolder == listFolder
+                    && $0.unreadCount > 0
+                    && (anyMailbox || $0.mailboxKey == mailboxKey)
+                    && ((wantsExactFolder && $0.folderRaw == exactFolder)
+                        || (!wantsExactFolder && $0.folderRaw != archived && $0.folderRaw != trash))
+            }
+        )
+        do {
+            return try modelContext.fetchCount(descriptor)
+        } catch {
+            logger.error("Unread count failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
     /// Every cached message in a thread, oldest first (reading order).
     public func messages(accountID: String, threadID: String) throws -> [MessageSummary] {
         let descriptor = FetchDescriptor<CachedMessage>(

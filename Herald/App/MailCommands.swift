@@ -6,18 +6,72 @@ struct MailModelFocusKey: FocusedValueKey {
     typealias Value = MailViewModel
 }
 
+/// The selection, published as PRIMITIVE focused values rather than read off the
+/// focused view-model.
+///
+/// `@FocusedValue` re-evaluates the commands when the *value* changes, and for a
+/// reference type that means when the reference changes. The view-model is a
+/// single long-lived object, so selecting a row mutated it without changing the
+/// focused value at all: the Message menu could keep the enablement and the
+/// titles ("Mark as Read", "Star") it had when the window took focus. `String?`
+/// and `Bool?` change whenever the selection does, so the menu tracks it.
+struct SelectedThreadIDKey: FocusedValueKey {
+    typealias Value = String
+}
+
+struct SelectedMessageIDKey: FocusedValueKey {
+    typealias Value = String
+}
+
+struct SelectedIsUnreadKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+struct SelectedIsStarredKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
 extension FocusedValues {
     var mailModel: MailViewModel? {
         get { self[MailModelFocusKey.self] }
         set { self[MailModelFocusKey.self] = newValue }
     }
+
+    var selectedThreadID: String? {
+        get { self[SelectedThreadIDKey.self] }
+        set { self[SelectedThreadIDKey.self] = newValue }
+    }
+
+    var selectedMessageID: String? {
+        get { self[SelectedMessageIDKey.self] }
+        set { self[SelectedMessageIDKey.self] = newValue }
+    }
+
+    var selectedIsUnread: Bool? {
+        get { self[SelectedIsUnreadKey.self] }
+        set { self[SelectedIsUnreadKey.self] = newValue }
+    }
+
+    var selectedIsStarred: Bool? {
+        get { self[SelectedIsStarredKey.self] }
+        set { self[SelectedIsStarredKey.self] = newValue }
+    }
 }
 
 /// Every mail action has a menu item and a shortcut — a macOS app must be usable
 /// without the mouse (and Full Keyboard Access relies on the menus).
+///
+/// The menu owns ⌘⇧K (Get New Mail) and ⌘⇧A (Archive); the single-key `e` and
+/// `⌫` are deliberately NOT here — a bare key in a menu or on a toolbar button is
+/// window-global and fires while the user is typing in the search field. Those
+/// live on the conversation list as focus-scoped `.onKeyPress` handlers.
 struct MailCommands: Commands {
     let environment: AppEnvironment
     @FocusedValue(\.mailModel) private var model: MailViewModel?
+    @FocusedValue(\.selectedThreadID) private var selectedThreadID: String?
+    @FocusedValue(\.selectedMessageID) private var selectedMessageID: String?
+    @FocusedValue(\.selectedIsUnread) private var selectedIsUnread: Bool?
+    @FocusedValue(\.selectedIsStarred) private var selectedIsStarred: Bool?
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
@@ -33,21 +87,23 @@ struct MailCommands: Commands {
         CommandMenu("Message") {
             Button("Reply") { model?.requestCompose(.reply) }
                 .keyboardShortcut("r", modifiers: .command)
-                .disabled(model?.selectedMessageID == nil)
+                .disabled(!hasMessage)
             Button("Reply All") { model?.requestCompose(.replyAll) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(model?.selectedMessageID == nil)
+                .disabled(!hasMessage)
             Button("Forward") { model?.requestCompose(.forward) }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(model?.selectedMessageID == nil)
+                .disabled(!hasMessage)
 
             Divider()
 
             Button("Archive") { perform(.archive) }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
                 .disabled(!hasSelection)
+            // ⌘⌫, as in Mail. A bare ⌫ would trash the selected thread while the
+            // user was backspacing in the search field.
             Button("Move to Trash") { perform(.trash) }
-                .keyboardShortcut(.delete, modifiers: [])
+                .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!hasSelection)
 
             Divider()
@@ -67,15 +123,15 @@ struct MailCommands: Commands {
         }
     }
 
-    private var selectedRow: ConversationSummary? { model?.selectedConversation }
-    private var hasSelection: Bool { model?.selectedThreadID != nil }
+    private var hasSelection: Bool { selectedThreadID != nil }
+    private var hasMessage: Bool { selectedMessageID != nil }
 
     private var markReadTitle: String {
-        (selectedRow?.isUnread ?? true) ? "Mark as Read" : "Mark as Unread"
+        (selectedIsUnread ?? true) ? "Mark as Read" : "Mark as Unread"
     }
 
     private var starTitle: String {
-        (selectedRow?.isStarred ?? false) ? "Unstar" : "Star"
+        (selectedIsStarred ?? false) ? "Unstar" : "Star"
     }
 
     private func perform(_ action: ConversationAction) {

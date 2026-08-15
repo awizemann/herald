@@ -119,4 +119,53 @@ import WebKit
         #expect(!MailViewModel.isRenderableInlineMedia(""))
         #expect(!MailViewModel.isRenderableInlineMedia("image/"))
     }
+
+    /// The reading pane is a web area, and VoiceOver names it from the document's
+    /// own `<title>`; without one it announces "HTML content" and the user cannot
+    /// tell which message they are in. Fails if the title or `lang` is dropped —
+    /// and, the title being sender-controlled text, if it is not escaped.
+    @Test func theWrappingDocumentIsNamedAndLanguageTagged() {
+        let titled = MailViewModel.document(wrapping: "<p>hi</p>", title: "Invoice question")
+        #expect(titled.contains("<title>Invoice question</title>"))
+        #expect(titled.contains("<html lang="))
+
+        // A subject is untrusted text: it must not be able to close the tag.
+        let hostile = MailViewModel.document(wrapping: "<p>hi</p>", title: "</title><script>x</script>")
+        #expect(!hostile.contains("<script>"))
+        #expect(hostile.contains("&lt;/title&gt;"))
+
+        // An empty subject still names the area rather than leaving it untitled.
+        #expect(MailViewModel.document(wrapping: "", title: "  ").contains("<title>Message</title>"))
+        #expect(MailViewModel.document(wrappingPlainText: "hi", title: "Notes").contains("<title>Notes</title>"))
+    }
+
+    /// `updateNSView` runs on every pass through the reading pane. Comparing the
+    /// whole rendered body means comparing a string that can be megabytes long;
+    /// the key exists so the comparison is cheap AND still catches every change
+    /// that needs a reload. Fails if a changed body or a changed blocking mode is
+    /// treated as the same render, or if a banner-only change forces a reload.
+    @Test func theRenderKeyTracksExactlyWhatNeedsAReload() {
+        typealias Key = MessageWebView.Coordinator.RenderKey
+        let base = RenderedBody(
+            messageID: "m1", html: "<p>one</p>", blocksRemote: true, offersRemoteConsent: false
+        )
+        #expect(Key(base) == Key(base))
+
+        // Only the consent banner differs: reloading here would flash the pane.
+        var banner = base
+        banner.offersRemoteConsent = true
+        #expect(Key(banner) == Key(base))
+
+        var edited = base
+        edited.html = "<p>two</p>"
+        #expect(Key(edited) != Key(base))
+
+        var allowed = base
+        allowed.blocksRemote = false
+        #expect(Key(allowed) != Key(base))
+
+        var other = base
+        other.messageID = "m2"
+        #expect(Key(other) != Key(base))
+    }
 }

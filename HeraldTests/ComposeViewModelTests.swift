@@ -12,14 +12,22 @@ actor FakeOutbox: Outboxing {
     private(set) var sendCount = 0
     private(set) var discardCount = 0
     private(set) var lastSent: ComposeDraft?
+    private(set) var lastSaved: ComposeDraft?
     private var sendError: OutboxError?
+    /// Stands in for a server that normalises what it is given.
+    private var normalize: (@Sendable (ComposeDraft) -> ComposeDraft)?
 
     func setSendError(_ error: OutboxError?) { sendError = error }
+
+    func setNormalizer(_ normalize: (@Sendable (ComposeDraft) -> ComposeDraft)?) {
+        self.normalize = normalize
+    }
 
     @discardableResult
     func saveDraft(_ draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft {
         saveCount += 1
-        return draft
+        lastSaved = draft
+        return normalize?(draft) ?? draft
     }
 
     func discard(_ draft: ComposeDraft) async throws(OutboxError) { discardCount += 1 }
@@ -105,6 +113,78 @@ actor FakeOutbox: Outboxing {
         await outbox.setSendError(nil)
         #expect(await model.send() == true)
         #expect(model.isClosed)
+    }
+
+    /// A server that normalises the body (or a save that lands after the user has
+    /// typed on) used to have its whole response assigned over the local draft:
+    /// the text on screen changed under the user, and the draft came back dirty,
+    /// so the next autosave saved and normalised again — forever. Fails if the
+    /// response's body reaches the composer, or if the draft stays dirty.
+    @Test func aNormalizingSaveNeitherRewritesTheTextNorLoopsTheAutosave() async {
+        let outbox = FakeOutbox()
+        await outbox.setNormalizer { draft in
+            var normalized = draft
+            normalized.body = "SERVER REWROTE THIS"
+            normalized.subject = draft.subject.uppercased()
+            return normalized
+        }
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .zero
+        )
+
+        model.toText = "friend@example.com"
+        model.subject = "Lunch"
+        model.bodyText = "What the user typed"
+        await model.waitForAutosave()
+
+        #expect(model.bodyText == "What the user typed")
+        #expect(model.draft.body == "What the user typed")
+        #expect(model.subject == "Lunch")
+        #expect(model.draft.isDirty == false, "A normalizing response left the draft dirty: autosave loop")
+        #expect(model.hasUnsavedChanges == false)
+
+        // And the loop's second lap never happens: nothing is dirty to save.
+        let saves = await outbox.saveCount
+        await model.saveNow()
+        #expect(await outbox.saveCount == saves)
+    }
+
+    /// Closing a window inside the autosave debounce — which is most closes, the
+    /// last thing a user does being to type — used to cancel the pending save and
+    /// lose everything since the previous one. Fails if `flushAndStop` does not
+    /// save, and would pass trivially if `stop()` did (it does not: the control
+    /// below proves the debounce is still pending).
+    @Test func closingDuringTheDebounceFlushesThePendingSave() async {
+        let stopped = FakeOutbox()
+        let control = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: stopped,
+            autosaveDelay: .seconds(3600)
+        )
+        control.subject = "Half-written"
+        control.stop()
+        #expect(await stopped.saveCount == 0, "stop() saved; this test would prove nothing")
+
+        let outbox = FakeOutbox()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.subject = "Half-written"
+        model.bodyText = "and not yet saved"
+
+        await model.flushAndStop()
+
+        #expect(await outbox.saveCount == 1)
+        #expect(await outbox.lastSaved?.body == "and not yet saved")
+        #expect(model.draft.isDirty == false)
+
+        // Idempotent: a second close does not save an unchanged draft again.
+        await model.flushAndStop()
+        #expect(await outbox.saveCount == 1)
     }
 
     /// Fails if the view-model hands the composer empty own-addresses: the user's

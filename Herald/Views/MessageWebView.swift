@@ -65,6 +65,10 @@ struct MessageWebView: NSViewRepresentable {
         // Link preview fetches the target URL to build the popover — a remote load
         // the rule list should not have to be the only thing standing in front of.
         webView.allowsLinkPreview = false
+        // Without this the reading pane is an unnamed AXWebArea that VoiceOver
+        // announces as "HTML content"; the document's own <title> (the subject)
+        // then names what is inside it.
+        webView.setAccessibilityLabel("Message body")
         webView.navigationDelegate = context.coordinator
         context.coordinator.load(body, into: webView)
         return webView
@@ -76,7 +80,31 @@ struct MessageWebView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
-        private var loaded: RenderedBody?
+        /// What identifies one render.
+        ///
+        /// Comparing this instead of the whole ``RenderedBody`` keeps
+        /// `updateNSView` — which SwiftUI calls on every pass through the reading
+        /// pane, i.e. on every unrelated state change — off a full string
+        /// comparison of a body that can be megabytes long.
+        struct RenderKey: Hashable {
+            let messageID: String
+            let blocksRemote: Bool
+            let contentHash: Int
+
+            init(_ body: RenderedBody) {
+                messageID = body.messageID
+                blocksRemote = body.blocksRemote
+                contentHash = body.html.hashValue
+            }
+        }
+
+        /// The render this coordinator has committed to, claimed synchronously so
+        /// repeated `updateNSView` passes do not each cancel and restart the load.
+        private var requested: RenderKey?
+        /// The render actually handed to WebKit. Left `nil` by any path that does
+        /// NOT reach `loadHTMLString`, so a body whose rule list was unavailable
+        /// is retried instead of being remembered as displayed.
+        private(set) var loaded: RenderKey?
         private var loadTask: Task<Void, Never>?
         /// Set immediately before `loadHTMLString` and consumed by the first
         /// main-frame decision, so exactly one navigation per render is ours.
@@ -88,8 +116,9 @@ struct MessageWebView: NSViewRepresentable {
         /// Reloading identical content would flash the pane on every unrelated
         /// state change, so the last render is compared first.
         func load(_ body: RenderedBody, into webView: WKWebView) {
-            guard loaded != body else { return }
-            loaded = body
+            let key = RenderKey(body)
+            guard key != requested else { return }
+            requested = key
             loadTask?.cancel()
             loadTask = Task { [weak webView] in
                 let ruleList = body.blocksRemote ? await RemoteContentBlocker.ruleList() : nil
@@ -98,8 +127,12 @@ struct MessageWebView: NSViewRepresentable {
                 if body.blocksRemote {
                     guard let ruleList else {
                         // Without the blocker we refuse to render remote-capable
-                        // HTML rather than rendering it unprotected.
+                        // HTML rather than rendering it unprotected. Nothing is
+                        // claimed as rendered, so the next pass tries again — the
+                        // blocker being unavailable is usually transient.
                         logger.error("Refusing to render: remote-content blocker unavailable")
+                        self.requested = nil
+                        self.loaded = nil
                         self.expectsOurLoad = true
                         webView.loadHTMLString(Self.blockerFailureDocument, baseURL: nil)
                         return
@@ -108,6 +141,7 @@ struct MessageWebView: NSViewRepresentable {
                 }
                 self.expectsOurLoad = true
                 webView.loadHTMLString(body.html, baseURL: nil)
+                self.loaded = key
             }
         }
 
@@ -139,8 +173,10 @@ struct MessageWebView: NSViewRepresentable {
             }
         }
 
-        private static let blockerFailureDocument = """
-            <!doctype html><html><body style="font: -apple-system-body; margin:16px">
+        static let blockerFailureDocument = """
+            <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)">
+            <head><meta charset="utf-8"><title>Message not displayed</title></head>
+            <body style="font: -apple-system-body; margin:16px">
             <p>Herald could not start its content blocker, so this message was not displayed.</p>
             </body></html>
             """

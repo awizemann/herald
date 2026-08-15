@@ -57,6 +57,30 @@ private struct Harness {
         )
     }
 
+    /// Three inbox threads in mailbox A, newest first as the list orders them:
+    /// t3, t2, t1. Enough rows that "the next row" and "the previous row" are
+    /// different answers.
+    func seedThreeInboxThreads() async throws {
+        try await store.upsertMailboxes([Self.mailbox("mbA")], accountID: "acct")
+        let messages = (1...3).map { index in
+            MailFixtures.message(
+                id: "m\(index)",
+                threadID: "t\(index)",
+                mailboxID: "mbA",
+                subject: "Thread \(index)",
+                date: MailFixtures.epoch.addingTimeInterval(TimeInterval(index) * 60)
+            )
+        }
+        try await store.upsertMessages(messages, accountID: "acct")
+        try await store.upsertConversations(
+            messages.map { MailFixtures.conversation($0) },
+            accountID: "acct",
+            mailboxID: "mbA",
+            folder: .inbox
+        )
+        for message in messages { await api.setDetail(MailFixtures.detail(message, htmlAvailable: false)) }
+    }
+
     static func mailbox(_ id: String) -> Mailbox {
         Mailbox(
             id: id,
@@ -97,7 +121,7 @@ func wait(
         harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         let baseline = harness.model.conversationReloadCount
-        #expect(harness.model.conversations.map(\.id) == ["t1"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
         // Change the cached row behind the view-model's back; only a real reload
         // can make the new subject visible.
@@ -110,7 +134,7 @@ func wait(
         harness.events.yield(.changed(ChangeSet(updated: ["m2"])))
         harness.events.yield(.changed(ChangeSet(updated: ["m1"])))
         try await wait("the in-scope change to land") {
-            harness.model.conversations.first?.latest.subject == "Changed"
+            harness.model.presentedConversations.first?.latest.subject == "Changed"
         }
         // Events are consumed in order, so the mailbox-B event was already
         // processed: exactly one reload means it caused none.
@@ -150,10 +174,10 @@ func wait(
         try await harness.seedTwoMailboxes()
         harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
-        #expect(harness.model.conversations.map(\.id) == ["t1"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
         await harness.model.perform(.archive, onThread: "t1")
-        #expect(harness.model.conversations.isEmpty)
+        #expect(harness.model.presentedConversations.isEmpty)
         #expect(await harness.api.actionCount("archive", on: "t1") == 1)
 
         // Undo the local move so the second attempt starts from the inbox again.
@@ -163,11 +187,11 @@ func wait(
             [MailFixtures.conversation(restored)], accountID: "acct", mailboxID: "mbA", folder: .inbox
         )
         await harness.model.reloadConversations()
-        #expect(harness.model.conversations.map(\.id) == ["t1"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
         await harness.api.setActionError(.server(code: "boom", message: "nope"))
         await harness.model.perform(.archive, onThread: "t1")
-        #expect(harness.model.conversations.map(\.id) == ["t1"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
         #expect(harness.model.actionError != nil)
     }
 }
@@ -191,7 +215,7 @@ func wait(
         await (try #require(harness.model.reloadTask)).value
         // Selection survives, and the list is the one the selection asks for.
         #expect(harness.model.selection.folder == .archived)
-        #expect(harness.model.conversations.map(\.id) == ["t3"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
     }
 
     /// The server 400s a conversation action with no folder, and answers the wrong
@@ -203,7 +227,7 @@ func wait(
         try await harness.seedArchivedThread()
         harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
         await harness.model.start()
-        #expect(harness.model.conversations.map(\.id) == ["t3"])
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
 
         await harness.model.perform(.read, onThread: "t3")
         #expect(await harness.api.actionFolders("read", on: "t3") == [.archived])
@@ -246,6 +270,119 @@ func wait(
 }
 
 @MainActor
+@Suite struct MailViewModelSelectionAdvanceTests {
+    /// Archiving the row you are reading used to leave `selectedThreadID` pointing
+    /// at a row the list no longer shows: the reading pane kept the archived
+    /// message and the next ⌘⇧A acted on it again. Fails if the selection does not
+    /// move to the row that took its place.
+    @Test func archivingTheSelectedRowSelectsTheNextOne() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedThreeInboxThreads()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3", "t2", "t1"])
+
+        harness.model.selectedThreadID = "t2" // The middle row.
+        await harness.model.perform(.archive, onThread: "t2")
+
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3", "t1"])
+        #expect(harness.model.selectedThreadID == "t1", "The selection did not follow the archive")
+    }
+
+    /// The end-of-list case: there is no following row, so the selection has to
+    /// fall back to the last one rather than to nothing.
+    @Test func archivingTheLastRowSelectsThePreviousOne() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedThreeInboxThreads()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        harness.model.selectedThreadID = "t1" // Oldest, so last in the list.
+        await harness.model.perform(.trash, onThread: "t1")
+
+        #expect(harness.model.selectedThreadID == "t2")
+    }
+
+    /// Fails if the selection moves on ANY action rather than only on one that
+    /// removes the row: marking a thread read must not jump the user elsewhere.
+    @Test func markingReadLeavesTheSelectionAlone() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedThreeInboxThreads()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        harness.model.selectedThreadID = "t2"
+        await harness.model.perform(.read, onThread: "t2")
+
+        #expect(harness.model.selectedThreadID == "t2")
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelFilterTests {
+    /// The presented list used to be a computed property: it re-filtered — and
+    /// re-lowercased every subject, sender and snippet — on every read, and the
+    /// list's body reads it on every unrelated `@Observable` change. Fails if an
+    /// error, a selection or a no-op search assignment re-filters, or if a real
+    /// search change does not.
+    @Test func onlyTheFiltersOwnInputsRecomputeTheList() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        let baseline = harness.model.filterCount
+
+        harness.model.actionError = "something went wrong"
+        harness.model.selectedThreadID = "t1"
+        harness.model.composeRequest = nil
+        harness.model.searchQuery = "" // Assigned, but unchanged.
+        #expect(harness.model.filterCount == baseline, "An unrelated change re-filtered the whole list")
+
+        harness.model.searchQuery = "original"
+        #expect(harness.model.filterCount == baseline + 1)
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
+
+        harness.model.searchQuery = "zzz-no-match"
+        #expect(harness.model.filterCount == baseline + 2)
+        #expect(harness.model.presentedConversations.isEmpty)
+    }
+}
+
+@MainActor
+@Suite struct ConversationRowAccessibilityTests {
+    /// VoiceOver's only route to unread/starred/attachment state is this string —
+    /// on screen they are a dot, a bold weight and a paperclip, none of which says
+    /// anything out loud. Fails if any of them is dropped from the summary.
+    @Test func theRowSummaryNamesEveryStateTheIconsCarry() {
+        let plain = ConversationSummary(
+            latest: MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup"),
+            isStarred: false,
+            messageCount: 1,
+            unreadCount: 0
+        )
+        let quiet = ConversationRow.accessibilitySummary(for: plain)
+        #expect(quiet.contains("Standup"))
+        #expect(quiet.contains("unread") == false)
+        #expect(quiet.contains("starred") == false)
+        #expect(quiet.contains("has attachments") == false)
+
+        let flagged = ConversationSummary(
+            latest: MailFixtures.message(
+                id: "m1", threadID: "t1", subject: "Standup", hasAttachments: true
+            ),
+            isStarred: true,
+            messageCount: 3,
+            unreadCount: 2
+        )
+        let loud = ConversationRow.accessibilitySummary(for: flagged)
+        #expect(loud.contains("unread"))
+        #expect(loud.contains("starred"))
+        #expect(loud.contains("has attachments"))
+        #expect(loud.contains("3 messages"))
+    }
+}
+
+@MainActor
 @Suite struct MailViewModelSearchTests {
     /// Fails if search filters the source of truth instead of the presented list:
     /// selection must survive a query that excludes the selected row.
@@ -257,7 +394,7 @@ func wait(
         harness.model.selectedThreadID = "t1"
 
         harness.model.searchQuery = "zzz-no-match"
-        #expect(harness.model.conversations.isEmpty)
+        #expect(harness.model.presentedConversations.isEmpty)
         #expect(harness.model.selectedThreadID == "t1")
         #expect(harness.model.selectedConversation?.id == "t1")
     }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import HeraldKit
 import OSLog
@@ -36,7 +37,17 @@ final class AppEnvironment {
     /// the request that produced them. The window scene can only carry a Codable
     /// id, so the resolved payload lives here.
     private var composeContexts: [ComposeRequest.ID: ComposeContext] = [:]
+    /// Live compose view-models, keyed the same way.
+    ///
+    /// The window's `.task(id:)` re-runs whenever SwiftUI rebuilds the scene's
+    /// root, and the old code CONSUMED the context on the way through — so the
+    /// second run built nothing and the half-written message became "this draft
+    /// is no longer available". The instance is owned here and handed back
+    /// idempotently instead, and dropped only once the composer says it closed.
+    private var composeViewModels: [ComposeRequest.ID: ComposeViewModel] = [:]
     private var outbox: OutboxService?
+    /// Watches app-level activation to drive the sync cadence.
+    private var activityTask: Task<Void, Never>?
 
     private let auth: AuthCoordinator
     private var container: ModelContainer?
@@ -53,6 +64,7 @@ final class AppEnvironment {
     // MARK: - Launch
 
     func start() async {
+        observeActivation()
         phase = .openingCache
         let url = MailStoreContainer.defaultStoreURL
         do {
@@ -129,6 +141,9 @@ final class AppEnvironment {
         self.mail = viewModel
         phase = .ready
         await viewModel.start()
+        // Seed the cadence from the app's CURRENT activation; the notifications
+        // only report changes, and a launch into the foreground fires neither.
+        await viewModel.setActive(NSApplication.shared.isActive)
         await engine.start(accountID: account.id)
     }
 
@@ -139,6 +154,8 @@ final class AppEnvironment {
         syncEngine = nil
         outbox = nil
         composeContexts.removeAll()
+        composeViewModels.values.forEach { $0.stop() }
+        composeViewModels.removeAll()
         mail = nil
     }
 
@@ -217,15 +234,58 @@ final class AppEnvironment {
         return request.id
     }
 
-    /// Builds the window's view-model. Consumes the context, so reopening a
-    /// closed window shows the "no longer available" state instead of a
-    /// resurrected copy of a sent message.
+    /// The window's view-model: the same instance for the same request id, for as
+    /// long as that composer is open. A closed composer is not resurrected — the
+    /// window shows "no longer available" rather than a copy of a sent message.
     func makeComposeViewModel(id: ComposeRequest.ID) -> ComposeViewModel? {
-        guard let outbox, let context = composeContexts.removeValue(forKey: id) else { return nil }
-        return ComposeViewModel(context: context, outbox: outbox)
+        if let existing = composeViewModels[id] {
+            guard existing.isClosed else { return existing }
+            releaseComposeViewModel(id: id)
+            return nil
+        }
+        guard let outbox, let context = composeContexts[id] else { return nil }
+        let model = ComposeViewModel(context: context, outbox: outbox)
+        composeViewModels[id] = model
+        return model
+    }
+
+    /// Called when a compose window goes away. Drops the composer ONLY if it
+    /// really is closed: a window that is merely being rebuilt must find its
+    /// view-model — with its unsaved text — still here.
+    func releaseComposeViewModel(id: ComposeRequest.ID) {
+        guard composeViewModels[id]?.isClosed ?? false else { return }
+        composeViewModels[id] = nil
+        composeContexts[id] = nil
     }
 
     func setWindowActive(_ active: Bool) async {
         await mail?.setActive(active)
+    }
+
+    // MARK: - Activation
+
+    /// Sync cadence follows the APPLICATION's activation, not a window's
+    /// `scenePhase`. Per-window scenePhase flaps: opening a compose window moves
+    /// the key window off the mail window, the mail scene reports inactive, and
+    /// the engine backs off to the idle cadence while the user is plainly using
+    /// the app.
+    private func observeActivation() {
+        activityTask?.cancel()
+        activityTask = Task { [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { @Sendable [weak self] in
+                    let active = NotificationCenter.default.notifications(
+                        named: NSApplication.didBecomeActiveNotification
+                    )
+                    for await _ in active { await self?.setWindowActive(true) }
+                }
+                group.addTask { @Sendable [weak self] in
+                    let resigned = NotificationCenter.default.notifications(
+                        named: NSApplication.didResignActiveNotification
+                    )
+                    for await _ in resigned { await self?.setWindowActive(false) }
+                }
+            }
+        }
     }
 }

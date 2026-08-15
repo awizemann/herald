@@ -9,13 +9,21 @@ struct ConversationListView: View {
     @State private var searchText = ""
 
     var body: some View {
-        List(model.conversations, selection: $model.selectedThreadID) { row in
-            ConversationRow(row: row) {
-                Task { await model.toggleStar(row) }
-            }
+        List(model.presentedConversations, selection: $model.selectedThreadID) { row in
+            ConversationRow(
+                row: row,
+                toggleStar: { Task { await model.toggleStar(row) } },
+                archive: { Task { await model.perform(.archive, onThread: row.id) } },
+                trash: { Task { await model.perform(.trash, onThread: row.id) } }
+            )
             .tag(row.id)
         }
         .listStyle(.inset)
+        // Mail's single-key triage, scoped to this list's focus. As a toolbar or
+        // menu shortcut these are window-global and fire while the user is typing
+        // in the search field — which is how a bare ⌫ deletes the wrong thing.
+        .onKeyPress("e") { act(.archive) }
+        .onKeyPress(.delete) { act(.trash) }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search mail")
         .task(id: searchText) {
             guard searchText != model.searchQuery else { return }
@@ -27,7 +35,7 @@ struct ConversationListView: View {
             model.searchQuery = searchText
         }
         .overlay {
-            if model.conversations.isEmpty {
+            if model.presentedConversations.isEmpty {
                 ContentUnavailableView(
                     model.searchQuery.isEmpty ? "No Messages" : "No Results",
                     systemImage: MailTheme.symbol(for: model.selection.folder)
@@ -35,7 +43,8 @@ struct ConversationListView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first, let row = model.conversations.first(where: { $0.id == id }) {
+            if let id = ids.first,
+               let row = model.presentedConversations.first(where: { $0.id == id }) {
                 Button(row.isUnread ? "Mark as Read" : "Mark as Unread") {
                     Task { await model.toggleRead(row) }
                 }
@@ -48,11 +57,21 @@ struct ConversationListView: View {
             }
         }
     }
+
+    /// Runs a single-key action against the selection, and passes the key on when
+    /// there is nothing selected.
+    private func act(_ action: ConversationAction) -> KeyPress.Result {
+        guard model.selectedThreadID != nil else { return .ignored }
+        Task { await model.performOnSelection(action) }
+        return .handled
+    }
 }
 
 struct ConversationRow: View {
     let row: ConversationSummary
     let toggleStar: () -> Void
+    let archive: () -> Void
+    let trash: () -> Void
 
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
@@ -76,7 +95,7 @@ struct ConversationRow: View {
                             .font(.caption2)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .background(.quaternary, in: Capsule())
+                            .background(MailTheme.chipBackground, in: Capsule())
                     }
                     Spacer(minLength: 4)
                     Text(row.latest.displayDate, format: Self.dateFormat)
@@ -92,7 +111,7 @@ struct ConversationRow: View {
                         Image(systemName: "paperclip")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel("Has attachments")
+                            .accessibilityHidden(true)
                     }
                     Text(row.latest.snippet)
                         .font(.caption)
@@ -100,7 +119,15 @@ struct ConversationRow: View {
                         .lineLimit(2)
                 }
             }
+            // COMBINE, not the row's old `contain`: as a container VoiceOver
+            // stopped on each Text separately and the row's own label — the only
+            // place unread/starred/attachments were spoken — was never read.
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Self.accessibilitySummary(for: row))
+            .accessibilityValue(Text(row.latest.displayDate, format: Self.dateFormat))
 
+            // Its own element on purpose: it is a control, and folding it into the
+            // row would cost the only way to star without the mouse.
             Button(action: toggleStar) {
                 Image(systemName: row.isStarred ? "star.fill" : "star")
                     .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
@@ -109,21 +136,34 @@ struct ConversationRow: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilitySummary)
+        // The triage verbs, reachable from the VoiceOver rotor rather than only
+        // from the menu bar or a right-click.
+        .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
+        .accessibilityAction(named: "Archive", archive)
+        .accessibilityAction(named: "Move to Trash", trash)
     }
 
-    private var participants: String {
+    private var participants: String { Self.participants(for: row) }
+
+    private nonisolated static func participants(for row: ConversationSummary) -> String {
         row.latest.direction == .outbound
             ? "To: " + row.latest.to.joined(separator: ", ")
             : row.latest.fromAddress
     }
 
-    private var accessibilitySummary: String {
-        var parts = [participants, row.latest.subject.isEmpty ? "No subject" : row.latest.subject]
+    /// What VoiceOver reads for one row. Internal and pure so the states that are
+    /// easiest to drop — unread, starred, attachments — are assertable without a
+    /// rendered list.
+    nonisolated static func accessibilitySummary(for row: ConversationSummary) -> String {
+        var parts = [
+            participants(for: row),
+            row.latest.subject.isEmpty ? "No subject" : row.latest.subject,
+        ]
+        if row.messageCount > 1 { parts.append("\(row.messageCount) messages") }
         if row.isUnread { parts.append("unread") }
         if row.isStarred { parts.append("starred") }
         if row.latest.hasAttachments { parts.append("has attachments") }
+        parts.append(row.latest.snippet)
         return parts.joined(separator: ", ")
     }
 }

@@ -36,7 +36,24 @@ enum MailTheme {
     static let unreadIndicator = Color.accentColor
     static let starred = Color.yellow
     static let syncing = Color.secondary
-    static let failure = Color.red
+    /// `systemRed`, not `.red`: the AppKit system color is the one that shifts
+    /// under Increase Contrast and stays legible on the `.bar` material the
+    /// banners and the sidebar status line are drawn on.
+    static let failure = Color(nsColor: .systemRed)
+
+    // MARK: Surfaces
+
+    /// Background of a chip (attachment, message count). One token, so every chip
+    /// in the app moves together instead of each spelling `.quaternary`.
+    static let chipBackground: AnyShapeStyle = AnyShapeStyle(.quaternary)
+
+    /// Fill behind a selected row in a list that is not a `List` — the thread
+    /// message picker draws its own selection.
+    static let selectionHighlight = Color.accentColor.opacity(0.12)
+
+    /// Border width for that selection when the user asked for shape as well as
+    /// colour (Differentiate Without Color).
+    static let selectionBorderWidth: CGFloat = 1
 
     // MARK: Metrics
 

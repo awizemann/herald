@@ -225,4 +225,42 @@ struct MailStoreTests {
         #expect(try await store.message(id: "m1", accountID: accountA)?.readAt != nil)
         #expect(try await store.message(id: "m1", accountID: accountB)?.readAt == nil, "The other account was mutated")
     }
+
+    /// The sidebar badge is a count, and it has to agree with the list it labels.
+    /// Fails if `unreadCount` counts read threads, ignores the mailbox or account
+    /// scope, or counts an unread thread a local archive has already moved out of
+    /// the inbox (still listed under `inbox`, but hidden by the presentation rule).
+    @Test("Unread counts match exactly the unread rows the scope presents")
+    func unreadCountMatchesPresentedRows() async throws {
+        let store = try MailStore.inMemory()
+        let unread = SyncFixtures.conversation(threadID: "t1", latestID: "m1", unreadCount: 1)
+        let read = SyncFixtures.conversation(threadID: "t2", latestID: "m2", unreadCount: 0)
+        let locallyArchived = ConversationSummary(
+            latest: SyncFixtures.message("m3", threadID: "t3", folder: .archived),
+            isStarred: false,
+            messageCount: 1,
+            unreadCount: 1
+        )
+        // Two unread messages, but one thread: the badge counts threads.
+        let otherMailbox = SyncFixtures.conversation(
+            threadID: "t4", latestID: "m4", mailboxID: "mbx_b", unreadCount: 2
+        )
+
+        _ = try await store.upsertConversations(
+            [unread, read, locallyArchived], accountID: account, mailboxID: "mbx_a", folder: .inbox
+        )
+        _ = try await store.upsertConversations(
+            [locallyArchived], accountID: account, mailboxID: "mbx_a", folder: .archived
+        )
+        _ = try await store.upsertConversations(
+            [otherMailbox], accountID: account, mailboxID: "mbx_b", folder: .inbox
+        )
+
+        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a") == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_b") == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxID: nil) == 2)
+        // The same row IS counted in the scope that does show it.
+        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a", folder: .archived) == 1)
+        #expect(try await store.unreadCount(accountID: "other_account", mailboxID: nil) == 0)
+    }
 }

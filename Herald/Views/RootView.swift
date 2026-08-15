@@ -4,7 +4,6 @@ import SwiftUI
 /// Switches between the launch placeholder, onboarding and the mail UI.
 struct RootView: View {
     @Environment(AppEnvironment.self) private var environment
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -26,10 +25,10 @@ struct RootView: View {
             }
         }
         .frame(minWidth: MailTheme.minWindow.width, minHeight: MailTheme.minWindow.height)
+        // Sync cadence is driven by the APPLICATION's activation inside
+        // `AppEnvironment`, not by this scene's phase: a compose window taking
+        // key made the mail scene inactive and backed the poll off to idle.
         .task { await environment.start() }
-        .onChange(of: scenePhase) { _, phase in
-            Task { await environment.setWindowActive(phase == .active) }
-        }
     }
 }
 
@@ -73,16 +72,19 @@ struct LaunchFailure: View {
 struct MailWindow: View {
     @Environment(AppEnvironment.self) private var environment
     @Bindable var model: MailViewModel
-    @AppStorage("sidebarWidth") private var sidebarWidth: Double = 240
-    @AppStorage("listWidth") private var listWidth: Double = 340
+    /// Ideal column widths. Plain constants: the `@AppStorage` keys they replace
+    /// were never written by anything, so they persisted nothing and only made
+    /// the split view look restorable.
+    private static let sidebarWidth: Double = 240
+    private static let listWidth: Double = 340
 
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 200, ideal: sidebarWidth, max: 360)
+                .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 360)
         } content: {
             ConversationListView(model: model)
-                .navigationSplitViewColumnWidth(min: 280, ideal: listWidth, max: 520)
+                .navigationSplitViewColumnWidth(min: 280, ideal: Self.listWidth, max: 520)
         } detail: {
             ReadingPaneView(model: model)
         }
@@ -100,23 +102,32 @@ struct MailWindow: View {
         }
         .sheet(isPresented: Bindable(environment).presentsAddAccount) { OnboardingView(isSheet: true) }
         .focusedSceneValue(\.mailModel, model)
+        // Primitive mirrors of the selection: the menu bar's enablement and its
+        // Star/Mark-as-Read titles have to change when the selection does, and a
+        // focused reference type never reports that it changed. See MailCommands.
+        .focusedSceneValue(\.selectedThreadID, model.selectedThreadID)
+        .focusedSceneValue(\.selectedMessageID, model.selectedMessageID)
+        .focusedSceneValue(\.selectedIsUnread, model.selectedConversation?.isUnread)
+        .focusedSceneValue(\.selectedIsStarred, model.selectedConversation?.isStarred)
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
+            // No shortcut here: ⌘⇧K belongs to the File menu's "Get New Mail",
+            // and two owners of one shortcut is a coin toss over which fires.
             Button { Task { await model.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
                     .iconButtonStyle("Refresh")
             }
-            .keyboardShortcut("k", modifiers: [.command, .shift])
 
             Button { Task { await model.performOnSelection(.archive) } } label: {
                 Image(systemName: "archivebox")
                     .iconButtonStyle("Archive")
             }
-            // Mail's muscle-memory single-key archive, next to the ⌘⇧A menu item.
-            .keyboardShortcut("e", modifiers: [])
+            // Mail's muscle-memory `e` lives on the conversation list, where it
+            // is scoped to that list's focus: as a toolbar shortcut it was
+            // window-global and typing "e" into the search field archived a thread.
             .disabled(model.selectedThreadID == nil)
 
             Button { Task { await model.performOnSelection(.trash) } } label: {

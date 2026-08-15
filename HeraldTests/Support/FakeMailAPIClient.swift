@@ -130,6 +130,7 @@ nonisolated enum MailFixtures {
         subject: String = "Subject",
         read: Bool = false,
         starred: Bool = false,
+        hasAttachments: Bool = false,
         date: Date = epoch
     ) -> MessageSummary {
         MessageSummary(
@@ -146,7 +147,7 @@ nonisolated enum MailFixtures {
             sentAt: nil,
             readAt: read ? date : nil,
             starredAt: starred ? date : nil,
-            hasAttachments: false,
+            hasAttachments: hasAttachments,
             createdAt: date
         )
     }

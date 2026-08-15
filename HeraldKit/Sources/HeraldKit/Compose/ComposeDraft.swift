@@ -136,6 +136,43 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     mutating func clearServerDraft() {
         serverDraft = nil
     }
+
+    /// The fields the USER owns. Compared rather than copied, so a round trip can
+    /// never be the thing that changes what is on screen.
+    public func hasSameEditableContent(as other: ComposeDraft) -> Bool {
+        mailboxID == other.mailboxID
+            && fromAddress == other.fromAddress
+            && to == other.to
+            && cc == other.cc
+            && bcc == other.bcc
+            && subject == other.subject
+            && body == other.body
+    }
+
+    /// Merges a server response into the draft the window is still editing,
+    /// taking ONLY the fields the server owns (draft identity/version and the
+    /// attachment list).
+    ///
+    /// Assigning the whole response back — `draft = try await save(draft)` — is a
+    /// data-loss bug twice over: it reverts anything typed during the round trip,
+    /// and a server that normalizes (trims a subject, rewrites the body) makes the
+    /// draft dirty again on every save, i.e. an autosave loop.
+    ///
+    /// - Parameters:
+    ///   - saved: what the outbox returned.
+    ///   - sent: the snapshot handed to the outbox. The difference between it and
+    ///     `self` is what the user typed while the save ran, and is what decides
+    ///     whether the draft is still dirty.
+    public mutating func adoptServerState(from saved: ComposeDraft, sent: ComposeDraft) {
+        serverDraft = saved.serverDraft
+        uploadedAttachments = saved.uploadedAttachments
+        // Keep a pending file only if the server still calls it pending, or if it
+        // was picked after `sent` was taken (this response says nothing about it).
+        pendingAttachments = pendingAttachments.filter { url in
+            saved.pendingAttachments.contains(url) || !sent.pendingAttachments.contains(url)
+        }
+        isDirty = !hasSameEditableContent(as: sent) || !pendingAttachments.isEmpty
+    }
 }
 
 nonisolated extension ComposeMode {

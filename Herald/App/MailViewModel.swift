@@ -80,6 +80,9 @@ final class MailViewModel {
         didSet {
             guard selection != oldValue else { return }
             selectedThreadID = nil
+            // The folder is half of the presentation rule, so the visible list is
+            // wrong until it is recomputed — don't wait for the store round trip.
+            refilter()
             // Cancel first: replacing a running task leaves the older, slower
             // reload alive to finish last and overwrite the newer scope's rows.
             reloadTask?.cancel()
@@ -88,12 +91,43 @@ final class MailViewModel {
     }
 
     /// Everything the store holds for the current scope, before search.
-    private(set) var allConversations: [ConversationSummary] = []
+    private(set) var allConversations: [ConversationSummary] = [] {
+        didSet {
+            searchIndex = Self.makeSearchIndex(allConversations)
+            refilter()
+        }
+    }
 
     /// Committed search text (the field debounces before pushing here). It only
     /// narrows the presented list — never the loaded slice, so the reading pane
     /// does not re-render on a keystroke.
-    var searchQuery: String = ""
+    var searchQuery: String = "" {
+        didSet {
+            guard searchQuery != oldValue else { return }
+            refilter()
+        }
+    }
+
+    /// Rows the list shows: the scope's conversations minus anything a local
+    /// action moved out of it, narrowed by the committed search text.
+    ///
+    /// STORED, not computed. As a computed property it re-filtered — and
+    /// re-lowercased every subject, sender and snippet — on every read, and the
+    /// list's body reads it on every unrelated `@Observable` change, so a sync
+    /// status flip or an `actionError` cost a full re-filter of the scope.
+    ///
+    /// Selection is always resolved against ``allConversations``, never this, so
+    /// typing in the search field cannot tear down the reading pane.
+    private(set) var presentedConversations: [ConversationSummary] = []
+
+    /// Row id → the lowercased text search matches against, built once per load
+    /// instead of once per row per keystroke.
+    @ObservationIgnored private var searchIndex: [String: String] = [:]
+
+    /// Instrumentation: how many times the presented list has actually been
+    /// recomputed. Observation-ignored — it exists so "an unrelated change did
+    /// NOT re-filter" is assertable at all.
+    @ObservationIgnored private(set) var filterCount = 0
 
     var selectedThreadID: String? {
         didSet {
@@ -184,20 +218,31 @@ final class MailViewModel {
 
     // MARK: - Derived state
 
-    /// Rows the list shows: the scope's conversations minus anything a local
-    /// action moved out of it, filtered by the committed search text.
-    ///
-    /// Selection is always resolved against ``allConversations``, never this, so
-    /// typing in the search field cannot tear down the reading pane.
-    var conversations: [ConversationSummary] {
-        let inScope = allConversations.filter { Self.belongs($0, to: selection.folder) }
-        guard !searchQuery.isEmpty else { return inScope }
-        let needle = searchQuery.lowercased()
-        return inScope.filter { row in
-            row.latest.subject.lowercased().contains(needle)
-                || row.latest.fromAddress.lowercased().contains(needle)
-                || row.latest.snippet.lowercased().contains(needle)
+    /// Recomputes ``presentedConversations``. The ONLY writer of it, called from
+    /// the `didSet` of each of the three inputs the filter depends on.
+    private func refilter() {
+        filterCount += 1
+        let folder = selection.folder
+        let inScope = allConversations.filter { Self.belongs($0, to: folder) }
+        guard !searchQuery.isEmpty else {
+            presentedConversations = inScope
+            return
         }
+        let needle = searchQuery.lowercased()
+        presentedConversations = inScope.filter { searchIndex[$0.id]?.contains(needle) ?? false }
+    }
+
+    /// The searchable text of each row, lowercased once at load time.
+    private nonisolated static func makeSearchIndex(
+        _ rows: [ConversationSummary]
+    ) -> [String: String] {
+        var index: [String: String] = [:]
+        index.reserveCapacity(rows.count)
+        for row in rows {
+            index[row.id] = "\(row.latest.subject)\n\(row.latest.fromAddress)\n\(row.latest.snippet)"
+                .lowercased()
+        }
+        return index
     }
 
     var selectedConversation: ConversationSummary? {
@@ -365,24 +410,33 @@ final class MailViewModel {
 
     /// Inbox unread badges only — the other folders do not carry a count in the
     /// sidebar, so fetching them would be work nobody reads.
+    ///
+    /// Each badge is a `fetchCount` in the store. Fetching and mapping up to 100
+    /// whole rows per mailbox to count them is the same query with every row
+    /// materialised, and it ran on every conversation reload.
     private func reloadUnreadCounts() async {
         var counts: [FolderSelection: Int] = [:]
-        for mailbox in mailboxes {
-            let scope = FolderSelection(mailboxID: mailbox.id, folder: .inbox)
+        for scope in unreadBadgeScopes {
             do {
-                let rows = try await store.conversations(
+                let unread = try await store.unreadCount(
                     accountID: accountID,
-                    mailboxID: mailbox.id,
-                    folder: .inbox
+                    mailboxID: scope.mailboxID,
+                    folder: scope.folder
                 )
-                let unread = rows.count { $0.isUnread && Self.belongs($0, to: .inbox) }
                 if unread > 0 { counts[scope] = unread }
             } catch {
                 logger.error("Unread count failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        counts[FolderSelection(mailboxID: nil, folder: .inbox)] = counts.values.reduce(0, +)
-        unreadCounts = counts.filter { $0.value > 0 }
+        unreadCounts = counts
+    }
+
+    /// "All Mailboxes" is its own count rather than the sum of the others: the
+    /// nil-mailbox listing shows every row, including any whose mailbox the
+    /// sidebar does not list.
+    private var unreadBadgeScopes: [FolderSelection] {
+        [FolderSelection(mailboxID: nil, folder: .inbox)]
+            + mailboxes.map { FolderSelection(mailboxID: $0.id, folder: .inbox) }
     }
 
     func loadThread(_ threadID: String) async {
@@ -422,10 +476,13 @@ final class MailViewModel {
 
     private func loadBody(for detail: MessageDetail, allowRemote: Bool) async {
         let messageID = detail.id
+        // The subject becomes the document's <title>: VoiceOver announces the web
+        // area by it, and an untitled web area is announced as "HTML content".
+        let title = detail.summary.subject
         guard detail.htmlAvailable else {
             let text = detail.textBody
             let rendered = await Task.detached(priority: .userInitiated) { @Sendable in
-                Self.document(wrappingPlainText: text)
+                Self.document(wrappingPlainText: text, title: title)
             }.value
             guard selectedMessageID == messageID else { return }
             body = RenderedBody(messageID: messageID, html: rendered, blocksRemote: true, offersRemoteConsent: false)
@@ -436,13 +493,14 @@ final class MailViewModel {
         do {
             let payload = try await api.messageHTML(id: messageID, loadRemoteImages: allowRemote)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
-            let inline = try await inlineImages(for: detail)
+            let inline = await inlineImages(for: detail)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             let raw = payload.html
             // Substitution walks the whole body; never on the main actor.
             let substituted = await Task.detached(priority: .userInitiated) { @Sendable in
                 Self.document(
                     wrapping: Self.substituteInlineImages(in: raw, with: inline),
+                    title: title,
                     allowsRemote: allowRemote
                 )
             }.value
@@ -460,7 +518,7 @@ final class MailViewModel {
             // Fall back to the cached copy so an offline read still shows something.
             if let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID), let html = cached.html {
                 let wrapped = await Task.detached(priority: .userInitiated) { @Sendable in
-                    Self.document(wrapping: html)
+                    Self.document(wrapping: html, title: title)
                 }.value
                 guard selectedMessageID == messageID else { return }
                 body = RenderedBody(messageID: messageID, html: wrapped, blocksRemote: true, offersRemoteConsent: false)
@@ -480,30 +538,46 @@ final class MailViewModel {
 
     /// Fetches inline parts as data so `cid:` references can be rewritten. The
     /// web view is never allowed to fetch them itself.
-    private func inlineImages(for detail: MessageDetail) async throws -> [String: String] {
+    /// Concurrent: a message with eight inline parts used to cost eight
+    /// round trips end to end, with the reading pane blank throughout. The group
+    /// also keeps the base64 encoding off the main actor.
+    private func inlineImages(for detail: MessageDetail) async -> [String: String] {
         let inlineParts = detail.attachments.filter(\.isInline)
         guard !inlineParts.isEmpty else { return [:] }
-        var result: [String: String] = [:]
-        for part in inlineParts {
-            guard let contentID = part.contentID else { continue }
-            do {
-                let payload = try await api.inlineImage(messageID: detail.id, attachmentID: part.id)
-                // The MIME type rides into a `data:` URL the web view will honour.
-                // A part claiming `text/html` (or anything scriptable) must never
-                // become a substitutable data: URL, whatever the part metadata says.
-                guard Self.isRenderableInlineMedia(payload.mimeType) else {
-                    logger.warning("Inline part \(part.id, privacy: .public) is not renderable media; skipped")
-                    continue
+        let api = self.api
+        let messageID = detail.id
+        return await withTaskGroup(of: (String, String)?.self) { group in
+            for part in inlineParts {
+                guard let contentID = part.contentID else { continue }
+                let partID = part.id
+                group.addTask { @Sendable in
+                    do {
+                        let payload = try await api.inlineImage(messageID: messageID, attachmentID: partID)
+                        // The MIME type rides into a `data:` URL the web view will
+                        // honour. A part claiming `text/html` (or anything
+                        // scriptable) must never become a substitutable data: URL,
+                        // whatever the part metadata says.
+                        guard Self.isRenderableInlineMedia(payload.mimeType) else {
+                            logger.warning("Inline part \(partID, privacy: .public) is not renderable media; skipped")
+                            return nil
+                        }
+                        return (
+                            Self.normalizedContentID(contentID),
+                            "data:\(payload.mimeType);base64,\(payload.data.base64EncodedString())"
+                        )
+                    } catch {
+                        logger.warning("Inline image \(partID, privacy: .public) unavailable")
+                        return nil
+                    }
                 }
-                let encoded = await Task.detached(priority: .userInitiated) { @Sendable [payload] in
-                    "data:\(payload.mimeType);base64,\(payload.data.base64EncodedString())"
-                }.value
-                result[Self.normalizedContentID(contentID)] = encoded
-            } catch {
-                logger.warning("Inline image \(part.id, privacy: .public) unavailable")
             }
+            var result: [String: String] = [:]
+            for await entry in group {
+                guard let entry else { continue }
+                result[entry.0] = entry.1
+            }
+            return result
         }
-        return result
     }
 
     /// User consented to remote media for this sender: tell the server (so the
@@ -532,6 +606,12 @@ final class MailViewModel {
     }
 
     func perform(_ action: ConversationAction, onThread threadID: String) async {
+        // Where the row sits in the list the user is looking at, captured BEFORE
+        // it disappears: archiving the message you are reading has to move to the
+        // next one, the way every mail client does, not empty the reading pane.
+        let removedIndex = Self.removesRow(action) && threadID == selectedThreadID
+            ? presentedConversations.firstIndex { $0.id == threadID }
+            : nil
         do {
             try await actions.perform(
                 action,
@@ -542,15 +622,37 @@ final class MailViewModel {
         } catch {
             actionError = error.localizedDescription
         }
-        await reloadAfterAction(threadID: threadID)
+        await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
+    }
+
+    /// Actions that take the row out of the scope it was acted on in.
+    private nonisolated static func removesRow(_ action: ConversationAction) -> Bool {
+        switch action {
+        case .archive, .trash: true
+        case .read, .unread, .star, .unstar: false
+        }
     }
 
     /// The optimistic write already landed in the cache (and was reverted there if
     /// the server said no), so the slice reload is what makes either outcome visible.
-    private func reloadAfterAction(threadID: String?) async {
+    private func reloadAfterAction(threadID: String?, removedIndex: Int? = nil) async {
         await reloadConversations()
+        if let removedIndex { advanceSelection(pastRowAt: removedIndex) }
         if let threadID, threadID == selectedThreadID { await loadThread(threadID) }
         await refresh()
+    }
+
+    /// Moves the selection to the row that took the removed row's place, or to
+    /// the last row when the removed one was at the end. Does nothing if the row
+    /// is still presented — a failed action reverts, and the user should be left
+    /// on the message that did not move.
+    private func advanceSelection(pastRowAt index: Int) {
+        guard !presentedConversations.contains(where: { $0.id == selectedThreadID }) else { return }
+        guard !presentedConversations.isEmpty else {
+            selectedThreadID = nil
+            return
+        }
+        selectedThreadID = presentedConversations[min(index, presentedConversations.count - 1)].id
     }
 
     /// Convenience for the commands: act on the current selection.
@@ -699,21 +801,39 @@ final class MailViewModel {
         ].joined(separator: "; ")
     }
 
-    nonisolated static func document(wrapping bodyHTML: String, allowsRemote: Bool = false) -> String {
+    /// The document title VoiceOver announces when it enters the web area, with a
+    /// fallback for an untitled message. Escaped: it is the sender's text.
+    nonisolated static func documentTitle(_ subject: String) -> String {
+        let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        return escapingHTML(trimmed.isEmpty ? "Message" : trimmed)
+    }
+
+    nonisolated static func escapingHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// `lang` and `<title>` are not decoration: without them VoiceOver announces
+    /// the web area as untitled HTML content and reads the body with the wrong
+    /// language's pronunciation rules.
+    nonisolated static func document(
+        wrapping bodyHTML: String,
+        title: String = "",
+        allowsRemote: Bool = false
+    ) -> String {
         """
-        <!doctype html><html><head><meta charset="utf-8">
+        <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)"><head><meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy(allowsRemote: allowsRemote))">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>\(documentTitle(title))</title>
         <style>\(styleSheet)</style></head><body>\(bodyHTML)</body></html>
         """
     }
 
-    nonisolated static func document(wrappingPlainText text: String) -> String {
-        let escaped = text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-        return document(wrapping: "<pre class=\"plain\">\(escaped)</pre>")
+    nonisolated static func document(wrappingPlainText text: String, title: String = "") -> String {
+        document(wrapping: "<pre class=\"plain\">\(escapingHTML(text))</pre>", title: title)
     }
 
     private nonisolated static let styleSheet = """

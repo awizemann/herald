@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Developer ID export options for Herald (scripts/release.sh).
+
+  Uses the "Developer ID Application: Alan Wizemann (3Q6X2L86C4)" certificate. Unlike
+  ShabuBox, Herald needs NO Developer ID provisioning profile: its entitlements are all
+  sandbox/hardened-runtime ones plus a keychain-access-group, none of which require a
+  profile-bound capability (iCloud is what forces one). So signingStyle stays automatic.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>developer-id</string>
+	<key>teamID</key>
+	<string>3Q6X2L86C4</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>stripSwiftSymbols</key>
+	<true/>
+</dict>
+</plist>

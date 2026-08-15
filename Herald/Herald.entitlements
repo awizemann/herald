@@ -8,6 +8,21 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+
+	<!-- Sparkle auto-update under the sandbox (t-8a1c0026). Installing an update runs OUTSIDE the
+	     sandbox via Sparkle's bundled Installer XPC service (paired with SUEnableInstallerLauncherService
+	     in Info.plist); reaching that service requires these two mach-lookup exceptions. Xcode
+	     substitutes $(PRODUCT_BUNDLE_IDENTIFIER) → com.wizemann.herald at build time, giving the
+	     -spks (installer launcher/status) and -spki (installer connection) global names Sparkle
+	     registers. The Downloader XPC service is deliberately NOT enabled — we already hold
+	     com.apple.security.network.client, so Sparkle downloads the update in-process.
+	     Per https://sparkle-project.org/documentation/sandboxing/. -->
+	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
+	</array>
+
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.wizemann.herald</string>

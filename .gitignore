@@ -9,3 +9,9 @@ HeraldKit/.build/
 *.xcodeproj
 DerivedData/
 HeraldKit/.build-*/
+# Release build products (scripts/release.sh). RELEASE_NOTES.md is committed with the version
+# bump; the signed .zip and the generated appcast.xml are not — they live on the GitHub
+# release and the gh-pages branch.
+releases/**/*.zip
+releases/**/*.delta
+releases/**/appcast.xml

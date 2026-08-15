@@ -74,6 +74,14 @@ struct MailCommands: Commands {
     @FocusedValue(\.selectedIsStarred) private var selectedIsStarred: Bool?
 
     var body: some Commands {
+        // App menu → "Check for Updates…" directly under "About Herald" (Sparkle, t-8a1c0026).
+        // `after: .appInfo`, never `replacing:` — replacing that group would silently drop the
+        // About item. The item renders itself reactively and stays disabled on builds with no
+        // Sparkle signing key (CI, unsigned, test hosts).
+        CommandGroup(after: .appInfo) {
+            UpdateService.shared.checkForUpdatesMenuItem()
+        }
+
         CommandGroup(after: .newItem) {
             Button("New Message") { model?.requestCompose(.new) }
                 .keyboardShortcut("n", modifiers: .command)

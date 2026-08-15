@@ -43,6 +43,14 @@ configs:
 packages:
   HeraldKit:
     path: HeraldKit
+  # Sparkle 2 auto-updater (t-8a1c0026). Sandboxed installs run OUTSIDE the sandbox via
+  # Sparkle's bundled Installer XPC service — enabled by SUEnableInstallerLauncherService
+  # in the `info:` block below, paired with the -spks/-spki mach-lookup exceptions in
+  # Herald/Herald.entitlements. Linking Sparkle needs no signing, so CI (CODE_SIGNING_ALLOWED=NO)
+  # is unaffected.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    majorVersion: 2.9.2
 
 targets:
   Herald:
@@ -52,6 +60,8 @@ targets:
       - path: Herald
     dependencies:
       - package: HeraldKit
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald
@@ -74,6 +84,34 @@ targets:
         # Everything this app writes came off the network (mail attachments), so it
         # must carry the quarantine flag and get the Gatekeeper prompt on open.
         LSFileQuarantineEnabled: true
+
+        # ── Sparkle 2 auto-update (t-8a1c0026) ──────────────────────────────────────────
+        # These live in the `info:` PLIST (not INFOPLIST_KEY_ build settings) so their TYPES
+        # are exact: Sparkle reads SUEnableInstallerLauncherService / SUAutomaticallyUpdate
+        # as real Booleans and SUScheduledCheckInterval as a real Integer, but a custom key
+        # pushed through INFOPLIST_KEY_ lands as a STRING, which Sparkle may not honor.
+
+        # The appcast feed — appcast.xml on this repo's gh-pages branch (GitHub Pages).
+        SUFeedURL: https://awizemann.github.io/herald/appcast.xml
+
+        # EdDSA (ed25519) PUBLIC key that verifies every downloaded update's signature. Not a
+        # secret: it ships in every copy and only VERIFIES. The private half is minted once by
+        # the owner with `./scripts/sparkle-keys.sh` and lives ONLY in their login Keychain
+        # (account "Herald") — never in this repo. Until it is minted this stays the
+        # placeholder, and `UpdateService` refuses to construct the updater (see README
+        # "Updates"); scripts/release.sh also refuses to release.
+        SUPublicEDKey: <PLACEHOLDER-SEE-README>
+
+        # Sandbox requirement: install updates via Sparkle's bundled Installer XPC service,
+        # which runs outside the sandbox. Paired with the -spks/-spki mach-lookup exceptions
+        # in Herald/Herald.entitlements. The Downloader XPC service is deliberately NOT
+        # enabled — we hold network.client, so Sparkle downloads in-process.
+        SUEnableInstallerLauncherService: true
+
+        # Never install silently: mail is the app the user least wants restarted behind their
+        # back. Sparkle still CHECKS on a daily cadence and offers the update.
+        SUAutomaticallyUpdate: false
+        SUScheduledCheckInterval: 86400
   HeraldTests:
     type: bundle.unit-test
     platform: macOS

@@ -150,12 +150,11 @@ final class MailViewModel {
             let threadID = selectedThreadID
             threadMessages = []
             selectedMessageID = nil
-            // Moving the selection NEVER drills in. Arrowing down the list has to
-            // stay a browse: each conversation previews its latest message in the
-            // reading pane and the list keeps the focus. Drilling in is an
-            // EXPLICIT act — a click, ⏎, or the row's chevron — and every one of
-            // those goes through `openSelectedThread()`.
-            isShowingThread = false
+            // Owner decision 2026-08-16: SELECTING a multi-message conversation
+            // drills straight into its message list (⎋ / back returns); a
+            // single-message conversation just previews in the reading pane.
+            // `isMultiMessage` reads the presented rows, which are already loaded.
+            isShowingThread = threadID.map(isMultiMessage) ?? false
             guard let threadID else { return }
             threadTask = Task { await loadThread(threadID) }
         }
@@ -164,10 +163,9 @@ final class MailViewModel {
     /// Whether the middle column is showing the selected thread's messages
     /// instead of the conversation list.
     ///
-    /// Only ``openSelectedThread()`` / ``openThread(_:)`` ever turn this on, and
-    /// only for a multi-message conversation. Selecting a row does not: that
-    /// would make arrowing through the list impossible to do without being
-    /// yanked into the first long thread you passed.
+    /// Turned on whenever the selection lands on a multi-message conversation
+    /// (owner decision 2026-08-16), and by ``openSelectedThread()`` for the
+    /// re-click / ⏎ / chevron cases where the selection did not change.
     ///
     /// VM state, deliberately NOT a `NavigationStack` push: a push rebuilds the
     /// column (and would need an `.id()`-shaped reset to come back to the same

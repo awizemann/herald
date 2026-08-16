@@ -554,11 +554,10 @@ func wait(
 
 @MainActor
 @Suite struct MailViewModelThreadDrillInTests {
-    /// Drilling in is EXPLICIT. Selecting a row — all an arrow key does — only
-    /// previews the conversation's latest message; the middle column stays on the
-    /// list. Fails if selection alone drills in (arrowing past a long thread would
-    /// yank the user into it), or if an explicit open does nothing, or if a
-    /// single-message row can be drilled into at all.
+    /// Owner decision 2026-08-16: SELECTING a multi-message conversation drills
+    /// straight into its message list; a single-message one only previews. Fails
+    /// if selection no longer drills, if the drilled thread doesn't load with the
+    /// latest message selected, or if a single-message row can be drilled into.
     @Test func onlyMultiMessageConversationsDrillIn() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
@@ -566,13 +565,15 @@ func wait(
         harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
-        // Arrowing onto a two-message thread: selected and previewed, NOT drilled.
+        // Selecting a two-message thread drills in and loads it.
         harness.model.selectedThreadID = "t9"
-        #expect(harness.model.isShowingThread == false, "an arrow-key selection drilled in")
-        try await wait("the thread to load for the preview") { harness.model.threadMessages.count == 2 }
-        #expect(harness.model.selectedMessageID == "m9b", "the preview is the latest message")
+        #expect(harness.model.isShowingThread, "selecting a multi-message thread must drill in")
+        try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
+        #expect(harness.model.selectedMessageID == "m9b", "the latest message is selected")
 
-        // ⏎ / the chevron / a click: now it drills.
+        // ⎋ / back leaves it; ⏎ / chevron re-enters without a selection change.
+        harness.model.exitThread()
+        #expect(harness.model.isShowingThread == false)
         harness.model.openSelectedThread()
         #expect(harness.model.isShowingThread)
 

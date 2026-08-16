@@ -371,8 +371,17 @@ public actor SyncEngine {
         return changes
     }
 
-    /// `GET /messages` has no pagination in v1, so one call is the whole folder
-    /// and anything absent from it is gone.
+    /// The server's `GET /messages` has no pagination param in v1 but SILENTLY caps
+    /// the response at this many rows (worker/features/messages/queries.ts:
+    /// `LIMIT ?` with limit clamped to 100). A response of exactly this size may be
+    /// truncated, so it must not be treated as "the whole folder".
+    static let serverMessageListCap = 100
+
+    /// One call is the whole folder ONLY when it is below the server's cap; a
+    /// full-cap response is treated as truncated and nothing is tombstoned
+    /// (deleting rows the server didn't get to return would erase real mail from
+    /// the cache on every pass). Upstream PR3 (pagination + updatedSince) removes
+    /// this limitation; until then busy folders show the newest 100 in the cache.
     private func syncMessages(
         accountID: String,
         mailboxID: String,
@@ -380,6 +389,12 @@ public actor SyncEngine {
     ) async throws -> ChangeSet {
         let messages = try await api.listMessages(folder: folder, mailboxID: mailboxID, search: nil)
         var changes = try await store.upsertMessages(messages, accountID: accountID)
+        if messages.count >= Self.serverMessageListCap {
+            logger.warning(
+                "Message list for a folder hit the server cap (\(messages.count, privacy: .public)); skipping tombstoning to avoid deleting unreturned mail"
+            )
+            return changes
+        }
         changes.formUnion(
             try await store.deleteMissingMessages(
                 accountID: accountID,

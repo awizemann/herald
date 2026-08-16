@@ -83,6 +83,37 @@ struct SyncEngineTests {
         #expect(Set(cached.map(\.id)) == ["t1", "t2"], "A capped walk must not delete rows it never saw")
     }
 
+    /// REAL-SERVER fact: `GET /messages` silently caps at 100 rows. Before this
+    /// guard, a full-cap response was treated as the whole folder and every cached
+    /// message the server didn't get to return was tombstoned — busy folders lost
+    /// their older mail from the cache on every pass. Fails if a 100-row list
+    /// tombstones, or if a 99-row list stops tombstoning (guard too broad).
+    @Test("A message list at the server cap is treated as truncated and never tombstones")
+    func fullCapMessageListDoesNotTombstone() async throws {
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setConversationPages([ConversationPage(conversations: [], nextCursor: nil, totalCount: nil)])
+        let store = try MailStore.inMemory()
+        // An older message that is in the cache but beyond what the server returns.
+        _ = try await store.upsertMessages([SyncFixtures.message("m_old", threadID: "t_old")], accountID: account)
+
+        let cap = SyncEngine.serverMessageListCap
+        await api.setMessages((0..<cap).map { SyncFixtures.message("m\($0)", threadID: "t\($0)") }, folder: .inbox)
+        let engine = SyncEngine(api: api, store: store, scope: Self.inboxOnly)
+        await engine.start(accountID: account)
+        _ = await awaitPasses(engine, count: 1)
+        await engine.stop()
+        #expect(try await store.message(id: "m_old", accountID: account) != nil, "cap-sized list must not delete unreturned rows")
+
+        // One under the cap is a complete listing again: tombstoning resumes.
+        await api.setMessages((0..<(cap - 1)).map { SyncFixtures.message("m\($0)", threadID: "t\($0)") }, folder: .inbox)
+        let engine2 = SyncEngine(api: api, store: store, scope: Self.inboxOnly)
+        await engine2.start(accountID: account)
+        _ = await awaitPasses(engine2, count: 1)
+        await engine2.stop()
+        #expect(try await store.message(id: "m_old", accountID: account) == nil, "a below-cap list is complete and must tombstone")
+    }
+
     /// Fails if `refreshNow()` during an in-flight pass either spawns a second
     /// concurrent pass (three total) or is dropped entirely (one total).
     @Test("refreshNow during a pass coalesces into exactly one extra pass")

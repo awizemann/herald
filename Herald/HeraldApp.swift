@@ -16,5 +16,11 @@ struct HeraldApp: App {
         .commands { MailCommands(environment: environment) }
 
         ComposeScene(environment: environment)
+
+        // Gives Herald ⌘, and the standard Settings window chrome for free.
+        Settings {
+            SettingsView()
+                .environment(environment)
+        }
     }
 }

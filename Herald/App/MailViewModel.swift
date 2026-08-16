@@ -69,6 +69,9 @@ final class MailViewModel {
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
     private let markReadDelay: Duration
+    /// Where per-mailbox colour overrides live. Injected so a test drives a
+    /// throwaway suite instead of the user's real preferences.
+    private let defaults: UserDefaults
 
     // MARK: Published state
 
@@ -77,6 +80,13 @@ final class MailViewModel {
     /// mailbox reload: the "All Mailboxes" list draws this on EVERY row, and a
     /// `mailboxes.first(where:)` per row is a linear scan per row per render.
     private(set) var mailboxNames: [String: String] = [:]
+    /// mailbox id → address, the input the default colour is derived from. Same
+    /// reason as `mailboxNames`: the chip is drawn on every row.
+    private(set) var mailboxAddresses: [String: String] = [:]
+    /// mailbox id → the palette token the user explicitly picked. Observed, so a
+    /// change in Settings repaints the open list without a reload; only ids with
+    /// an override appear.
+    private(set) var mailboxColorOverrides: [String: String] = [:]
     /// Unread conversation counts per (mailbox, folder) scope.
     private(set) var unreadCounts: [FolderSelection: Int] = [:]
 
@@ -220,8 +230,10 @@ final class MailViewModel {
         actions: MailActionService,
         sync: (any MailSyncing)? = nil,
         events: AsyncStream<SyncEvent>,
-        markReadDelay: Duration = .seconds(1)
+        markReadDelay: Duration = .seconds(1),
+        defaults: UserDefaults = .standard
     ) {
+        self.defaults = defaults
         self.accountID = accountID
         self.accountLabel = accountLabel
         self.api = api
@@ -317,6 +329,58 @@ final class MailViewModel {
     func mailboxName(for id: String?) -> String? {
         guard let id else { return nil }
         return mailboxNames[id]
+    }
+
+    // MARK: - Mailbox colour
+
+    /// The palette token a mailbox draws in: the user's override if there is one,
+    /// otherwise the address-derived default. `nil` only for an unknown id.
+    func mailboxColorToken(for id: String?) -> String? {
+        guard let id, let address = mailboxAddresses[id] else { return nil }
+        return MailboxColorAssignment.token(
+            forAddress: address, override: mailboxColorOverrides[id]
+        )
+    }
+
+    /// The resolved tint, ready for the chip. Views ask for this, never for a
+    /// `Color` of their own.
+    func mailboxTint(for id: String?) -> MailboxTint? {
+        guard let token = mailboxColorToken(for: id) else { return nil }
+        return MailTheme.mailboxTint(named: token)
+    }
+
+    /// Whether this mailbox is currently on its default colour — what the
+    /// "Reset to Default" button keys off.
+    func hasMailboxColorOverride(_ id: String) -> Bool {
+        mailboxColorOverrides[id] != nil
+    }
+
+    /// Sets (or, with `nil`, clears) one mailbox's colour. Writing straight
+    /// through to `UserDefaults` AND to the observed map: the map is what repaints
+    /// the list, the defaults write is what survives relaunch.
+    func setMailboxColorToken(_ token: String?, for mailboxID: String) {
+        let key = MailboxColorAssignment.storageKey(accountID: accountID, mailboxID: mailboxID)
+        if let token, MailTheme.mailboxTint(named: token) != nil {
+            mailboxColorOverrides[mailboxID] = token
+            defaults.set(token, forKey: key)
+        } else {
+            mailboxColorOverrides[mailboxID] = nil
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private func loadMailboxColorOverrides(for mailboxes: [Mailbox]) {
+        var overrides: [String: String] = [:]
+        for mailbox in mailboxes {
+            let key = MailboxColorAssignment.storageKey(
+                accountID: accountID, mailboxID: mailbox.id
+            )
+            guard let stored = defaults.string(forKey: key),
+                  MailTheme.mailboxTint(named: stored) != nil
+            else { continue }
+            overrides[mailbox.id] = stored
+        }
+        mailboxColorOverrides = overrides
     }
 
     /// Unread count behind one picker entry (`nil` = every mailbox). Inbox only:
@@ -491,6 +555,10 @@ final class MailViewModel {
             let loaded = try await store.mailboxes(accountID: accountID)
             mailboxes = loaded
             mailboxNames = Self.makeMailboxNames(loaded)
+            mailboxAddresses = Dictionary(
+                loaded.map { ($0.id, $0.address) }, uniquingKeysWith: { first, _ in first }
+            )
+            loadMailboxColorOverrides(for: loaded)
         } catch {
             logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .public)")
         }

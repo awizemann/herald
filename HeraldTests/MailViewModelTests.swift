@@ -697,18 +697,26 @@ func wait(
         #expect(harness.model.mailboxName(for: nil) == nil)
     }
 
-    /// The chip is text on a neutral surface — VoiceOver reads none of it. Fails
-    /// if the attribution is left out of the row's spoken summary, or if it is
-    /// spoken when a specific mailbox is picked (where the view passes nil).
-    @Test func theRowSummarySpeaksTheMailboxOnlyWhenItIsGiven() {
+    /// The chip is the row's PRIMARY label now, and VoiceOver reads none of the
+    /// chip itself. Fails if the mailbox is left out of the spoken summary, if it
+    /// is no longer the FIRST thing spoken (the sender would lead, contradicting
+    /// what the row shows), or if it is spoken when a specific mailbox is picked
+    /// and the view passes nil.
+    @Test func theRowSummaryLeadsWithTheMailboxOnlyWhenItIsGiven() {
         let row = MailFixtures.conversation(
             MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup")
         )
-        #expect(ConversationRow.accessibilitySummary(for: row, mailboxName: "Support").contains("in Support"))
-        #expect(ConversationRow.accessibilitySummary(for: row).contains("in ") == false)
+        let attributed = ConversationRow.accessibilitySummary(for: row, mailboxName: "Support")
+        #expect(attributed.hasPrefix("Support, "))
+        let plain = ConversationRow.accessibilitySummary(for: row)
+        #expect(plain.hasPrefix("Support") == false)
+        #expect(plain.contains("Support") == false)
 
         let message = MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup")
-        #expect(ThreadMessageRow.accessibilitySummary(for: message, mailboxName: "Support").contains("in Support"))
-        #expect(ThreadMessageRow.accessibilitySummary(for: message).contains("in ") == false)
+        #expect(
+            ThreadMessageRow.accessibilitySummary(for: message, mailboxName: "Support")
+                .hasPrefix("Support, ")
+        )
+        #expect(ThreadMessageRow.accessibilitySummary(for: message).contains("Support") == false)
     }
 }

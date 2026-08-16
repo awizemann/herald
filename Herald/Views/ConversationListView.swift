@@ -43,6 +43,9 @@ struct ConversationListView: View {
                 mailboxName: model.selection.mailboxID == nil
                     ? model.mailboxName(for: row.latest.mailboxID)
                     : nil,
+                mailboxTint: model.selection.mailboxID == nil
+                    ? model.mailboxTint(for: row.latest.mailboxID)
+                    : nil,
                 toggleStar: { Task { await model.toggleStar(row) } },
                 archive: { Task { await model.perform(.archive, onThread: row.id) } },
                 trash: { Task { await model.perform(.trash, onThread: row.id) } },
@@ -143,6 +146,9 @@ struct ThreadMessageListView: View {
                     mailboxName: model.selection.mailboxID == nil
                         ? model.mailboxName(for: message.mailboxID)
                         : nil,
+                    mailboxTint: model.selection.mailboxID == nil
+                        ? model.mailboxTint(for: message.mailboxID)
+                        : nil,
                     toggleStar: {
                         Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id) }
                     }
@@ -190,9 +196,8 @@ struct ThreadMessageListView: View {
 struct ThreadMessageRow: View {
     let message: MessageSummary
     let mailboxName: String?
+    let mailboxTint: MailboxTint?
     let toggleStar: () -> Void
-
-    private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -204,18 +209,23 @@ struct ThreadMessageRow: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
+                // Same rule as a conversation row: mailbox leads and holds its
+                // width, sender gives way first, date keeps its own slot.
                 HStack(spacing: 6) {
+                    if let mailboxName {
+                        MailboxChip(name: mailboxName, tint: mailboxTint)
+                            .layoutPriority(2)
+                    }
                     Text(message.fromAddress)
                         .font(.subheadline)
                         .fontWeight(message.isUnread ? .bold : .regular)
+                        .foregroundStyle(mailboxName == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
-                    if let mailboxName {
-                        MailboxChip(name: mailboxName)
-                    }
+                        .truncationMode(.tail)
+                        .layoutPriority(mailboxName == nil ? 2 : 0)
                     Spacer(minLength: 4)
-                    Text(message.displayDate, format: Self.dateFormat)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    RowDateLabel(date: message.displayDate)
+                        .layoutPriority(3)
                 }
                 Text("To: \(message.to.joined(separator: ", "))")
                     .font(.caption)
@@ -228,7 +238,7 @@ struct ThreadMessageRow: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilitySummary(for: message, mailboxName: mailboxName))
-            .accessibilityValue(Text(message.displayDate, format: Self.dateFormat))
+            .accessibilityValue(RowDateFormatter.full(message.displayDate))
 
             Button(action: toggleStar) {
                 Image(systemName: message.isStarred ? "star.fill" : "star")
@@ -247,8 +257,10 @@ struct ThreadMessageRow: View {
         for message: MessageSummary,
         mailboxName: String? = nil
     ) -> String {
-        var parts = [message.fromAddress, "To: \(message.to.joined(separator: ", "))"]
-        if let mailboxName { parts.append("in \(mailboxName)") }
+        var parts: [String] = []
+        if let mailboxName { parts.append(mailboxName) }
+        parts.append(message.fromAddress)
+        parts.append("To: \(message.to.joined(separator: ", "))")
         if message.isUnread { parts.append("unread") }
         if message.isStarred { parts.append("starred") }
         parts.append(message.snippet)
@@ -256,20 +268,54 @@ struct ThreadMessageRow: View {
     }
 }
 
-/// Which mailbox a row belongs to, shown only in the all-mailboxes scope. Text in
-/// a chip, never a colour swatch: the attribution has to survive greyscale, and
-/// it is already in the row's accessibility label for VoiceOver.
+/// Which mailbox a row belongs to, shown only in the all-mailboxes scope, where
+/// it is the row's PRIMARY label — the sender reads as secondary next to it.
+///
+/// Tinted per mailbox, but the name is always drawn: the colour is a second cue
+/// on top of text, never the attribution itself, so the chip survives greyscale
+/// and Increase Contrast. VoiceOver reads it from the row's own combined label,
+/// hence `accessibilityHidden`.
 struct MailboxChip: View {
     let name: String
+    /// `nil` falls back to the neutral chip surface — an override naming a token
+    /// this build no longer ships must still render a readable chip.
+    let tint: MailboxTint?
 
     var body: some View {
         Text(name)
             .font(.caption2)
-            .foregroundStyle(MailTheme.attributionForeground)
+            .fontWeight(.medium)
+            .foregroundStyle(tint?.color ?? MailTheme.attributionForeground)
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(MailTheme.chipBackground, in: Capsule())
+            .background(background, in: Capsule())
+            .accessibilityHidden(true)
+    }
+
+    private var background: AnyShapeStyle {
+        guard let tint else { return MailTheme.chipBackground }
+        return AnyShapeStyle(tint.color.opacity(MailTheme.mailboxChipFillOpacity))
+    }
+}
+
+/// A row's trailing date: a FIXED-width slot, so a long mailbox name or a long
+/// sender runs into its own truncation instead of squeezing the date out — which
+/// is what the old free-flowing line did. The short form is ambiguous by design
+/// ("Tue"), so the absolute date rides along as the tooltip, and the row's
+/// accessibility value carries it for VoiceOver.
+struct RowDateLabel: View {
+    let date: Date
+
+    var body: some View {
+        Text(RowDateFormatter.compact(date))
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .frame(minWidth: MailTheme.dateSlotWidth, alignment: .trailing)
+            .help(RowDateFormatter.full(date))
             .accessibilityHidden(true)
     }
 }
@@ -278,13 +324,13 @@ struct ConversationRow: View {
     let row: ConversationSummary
     /// Non-nil only in the all-mailboxes scope.
     let mailboxName: String?
+    /// The mailbox's resolved palette tint, resolved by the view-model.
+    let mailboxTint: MailboxTint?
     let toggleStar: () -> Void
     let archive: () -> Void
     let trash: () -> Void
     /// Non-nil when the conversation has more than one message.
     let openThread: (() -> Void)?
-
-    private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -297,24 +343,33 @@ struct ConversationRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
+                    // Mailbox first and with the higher layout priority: it is
+                    // WHICH INBOX this landed in, which the owner reads before the
+                    // sender. It never truncates before the sender does.
+                    if let mailboxName {
+                        MailboxChip(name: mailboxName, tint: mailboxTint)
+                            .layoutPriority(2)
+                    }
                     Text(participants)
                         .font(.subheadline)
                         .fontWeight(row.isUnread ? .bold : .regular)
+                        .foregroundStyle(mailboxName == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        // Primary again when the chip is hidden (a mailbox is
+                        // picked), so it wins the space it used to.
+                        .layoutPriority(mailboxName == nil ? 2 : 0)
                     if row.messageCount > 1 {
                         Text("\(row.messageCount)")
                             .font(.caption2)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(MailTheme.chipBackground, in: Capsule())
-                    }
-                    if let mailboxName {
-                        MailboxChip(name: mailboxName)
+                            .layoutPriority(1)
                     }
                     Spacer(minLength: 4)
-                    Text(row.latest.displayDate, format: Self.dateFormat)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    RowDateLabel(date: row.latest.displayDate)
+                        .layoutPriority(3)
                 }
                 Text(row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject)
                     .font(.body)
@@ -338,7 +393,8 @@ struct ConversationRow: View {
             // place unread/starred/attachments were spoken — was never read.
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilitySummary(for: row, mailboxName: mailboxName))
-            .accessibilityValue(Text(row.latest.displayDate, format: Self.dateFormat))
+            // The full date, not the "Tue" on screen: the short form is not a date.
+            .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
 
             if let openThread {
                 // A real button, not a decorative chevron: re-entering a thread has
@@ -380,15 +436,17 @@ struct ConversationRow: View {
     /// What VoiceOver reads for one row. Internal and pure so the states that are
     /// easiest to drop — unread, starred, attachments, and the mailbox a row is
     /// attributed to — are assertable without a rendered list.
+    ///
+    /// The mailbox leads, matching the chip's new position: it is the row's
+    /// primary label on screen and has to be the first thing spoken too.
     nonisolated static func accessibilitySummary(
         for row: ConversationSummary,
         mailboxName: String? = nil
     ) -> String {
-        var parts = [
-            participants(for: row),
-            row.latest.subject.isEmpty ? "No subject" : row.latest.subject,
-        ]
-        if let mailboxName { parts.append("in \(mailboxName)") }
+        var parts: [String] = []
+        if let mailboxName { parts.append(mailboxName) }
+        parts.append(participants(for: row))
+        parts.append(row.latest.subject.isEmpty ? "No subject" : row.latest.subject)
         if row.messageCount > 1 { parts.append("\(row.messageCount) messages") }
         if row.isUnread { parts.append("unread") }
         if row.isStarred { parts.append("starred") }

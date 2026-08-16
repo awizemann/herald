@@ -1,6 +1,18 @@
 import HeraldKit
 import SwiftUI
 
+/// One entry of the mailbox colour palette: the token NAME is what is persisted
+/// and what VoiceOver says, the `Color` is only how it draws.
+nonisolated struct MailboxTint: Sendable, Hashable, Identifiable {
+    let name: String
+    let color: Color
+
+    var id: String { name }
+
+    /// Title-cased for the swatch's accessibility label and the picker row.
+    var displayName: String { name.capitalized }
+}
+
 /// The single source for folder symbols, status colors and the few shared
 /// metrics. Views never hardcode an SF Symbol name or a status color.
 enum MailTheme {
@@ -62,7 +74,44 @@ enum MailTheme {
     /// with the chip background so the chip is never colour-only.
     static let attributionForeground: Color = .secondary
 
+    // MARK: Mailbox tints
+
+    /// The fixed mailbox palette, in assignment order. `NSColor.system*` rather
+    /// than `.blue`/`.teal`: the AppKit system colours are the ones that adapt to
+    /// dark mode and to Increase Contrast, which a chip drawn at 18% opacity
+    /// needs badly.
+    ///
+    /// ORDER IS PART OF THE CONTRACT: ``MailboxColorAssignment`` indexes into it
+    /// with a stable hash, so reordering repaints every mailbox that never got an
+    /// explicit override.
+    nonisolated static let mailboxPalette: [MailboxTint] = [
+        MailboxTint(name: "blue", color: Color(nsColor: .systemBlue)),
+        MailboxTint(name: "teal", color: Color(nsColor: .systemTeal)),
+        MailboxTint(name: "green", color: Color(nsColor: .systemGreen)),
+        MailboxTint(name: "orange", color: Color(nsColor: .systemOrange)),
+        MailboxTint(name: "pink", color: Color(nsColor: .systemPink)),
+        MailboxTint(name: "purple", color: Color(nsColor: .systemPurple)),
+        MailboxTint(name: "indigo", color: Color(nsColor: .systemIndigo)),
+        MailboxTint(name: "brown", color: Color(nsColor: .systemBrown)),
+    ]
+
+    /// The tint for a palette token name, or `nil` for a name outside the palette
+    /// (a stale override written by an older build).
+    nonisolated static func mailboxTint(named name: String) -> MailboxTint? {
+        mailboxPalette.first { $0.name == name }
+    }
+
+    /// How strongly a mailbox chip's tint fills its background. The label is drawn
+    /// in the full-strength tint on top, so the chip is never colour-only.
+    nonisolated static let mailboxChipFillOpacity: Double = 0.18
+
     // MARK: Metrics
+
+    /// Width of a row's trailing date slot. FIXED, and sized for the longest form
+    /// ``RowDateFormatter`` produces, so neither a long mailbox name nor a long
+    /// sender can squeeze the date into an ellipsis — which is exactly what the
+    /// one-line layout did before.
+    static let dateSlotWidth: CGFloat = 78
 
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).

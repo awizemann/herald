@@ -397,20 +397,34 @@ struct ConversationRow: View {
             // chevron (or an equal-sized blank), star, message count.
             VStack(alignment: .trailing, spacing: 0) {
                 RowDateLabel(date: row.latest.displayDate)
-                if let openThread {
-                    // A real button, not a decorative chevron: re-entering a
-                    // thread has to work from the keyboard and the rotor, not
-                    // only by re-clicking an already-selected row.
-                    Button(action: openThread) {
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(.secondary)
-                            .iconButtonStyle("Show \(row.messageCount) messages")
+                // Line 2: [count][chevron] — the count sits LEFT of the arrow, and
+                // a single-message row keeps an equal-sized blank so every row's
+                // text column has the same width.
+                HStack(spacing: 2) {
+                    if row.messageCount > 1 {
+                        Text("\(row.messageCount)")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(MailTheme.chipBackground, in: Capsule())
+                            .accessibilityHidden(true) // spoken in the row summary
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    Color.clear
-                        .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
-                        .accessibilityHidden(true)
+                    if let openThread {
+                        // A real button, not a decorative chevron: re-entering a
+                        // thread has to work from the keyboard and the rotor, not
+                        // only by re-clicking an already-selected row.
+                        Button(action: openThread) {
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                                .iconButtonStyle("Show \(row.messageCount) messages")
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Color.clear
+                            .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                            .accessibilityHidden(true)
+                    }
                 }
                 // Its own element on purpose: it is a control, and folding it
                 // into the row would cost the only way to star without the mouse.
@@ -420,15 +434,6 @@ struct ConversationRow: View {
                         .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
                 }
                 .buttonStyle(.plain)
-                if row.messageCount > 1 {
-                    Text("\(row.messageCount)")
-                        .font(.caption2)
-                        .monospacedDigit()
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(MailTheme.chipBackground, in: Capsule())
-                        .accessibilityHidden(true) // spoken in the row summary
-                }
             }
             .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
         }

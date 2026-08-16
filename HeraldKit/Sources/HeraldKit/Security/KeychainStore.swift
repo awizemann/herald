@@ -17,16 +17,17 @@ public nonisolated struct KeychainStore: SecretStore {
         self.service = service
     }
 
-    /// `kSecUseDataProtectionKeychain` opts every operation into the modern,
-    /// app-group-scoped keychain instead of the legacy file-based one — on macOS
-    /// that is what keeps these items out of the user's login keychain, where any
-    /// other signed app could prompt for them.
+    /// Items live in the user's login keychain, ACL-locked to Herald's code signature
+    /// (the sandbox + codesign make Herald the only app that can read them without a
+    /// user prompt). We deliberately do NOT set `kSecUseDataProtectionKeychain`: on
+    /// macOS it requires the `keychain-access-groups` entitlement, which requires a
+    /// Developer ID provisioning profile — Herald ships without one (real-release
+    /// finding 2026-08-16: SecItem returned -34018 errSecMissingEntitlement).
     private func baseQuery(for key: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
-            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 
@@ -56,10 +57,10 @@ public nonisolated struct KeychainStore: SecretStore {
         let query = baseQuery(for: key)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            // ThisDeviceOnly: OAuth tokens are bound to this device's registration,
-            // so syncing them to another Mac via iCloud Keychain or a backup would
-            // spread a live credential for no benefit.
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            // kSecAttrAccessible is a data-protection-keychain attribute and is ignored
+            // by the login keychain (see baseQuery), so it is not set here. Generic
+            // password items are not synced by iCloud Keychain unless kSecAttrSynchronizable
+            // is set, which we never do — tokens stay on this Mac.
         ]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)

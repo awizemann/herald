@@ -227,16 +227,14 @@ struct ThreadMessageRow: View {
                     } else {
                         fromLabel
                     }
-                    Spacer(minLength: 4)
-                    RowDateLabel(date: message.displayDate)
-                        .layoutPriority(3)
+                    Spacer(minLength: 0)
                 }
                 if mailboxName != nil { fromLabel }
                 Text("To: \(message.to.joined(separator: ", "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(message.snippet)
+                Text(SnippetCleaner.clean(message.snippet))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -245,12 +243,17 @@ struct ThreadMessageRow: View {
             .accessibilityLabel(Self.accessibilitySummary(for: message, mailboxName: mailboxName))
             .accessibilityValue(RowDateFormatter.full(message.displayDate))
 
-            Button(action: toggleStar) {
-                Image(systemName: message.isStarred ? "star.fill" : "star")
-                    .foregroundStyle(message.isStarred ? MailTheme.starred : .secondary)
-                    .iconButtonStyle(message.isStarred ? "Unstar" : "Star")
+            // Same trailing column as a conversation row: date on top, star under it.
+            VStack(alignment: .trailing, spacing: 0) {
+                RowDateLabel(date: message.displayDate)
+                Button(action: toggleStar) {
+                    Image(systemName: message.isStarred ? "star.fill" : "star")
+                        .foregroundStyle(message.isStarred ? MailTheme.starred : .secondary)
+                        .iconButtonStyle(message.isStarred ? "Unstar" : "Star")
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
         }
         .padding(.vertical, 2)
         .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
@@ -319,7 +322,6 @@ struct RowDateLabel: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .fixedSize()
-            .frame(minWidth: MailTheme.dateSlotWidth, alignment: .trailing)
             .help(RowDateFormatter.full(date))
             .accessibilityHidden(true)
     }
@@ -359,9 +361,7 @@ struct ConversationRow: View {
                     } else {
                         participantsLabel
                     }
-                    Spacer(minLength: 4)
-                    RowDateLabel(date: row.latest.displayDate)
-                        .layoutPriority(3)
+                    Spacer(minLength: 0)
                 }
                 if mailboxName != nil { participantsLabel }
                 Text(row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject)
@@ -375,7 +375,7 @@ struct ConversationRow: View {
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
-                    Text(row.latest.snippet)
+                    Text(SnippetCleaner.clean(row.latest.snippet))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -392,10 +392,11 @@ struct ConversationRow: View {
             // Trailing column: star (and the open-thread chevron) on top, the
             // message count beneath — off the crowded first line, where it can
             // be read at a glance and doesn't compete with the chip or the date.
-            // Trailing tool column, one control per line, FIXED width so every
-            // row lines up whether or not it has a thread chevron: chevron (or an
-            // equal-sized blank), star, then the message count.
-            VStack(alignment: .center, spacing: 0) {
+            // Trailing column, FIXED width so every row lines up: the date on top,
+            // right-justified at the row's edge, then the tools beneath it —
+            // chevron (or an equal-sized blank), star, message count.
+            VStack(alignment: .trailing, spacing: 0) {
+                RowDateLabel(date: row.latest.displayDate)
                 if let openThread {
                     // A real button, not a decorative chevron: re-entering a
                     // thread has to work from the keyboard and the rotor, not
@@ -429,7 +430,7 @@ struct ConversationRow: View {
                         .accessibilityHidden(true) // spoken in the row summary
                 }
             }
-            .frame(width: MailTheme.hitTarget)
+            .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
         }
         .padding(.vertical, 2)
         // The triage verbs, reachable from the VoiceOver rotor rather than only

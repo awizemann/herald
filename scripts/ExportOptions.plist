@@ -6,7 +6,11 @@
   Uses the "Developer ID Application: Alan Wizemann (3Q6X2L86C4)" certificate. Unlike
   ShabuBox, Herald needs NO Developer ID provisioning profile: its entitlements are all
   sandbox/hardened-runtime ones plus a keychain-access-group, none of which require a
-  profile-bound capability (iCloud is what forces one). So signingStyle stays automatic.
+  profile-bound capability (iCloud is what forces one).
+
+  signingStyle is MANUAL with an explicit certificate (same as Scarf): automatic export asks
+  Xcode for a signed-in developer account and fails with "No Accounts" under a CLI Xcode that
+  has none, whereas manual + "Developer ID Application" signs straight from the Keychain.
 -->
 <plist version="1.0">
 <dict>
@@ -15,7 +19,9 @@
 	<key>teamID</key>
 	<string>3Q6X2L86C4</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Developer ID Application</string>
 	<key>destination</key>
 	<string>export</string>
 	<key>stripSwiftSymbols</key>

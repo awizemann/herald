@@ -194,11 +194,11 @@ log "Archive (Release, arm64)"
 xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
   -archivePath "$ARCHIVE" -destination "generic/platform=macOS" \
   -derivedDataPath "$BUILD_DIR/DerivedData" -skipPackagePluginValidation \
-  -allowProvisioningUpdates archive
+  archive
 
 log "Export signed .app (Developer ID)"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
-  -exportOptionsPlist "$EXPORT_OPTIONS" -allowProvisioningUpdates
+  -exportOptionsPlist "$EXPORT_OPTIONS"
 [[ -d "$APP" ]] || die "exported app not found at $APP"
 
 log "Verify signature (incl. embedded Sparkle.framework + its XPC services)"

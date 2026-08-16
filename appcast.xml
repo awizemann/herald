@@ -1,0 +1,15 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Herald</title>
+        <item>
+            <title>0.1.0</title>
+            <pubDate>Sun, 16 Aug 2026 16:07:56 -0400</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.1.0/Herald-0.1.0.zip" length="2762735" type="application/octet-stream" sparkle:edSignature="nug+o1AwLdkk271xRLXXUWFnF6FPq+W8/Ti0UvfxjGitzAGk5VAwzt32DrCA4Yr9Sc110LsoKq2npeLGDKrfAQ=="/>
+        </item>
+    </channel>
+</rss>

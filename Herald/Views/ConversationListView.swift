@@ -199,6 +199,15 @@ struct ThreadMessageRow: View {
     let mailboxTint: MailboxTint?
     let toggleStar: () -> Void
 
+    private var fromLabel: some View {
+        Text(message.fromAddress)
+            .font(.subheadline)
+            .fontWeight(message.isUnread ? .bold : .regular)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(2)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             // Unread is bold text AND a dot: never color alone.
@@ -215,18 +224,14 @@ struct ThreadMessageRow: View {
                     if let mailboxName {
                         MailboxChip(name: mailboxName, tint: mailboxTint)
                             .layoutPriority(2)
+                    } else {
+                        fromLabel
                     }
-                    Text(message.fromAddress)
-                        .font(.subheadline)
-                        .fontWeight(message.isUnread ? .bold : .regular)
-                        .foregroundStyle(mailboxName == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .layoutPriority(mailboxName == nil ? 2 : 0)
                     Spacer(minLength: 4)
                     RowDateLabel(date: message.displayDate)
                         .layoutPriority(3)
                 }
+                if mailboxName != nil { fromLabel }
                 Text("To: \(message.to.joined(separator: ", "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -346,31 +351,19 @@ struct ConversationRow: View {
                     // Mailbox first and with the higher layout priority: it is
                     // WHICH INBOX this landed in, which the owner reads before the
                     // sender. It never truncates before the sender does.
+                    // Owner request 2026-08-16: when the chip is shown, the sender
+                    // gets its OWN line beneath it — the two never share a line.
                     if let mailboxName {
                         MailboxChip(name: mailboxName, tint: mailboxTint)
                             .layoutPriority(2)
-                    }
-                    Text(participants)
-                        .font(.subheadline)
-                        .fontWeight(row.isUnread ? .bold : .regular)
-                        .foregroundStyle(mailboxName == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        // Primary again when the chip is hidden (a mailbox is
-                        // picked), so it wins the space it used to.
-                        .layoutPriority(mailboxName == nil ? 2 : 0)
-                    if row.messageCount > 1 {
-                        Text("\(row.messageCount)")
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(MailTheme.chipBackground, in: Capsule())
-                            .layoutPriority(1)
+                    } else {
+                        participantsLabel
                     }
                     Spacer(minLength: 4)
                     RowDateLabel(date: row.latest.displayDate)
                         .layoutPriority(3)
                 }
+                if mailboxName != nil { participantsLabel }
                 Text(row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject)
                     .font(.body)
                     .fontWeight(row.isUnread ? .semibold : .regular)
@@ -396,26 +389,41 @@ struct ConversationRow: View {
             // The full date, not the "Tue" on screen: the short form is not a date.
             .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
 
-            if let openThread {
-                // A real button, not a decorative chevron: re-entering a thread has
-                // to work from the keyboard and the rotor, not only by re-clicking
-                // a row that is already selected (which fires nothing).
-                Button(action: openThread) {
-                    Image(systemName: "chevron.right")
-                        .foregroundStyle(.secondary)
-                        .iconButtonStyle("Show \(row.messageCount) messages")
+            // Trailing column: star (and the open-thread chevron) on top, the
+            // message count beneath — off the crowded first line, where it can
+            // be read at a glance and doesn't compete with the chip or the date.
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 0) {
+                    if let openThread {
+                        // A real button, not a decorative chevron: re-entering a
+                        // thread has to work from the keyboard and the rotor, not
+                        // only by re-clicking an already-selected row.
+                        Button(action: openThread) {
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                                .iconButtonStyle("Show \(row.messageCount) messages")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    // Its own element on purpose: it is a control, and folding it
+                    // into the row would cost the only way to star without the mouse.
+                    Button(action: toggleStar) {
+                        Image(systemName: row.isStarred ? "star.fill" : "star")
+                            .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
+                            .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                if row.messageCount > 1 {
+                    Text("\(row.messageCount)")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(MailTheme.chipBackground, in: Capsule())
+                        .accessibilityHidden(true) // spoken in the row summary
+                }
             }
-
-            // Its own element on purpose: it is a control, and folding it into the
-            // row would cost the only way to star without the mouse.
-            Button(action: toggleStar) {
-                Image(systemName: row.isStarred ? "star.fill" : "star")
-                    .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
-                    .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
-            }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
         // The triage verbs, reachable from the VoiceOver rotor rather than only
@@ -426,6 +434,15 @@ struct ConversationRow: View {
     }
 
     private var participants: String { Self.participants(for: row) }
+
+    private var participantsLabel: some View {
+        Text(participants)
+            .font(.subheadline)
+            .fontWeight(row.isUnread ? .bold : .regular)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(2)
+    }
 
     private nonisolated static func participants(for row: ConversationSummary) -> String {
         row.latest.direction == .outbound

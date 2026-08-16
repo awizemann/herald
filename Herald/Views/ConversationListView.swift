@@ -392,28 +392,33 @@ struct ConversationRow: View {
             // Trailing column: star (and the open-thread chevron) on top, the
             // message count beneath — off the crowded first line, where it can
             // be read at a glance and doesn't compete with the chip or the date.
-            VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 0) {
-                    if let openThread {
-                        // A real button, not a decorative chevron: re-entering a
-                        // thread has to work from the keyboard and the rotor, not
-                        // only by re-clicking an already-selected row.
-                        Button(action: openThread) {
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                                .iconButtonStyle("Show \(row.messageCount) messages")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    // Its own element on purpose: it is a control, and folding it
-                    // into the row would cost the only way to star without the mouse.
-                    Button(action: toggleStar) {
-                        Image(systemName: row.isStarred ? "star.fill" : "star")
-                            .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
-                            .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
+            // Trailing tool column, one control per line, FIXED width so every
+            // row lines up whether or not it has a thread chevron: chevron (or an
+            // equal-sized blank), star, then the message count.
+            VStack(alignment: .center, spacing: 0) {
+                if let openThread {
+                    // A real button, not a decorative chevron: re-entering a
+                    // thread has to work from the keyboard and the rotor, not
+                    // only by re-clicking an already-selected row.
+                    Button(action: openThread) {
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                            .iconButtonStyle("Show \(row.messageCount) messages")
                     }
                     .buttonStyle(.plain)
+                } else {
+                    Color.clear
+                        .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                        .accessibilityHidden(true)
                 }
+                // Its own element on purpose: it is a control, and folding it
+                // into the row would cost the only way to star without the mouse.
+                Button(action: toggleStar) {
+                    Image(systemName: row.isStarred ? "star.fill" : "star")
+                        .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
+                        .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
+                }
+                .buttonStyle(.plain)
                 if row.messageCount > 1 {
                     Text("\(row.messageCount)")
                         .font(.caption2)
@@ -424,6 +429,7 @@ struct ConversationRow: View {
                         .accessibilityHidden(true) // spoken in the row summary
                 }
             }
+            .frame(width: MailTheme.hitTarget)
         }
         .padding(.vertical, 2)
         // The triage verbs, reachable from the VoiceOver rotor rather than only

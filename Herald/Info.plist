@@ -40,7 +40,7 @@
 	<key>SUFeedURL</key>
 	<string>https://awizemann.github.io/herald/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>&lt;PLACEHOLDER-SEE-README&gt;</string>
+	<string>P6TirI4LP2xBLEmK91S9yMFgwnausk2T/VebkCMtvbQ=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

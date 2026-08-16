@@ -100,7 +100,7 @@ targets:
         # (account "Herald") — never in this repo. Until it is minted this stays the
         # placeholder, and `UpdateService` refuses to construct the updater (see README
         # "Updates"); scripts/release.sh also refuses to release.
-        SUPublicEDKey: <PLACEHOLDER-SEE-README>
+        SUPublicEDKey: P6TirI4LP2xBLEmK91S9yMFgwnausk2T/VebkCMtvbQ=
 
         # Sandbox requirement: install updates via Sparkle's bundled Installer XPC service,
         # which runs outside the sandbox. Paired with the -spks/-spki mach-lookup exceptions

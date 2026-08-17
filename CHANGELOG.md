@@ -10,6 +10,21 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-16
+
+### Fixed
+- Release packages no longer contain AppleDouble (`._*`) entries; extracting with Finder or `unzip`
+  now passes `codesign --verify --strict --deep`. The release script strips extended attributes,
+  archives with `--norsrc`, and verifies the zip with `unzip`. (#2)
+- When the server refuses a token refresh — or no refresh token was granted at sign-in — Herald
+  now shows the "Sign in again" banner (whose button re-runs consent for the same account)
+  instead of a "Sync problem" with a Retry that could never succeed. (#1)
+- Error descriptions are never logged as public data; log lines carry a payload-free error code
+  and keep the description private, so server messages that echo recipients or subjects stay
+  out of the unified log. A source-level test guards this. (#3)
+- Clicking a conversation's text reliably selects it. A tap gesture added for click-to-open was
+  racing the list's own selection; selection now opens multi-message threads by itself. (#4)
+
 ## [0.1.1] - 2026-08-16
 
 ### Added
@@ -47,6 +62,7 @@ with OAuth 2.1 PKCE bearer tokens.
 - Local cache for instant launch, background polling sync (15 s while active).
 - Sparkle auto-updates; Developer ID signed and notarized; sandboxed.
 
-[Unreleased]: https://github.com/awizemann/herald/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/awizemann/herald/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/awizemann/herald/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/awizemann/herald/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/awizemann/herald/releases/tag/v0.1.0

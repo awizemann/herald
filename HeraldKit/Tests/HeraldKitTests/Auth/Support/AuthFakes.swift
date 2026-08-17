@@ -18,7 +18,7 @@ nonisolated enum AuthFixtures {
     static let protectedResourceJSON = """
     {"resource":"\(resource)",
      "authorization_servers":["https://mail.test.invalid/api/auth"],
-     "scopes_supported":["mail:read","mail:write","mail:send","offline_access"],
+     "scopes_supported":["mail:read","mail:write","mail:send"],
      "bearer_methods_supported":["header"]}
     """
 

@@ -24,6 +24,27 @@ import Testing
         #expect(server.requests(path: AuthFixtures.suffixedMetadataPath).count == 1)
     }
 
+    /// REAL-SERVER 2026-08-17 (Herald #1 + the owner's own account): HQBase's
+    /// protected-resource metadata advertises `scopes_supported` WITHOUT
+    /// `offline_access` (it is not an API permission), and Herald requested exactly
+    /// the advertised set — so no refresh token was ever issued and every sign-in
+    /// died with its first access token (~1 h). The fake now mirrors the real
+    /// metadata; this fails if `offline_access` is not added on top of it, or if
+    /// scopes are duplicated when a server does advertise it.
+    @Test("offline_access is always requested even when the resource does not advertise it")
+    func offlineAccessIsAlwaysRequested() async throws {
+        let server = FakeServer()
+        server.route("GET", AuthFixtures.protectedResourcePath, .json(200, AuthFixtures.protectedResourceJSON))
+        server.route("GET", AuthFixtures.suffixedMetadataPath, .json(200, AuthFixtures.serverMetadataJSON))
+
+        let configuration = try await OAuthDiscovery(session: server.makeSession())
+            .configuration(for: AuthFixtures.origin)
+
+        #expect(configuration.scopes == ["mail:read", "mail:write", "mail:send", "offline_access"])
+        #expect(OAuthDiscovery.requestedScopes(advertised: ["mail:read", "offline_access"]) == ["mail:read", "offline_access"])
+        #expect(OAuthDiscovery.requestedScopes(advertised: []) == OAuthDiscovery.defaultScopes)
+    }
+
     /// Fails if the bare-path fallback is missing: a server that publishes only
     /// `{origin}/.well-known/oauth-authorization-server` would become unusable.
     @Test("falls back to the bare well-known path when the suffixed one is absent")

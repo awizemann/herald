@@ -79,8 +79,14 @@ public nonisolated struct OAuthConfiguration: Sendable, Hashable {
 
 /// Resolves an origin's OAuth endpoints from its `.well-known` documents.
 public nonisolated struct OAuthDiscovery: Sendable {
-    /// What Herald asks for when the server does not advertise its scopes.
+    /// The API permissions Herald asks for when the server does not advertise its scopes.
     public static let defaultScopes = ["mail:read", "mail:write", "mail:send", "offline_access"]
+    /// Always requested in addition to whatever the resource advertises. `offline_access`
+    /// is NOT an API permission, so HQBase's protected-resource metadata deliberately
+    /// leaves it out of `scopes_supported` — and without it the server issues no
+    /// refresh token, so the sign-in silently dies with the first access token (~1 h).
+    /// Real-run finding 2026-08-17 (Herald issue #1 and the owner's own account).
+    public static let alwaysRequestedScopes = ["offline_access"]
     static let protectedResourcePath = "/.well-known/oauth-protected-resource/api/v1"
     static let authorizationServerPath = "/.well-known/oauth-authorization-server"
 
@@ -90,6 +96,14 @@ public nonisolated struct OAuthDiscovery: Sendable {
         self.session = session
     }
 
+    /// Advertised API scopes (or the defaults) plus the scopes Herald must always ask
+    /// for, deduplicated and order-preserving.
+    public static func requestedScopes(advertised: [String]) -> [String] {
+        var seen = Set<String>()
+        let base = advertised.isEmpty ? defaultScopes : advertised
+        return (base + alwaysRequestedScopes).filter { seen.insert($0).inserted }
+    }
+
     public func configuration(for rawOrigin: URL) async throws -> OAuthConfiguration {
         let origin = Account.normalize(rawOrigin)
         let resource = try await protectedResource(for: origin)
@@ -97,7 +111,7 @@ public nonisolated struct OAuthDiscovery: Sendable {
             for: origin,
             issuer: resource.authorizationServers.first.flatMap(URL.init(string:))
         )
-        let scopes = resource.scopesSupported.isEmpty ? Self.defaultScopes : resource.scopesSupported
+        let scopes = Self.requestedScopes(advertised: resource.scopesSupported)
         return OAuthConfiguration(origin: origin, server: server, resource: resource.resource, scopes: scopes)
     }
 

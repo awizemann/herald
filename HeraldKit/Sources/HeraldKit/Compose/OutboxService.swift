@@ -148,7 +148,7 @@ public actor OutboxService {
         do {
             data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
         } catch {
-            logger.error("Attachment unreadable: \(error.localizedDescription, privacy: .public)")
+            logger.error("Attachment unreadable: \(error.localizedDescription, privacy: .private)")
             throw OutboxError.fileUnreadable(fileURL)
         }
         guard data.count <= attachmentByteLimit else {
@@ -270,7 +270,7 @@ public actor OutboxService {
             logger.warning("Outbox API call failed: \(error.logCode, privacy: .public)")
             throw OutboxError.api(error)
         } catch {
-            logger.error("Outbox API call failed unexpectedly: \(error.localizedDescription, privacy: .public)")
+            logger.error("Outbox API call failed unexpectedly: \(error.localizedDescription, privacy: .private)")
             throw OutboxError.api(.transport(.init(error)))
         }
     }
@@ -288,7 +288,7 @@ public actor OutboxService {
             guard let size = values.fileSize else { throw OutboxError.fileUnreadable(url) }
             return size
         } catch {
-            logger.warning("Could not stat attachment: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Could not stat attachment: \(error.localizedDescription, privacy: .private)")
             throw OutboxError.fileUnreadable(url)
         }
     }

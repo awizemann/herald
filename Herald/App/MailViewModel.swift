@@ -465,13 +465,30 @@ final class MailViewModel {
             case .changed(let changes):
                 await apply(changes)
             case .failed(let error):
-                if let apiError = error as? MailAPIError, apiError == .unauthorized {
+                if Self.requiresReauthentication(error) {
                     status = .needsReauth
                 } else {
                     status = .failed(error.localizedDescription)
                 }
             }
         }
+    }
+
+    /// Every failure that only a fresh sign-in can fix must land on the re-auth
+    /// banner, whose button re-runs consent — not on "Sync problem / Retry", where
+    /// Retry just repeats the doomed refresh (issue #1: "not granted offline
+    /// access" after ~1 h, Retry did nothing). Covers a rejected token, a refresh
+    /// the server refused, and a missing refresh token, however deeply the API
+    /// layer wrapped it.
+    nonisolated static func requiresReauthentication(_ error: any Error) -> Bool {
+        if let api = error as? MailAPIError { return api == .unauthorized }
+        if let oauth = error as? OAuthError {
+            switch oauth {
+            case .reauthenticationRequired, .missingRefreshToken: return true
+            default: return false
+            }
+        }
+        return false
     }
 
     /// Reloads only the slices a change actually touched.
@@ -558,7 +575,7 @@ final class MailViewModel {
             )
             loadMailboxColorOverrides(for: loaded)
         } catch {
-            logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .private)")
         }
         await reloadUnreadCounts()
     }
@@ -578,7 +595,7 @@ final class MailViewModel {
             guard scope == selection, !Task.isCancelled else { return }
             allConversations = rows
         } catch {
-            logger.error("Conversation load failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
             guard scope == selection, !Task.isCancelled else { return }
             allConversations = []
         }
@@ -605,7 +622,7 @@ final class MailViewModel {
                 )
                 if unread > 0 { counts[scope] = unread }
             } catch {
-                logger.error("Unread count failed: \(error.localizedDescription, privacy: .public)")
+                logger.error("Unread count failed: \(error.localizedDescription, privacy: .private)")
             }
         }
         unreadCounts = counts
@@ -652,7 +669,7 @@ final class MailViewModel {
                 selectedMessageID = messages.first?.id
             }
         } catch {
-            logger.error("Thread load failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Thread load failed: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -671,7 +688,7 @@ final class MailViewModel {
             detail = loaded
             await loadBody(for: loaded, allowRemote: false)
         } catch {
-            logger.warning("Message detail failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Message detail failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
             actionError = error.localizedDescription
         }
@@ -716,7 +733,7 @@ final class MailViewModel {
             )
             await cacheBody(messageID: messageID, text: detail.textBody, html: payload.html)
         } catch {
-            logger.warning("Message HTML failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Message HTML failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
             // Fall back to the cached copy so an offline read still shows something.
             if let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID), let html = cached.html {
@@ -735,7 +752,7 @@ final class MailViewModel {
         do {
             try await store.storeBody(messageID: messageID, accountID: accountID, textBody: text, html: html)
         } catch {
-            logger.error("Body cache write failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Body cache write failed: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -790,7 +807,7 @@ final class MailViewModel {
         do {
             try await api.trustRemoteMedia(messageID: detail.id)
         } catch {
-            logger.warning("Remote-media trust failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Remote-media trust failed: \(error.localizedDescription, privacy: .private)")
             actionError = error.localizedDescription
             return
         }
@@ -917,7 +934,7 @@ final class MailViewModel {
                 do {
                     message = try await api.message(id: messageID)
                 } catch {
-                    logger.warning("Compose could not load its message: \(error.localizedDescription, privacy: .public)")
+                    logger.warning("Compose could not load its message: \(error.localizedDescription, privacy: .private)")
                     actionError = error.localizedDescription
                     return nil
                 }
@@ -951,7 +968,7 @@ final class MailViewModel {
         do {
             try await actions.perform(.read, on: messageID, accountID: accountID)
         } catch {
-            logger.warning("Auto mark-read failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Auto mark-read failed: \(error.localizedDescription, privacy: .private)")
             return
         }
         await reloadConversations()

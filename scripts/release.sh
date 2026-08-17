@@ -221,7 +221,8 @@ if [[ $DRY_RUN -eq 1 ]]; then
   skip "notarization + stapling"
 else
   log "Submit to notarytool (blocking)"
-  ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
+  xattr -cr "$APP"
+  ditto -c -k --keepParent --norsrc "$APP" "$NOTARIZE_ZIP"
   # notarytool --wait exits 0 even on a terminal "Invalid" status, so gate explicitly.
   xcrun notarytool submit "$NOTARIZE_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait --timeout 30m 2>&1 \
     | tee "$BUILD_DIR/notarize.log"
@@ -235,17 +236,24 @@ else
 fi
 
 # ---------- package ----------
-# ditto -c -k --keepParent is the ONLY archiver whose output preserves the bundle's
-# code-signature seal (framework symlinks, no AppleDouble ._* files); Sparkle unarchives
-# with the matching reader.
+# Issue #2 (bermanto): plain `ditto -c -k` stores every extended attribute (quarantine,
+# Finder info, provenance) as an AppleDouble "._*" entry — 131 of them in v0.1.0/v0.1.1.
+# `ditto -x` silently folds those back into xattrs, so OUR verification passed, but
+# Finder/`unzip` leave them as real files inside the bundle and `codesign --verify
+# --strict` then reports "added files" in Sparkle's installer. Fix: strip xattrs from
+# the signed app first, archive with --norsrc (no resource forks / AppleDouble at all),
+# and verify with `unzip`, the reader users actually hit.
 log "Package $(basename "$OUT_ZIP")"
 rm -f "$OUT_ZIP"
-ditto -c -k --keepParent "$APP" "$OUT_ZIP"
+xattr -cr "$APP"
+ditto -c -k --keepParent --norsrc "$APP" "$OUT_ZIP"
+APPLEDOUBLE_COUNT="$(unzip -l "$OUT_ZIP" | awk '{print $4}' | grep -c '/\._' || true)"
+[[ "$APPLEDOUBLE_COUNT" == "0" ]] || die "zip contains $APPLEDOUBLE_COUNT AppleDouble (._*) entries — packaging regression"
 
-log "Post-package verification (on the ACTUAL distribution zip)"
+log "Post-package verification (on the ACTUAL distribution zip, extracted with unzip)"
 VERIFY_DIR="$(mktemp -d)"
-ditto -xk "$OUT_ZIP" "$VERIFY_DIR"
-codesign --verify --strict --deep --verbose=2 "$VERIFY_DIR/${APP_NAME}.app" || die "codesign verify failed on the packaged zip"
+unzip -q "$OUT_ZIP" -d "$VERIFY_DIR"
+codesign --verify --strict --deep --verbose=2 "$VERIFY_DIR/${APP_NAME}.app" || die "codesign verify failed on the packaged zip (unzip extraction)"
 if [[ $DRY_RUN -eq 0 ]]; then
   spctl --assess --type execute --verbose "$VERIFY_DIR/${APP_NAME}.app" || die "spctl assess failed on the packaged zip"
 fi

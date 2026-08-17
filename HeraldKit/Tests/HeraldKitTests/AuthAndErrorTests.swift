@@ -47,6 +47,31 @@ import Testing
         #expect(await tokens.refreshCallCount == 1)
     }
 
+    /// Issue #1 (bermanto): with no refresh token, the provider's
+    /// `OAuthError.missingRefreshToken` was flattened into `.transport(...)`, so
+    /// the app showed "Sync problem … Retry" and Retry could never succeed. Fails
+    /// if that error (or `.reauthenticationRequired`) surfaces as anything but
+    /// `.unauthorized`, the case the UI routes to the re-authenticate banner.
+    @Test("A refresh that cannot happen surfaces as .unauthorized, not a transport error")
+    func missingRefreshTokenIsUnauthorized() async throws {
+        let server = FakeServer()
+        server.route(
+            "GET",
+            "/api/v1/mailboxes",
+            .error(401, code: "INVALID_OAUTH_TOKEN", message: "expired", headers: ["WWW-Authenticate": Self.invalidTokenChallenge])
+        )
+        for failure in [OAuthError.missingRefreshToken, OAuthError.reauthenticationRequired] {
+            let tokens = FakeTokenProvider(initial: "stale", refreshedTokens: [])
+            await tokens.setRefreshFailure(failure)
+            do {
+                _ = try await makeClient(server, tokens: tokens).listMailboxes()
+                Issue.record("expected a throw for \(failure)")
+            } catch let error as MailAPIError {
+                #expect(error == .unauthorized, "got \(error) for \(failure)")
+            }
+        }
+    }
+
     @Test("A second 401 after refreshing surfaces .unauthorized instead of looping")
     func secondUnauthorizedGivesUp() async throws {
         let server = FakeServer()

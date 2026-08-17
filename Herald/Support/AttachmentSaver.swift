@@ -40,7 +40,7 @@ enum AttachmentSaver {
             try url.setResourceValues(values)
         } catch {
             logger.warning(
-                "Could not quarantine the saved attachment: \(error.localizedDescription, privacy: .public)"
+                "Could not quarantine the saved attachment: \(error.localizedDescription, privacy: .private)"
             )
         }
     }
@@ -63,7 +63,7 @@ enum AttachmentSaver {
             return nil
         } catch {
             logger.error(
-                "Attachment \(attachment.id, privacy: .public) save failed: \(error.localizedDescription, privacy: .public)"
+                "Attachment \(attachment.id, privacy: .public) save failed: \(error.localizedDescription, privacy: .private)"
             )
             return error.localizedDescription
         }

@@ -276,7 +276,7 @@ public actor SyncEngine {
         } catch {
             consecutiveFailures += 1
             logger.warning(
-                "Sync pass \(self.consecutiveFailures, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+                "Sync pass \(self.consecutiveFailures, privacy: .public) failed (\((error as? MailAPIError)?.logCode ?? String(describing: type(of: error)), privacy: .public)): \(error.localizedDescription, privacy: .private)"
             )
             emit(.failed(error))
         }

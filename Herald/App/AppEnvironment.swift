@@ -76,7 +76,7 @@ final class AppEnvironment {
             self.container = container
             self.store = MailStore(modelContainer: container)
         } catch {
-            logger.error("Mail cache unavailable: \(error.localizedDescription, privacy: .public)")
+            logger.error("Mail cache unavailable: \(error.localizedDescription, privacy: .private)")
             phase = .failed("Herald could not open its local mail cache. \(error.localizedDescription)")
             return
         }
@@ -90,7 +90,7 @@ final class AppEnvironment {
         do {
             accounts = try auth.accounts()
         } catch {
-            logger.error("Account list unreadable: \(error.localizedDescription, privacy: .public)")
+            logger.error("Account list unreadable: \(error.localizedDescription, privacy: .private)")
             phase = .failed(error.localizedDescription)
             return
         }
@@ -113,7 +113,7 @@ final class AppEnvironment {
                 store: store
             )
         } catch {
-            logger.error("Account activation failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Account activation failed: \(error.localizedDescription, privacy: .private)")
             phase = .failed(error.localizedDescription)
         }
     }
@@ -187,7 +187,7 @@ final class AppEnvironment {
             presentsAddAccount = false
             await activate(account)
         } catch {
-            logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
             signInError = error.localizedDescription
         }
     }
@@ -207,7 +207,7 @@ final class AppEnvironment {
             do {
                 try await auth.signOut(account)
             } catch {
-                logger.error("Sign-out failed: \(error.localizedDescription, privacy: .public)")
+                logger.error("Sign-out failed: \(error.localizedDescription, privacy: .private)")
                 signInError = error.localizedDescription
             }
         }
@@ -215,7 +215,7 @@ final class AppEnvironment {
             do {
                 try await store.deleteAll(accountID: accountID)
             } catch {
-                logger.error("Cache purge failed: \(error.localizedDescription, privacy: .public)")
+                logger.error("Cache purge failed: \(error.localizedDescription, privacy: .private)")
             }
         }
         account = nil

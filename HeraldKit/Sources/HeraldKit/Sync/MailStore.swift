@@ -67,7 +67,7 @@ public actor MailStore {
         do {
             return try modelContext.fetch(descriptor).map(Self.mailbox(from:))
         } catch {
-            logger.error("Mailbox fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Mailbox fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -100,7 +100,7 @@ public actor MailStore {
         do {
             return try modelContext.fetch(descriptor).map(Self.conversation(from:))
         } catch {
-            logger.error("Conversation fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Conversation fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -141,7 +141,7 @@ public actor MailStore {
         do {
             return try modelContext.fetchCount(descriptor)
         } catch {
-            logger.error("Unread count failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Unread count failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -157,7 +157,7 @@ public actor MailStore {
         do {
             return try modelContext.fetch(descriptor).map(Self.message(from:))
         } catch {
-            logger.error("Thread fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Thread fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -179,7 +179,7 @@ public actor MailStore {
         do {
             return try modelContext.fetch(descriptor).map(Self.message(from:))
         } catch {
-            logger.error("Folder fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Folder fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -190,7 +190,7 @@ public actor MailStore {
         do {
             return try fetchMessage(id: id, accountID: accountID).map(Self.message(from:))
         } catch {
-            logger.error("Message fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Message fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -211,7 +211,7 @@ public actor MailStore {
                 fetchedAt: row.fetchedAt
             )
         } catch {
-            logger.error("Body fetch failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Body fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -250,7 +250,7 @@ public actor MailStore {
             try save()
             return ChangeSet(updated: [messageID])
         } catch {
-            logger.error("Body store failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Body store failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -275,7 +275,7 @@ public actor MailStore {
             if !changes.isEmpty { try save() }
             return changes
         } catch {
-            logger.error("Mailbox upsert failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Mailbox upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -317,7 +317,7 @@ public actor MailStore {
             if !changes.isEmpty { try save() }
             return changes
         } catch {
-            logger.error("Conversation upsert failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Conversation upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -343,7 +343,7 @@ public actor MailStore {
             if !changes.isEmpty { try save() }
             return changes
         } catch {
-            logger.error("Message upsert failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Message upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -372,7 +372,7 @@ public actor MailStore {
             if !changes.isEmpty { try save() }
             return changes
         } catch {
-            logger.error("Message tombstoning failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Message tombstoning failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -401,7 +401,7 @@ public actor MailStore {
             if !changes.isEmpty { try save() }
             return changes
         } catch {
-            logger.error("Conversation tombstoning failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Conversation tombstoning failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -415,7 +415,7 @@ public actor MailStore {
             try modelContext.delete(model: CachedMailbox.self, where: #Predicate { $0.accountID == accountID })
             try save()
         } catch {
-            logger.error("Cache purge failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Cache purge failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -446,7 +446,7 @@ public actor MailStore {
             try save()
             return undo
         } catch {
-            logger.error("Local message action failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Local message action failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -477,7 +477,7 @@ public actor MailStore {
             try save()
             return undo
         } catch {
-            logger.error("Local conversation action failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Local conversation action failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -516,7 +516,7 @@ public actor MailStore {
             }
             try save()
         } catch {
-            logger.error("Local action revert failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Local action revert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }

@@ -231,6 +231,17 @@ nonisolated extension MailAPIError {
     static func mapping(_ error: any Error) -> MailAPIError {
         if let mailError = error as? MailAPIError { return mailError }
         if let clientError = error as? ClientError { return mapping(clientError.underlyingError) }
+        // Issue #1: the token provider's failures were flattened into `.transport`,
+        // so "no refresh token" / "refresh refused" surfaced as a generic sync error
+        // with a Retry that could never succeed. A request that cannot be
+        // authenticated IS `.unauthorized` — the one case every consumer already
+        // routes to the re-authenticate banner and that stops the sync loop.
+        if let oauth = error as? OAuthError {
+            switch oauth {
+            case .reauthenticationRequired, .missingRefreshToken: return .unauthorized
+            default: return .transport(.init(oauth))
+            }
+        }
         if error is DecodingError { return .decoding }
         if let urlError = error as? URLError { return .transport(.init(urlError)) }
         // Body/schema failures surface as OpenAPIRuntime runtime errors, not DecodingError.

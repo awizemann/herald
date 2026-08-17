@@ -51,7 +51,7 @@ public nonisolated enum MailStoreContainer {
                 withIntermediateDirectories: true
             )
         } catch {
-            logger.error("Could not create store directory: \(error.localizedDescription, privacy: .public)")
+            logger.error("Could not create store directory: \(error.localizedDescription, privacy: .private)")
             throw error
         }
 
@@ -59,13 +59,13 @@ public nonisolated enum MailStoreContainer {
             return try open(url)
         } catch {
             logger.warning(
-                "Mail cache at \(url.lastPathComponent, privacy: .public) is unusable (\(error.localizedDescription, privacy: .public)); deleting and rebuilding from the server."
+                "Mail cache at \(url.lastPathComponent, privacy: .public) is unusable (\(error.localizedDescription, privacy: .private)); deleting and rebuilding from the server."
             )
             removeStoreFiles(at: url)
             do {
                 return try open(url)
             } catch {
-                logger.error("Mail cache could not be rebuilt: \(error.localizedDescription, privacy: .public)")
+                logger.error("Mail cache could not be rebuilt: \(error.localizedDescription, privacy: .private)")
                 throw error
             }
         }
@@ -85,7 +85,7 @@ public nonisolated enum MailStoreContainer {
                 try manager.removeItem(at: target)
             } catch {
                 logger.error(
-                    "Could not delete \(target.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "Could not delete \(target.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .private)"
                 )
             }
         }

@@ -99,7 +99,7 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
             let envelope = try JSONDecoder().decode(ErrorEnvelope.self, from: Data(bytes))
             return (envelope.error.code, envelope.error.message)
         } catch {
-            logger.warning("could not decode error envelope: \(error.localizedDescription, privacy: .public)")
+            logger.warning("could not decode error envelope: \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

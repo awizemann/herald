@@ -32,7 +32,7 @@ nonisolated enum OAuthHTTP {
         } catch let error as OAuthError {
             throw error
         } catch {
-            logger.warning("oauth request failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("oauth request failed: \(error.localizedDescription, privacy: .private)")
             throw OAuthError.transport(MailAPIError.TransportFailure(error))
         }
     }

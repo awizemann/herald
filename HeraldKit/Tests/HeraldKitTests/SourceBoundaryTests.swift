@@ -63,4 +63,21 @@ import Testing
         }
         #expect(offenders.map(\.lastPathComponent).sorted() == [])
     }
+
+    /// Issue #3 (bermanto): server error text can carry recipients or subjects,
+    /// so `localizedDescription` is never logged as public data. Fails on any new
+    /// `privacy: .public` interpolation of a description in the kit or the app.
+    @Test func noErrorDescriptionIsLoggedPublicly() throws {
+        let kit = Self.sourcesDirectory  // HeraldKit/Sources/HeraldKit
+        let roots = [kit, kit.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Herald")]
+        var offenders: [String] = []
+        for root in roots {
+            guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { continue }
+            for case let url as URL in e where url.pathExtension == "swift" {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                if text.contains("localizedDescription, privacy: .public") { offenders.append(url.lastPathComponent) }
+            }
+        }
+        #expect(offenders.isEmpty, "public error descriptions in: \(offenders)")
+    }
 }

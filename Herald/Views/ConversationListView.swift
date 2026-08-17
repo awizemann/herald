@@ -52,21 +52,10 @@ struct ConversationListView: View {
                 openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
             )
             .tag(row.id)
-            // A CLICK drills in; an arrow-key selection change does not. The
-            // selection binding cannot tell the two apart — both just hand back a
-            // new id — so the mouse gets its own gesture. `simultaneousGesture`,
-            // not `onTapGesture`: the latter eats the click and the row stops
-            // selecting at all.
-            //
-            // A gesture is invisible to Full Keyboard Access, VoiceOver and
-            // Switch Control, which is precisely why it is not the only way in:
-            // ⏎ and the row's chevron button cover the keyboard and the rotor.
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    guard row.messageCount > 1 else { return }
-                    model.openThread(row.id)
-                }
-            )
+            // Selection itself drills into a multi-message thread (see
+            // MailViewModel.selectedThreadID). No tap gesture here: issue #4 —
+            // a simultaneous TapGesture on the row content raced the List's own
+            // selection, so clicks on text often failed to select at all.
         }
         .listStyle(.inset)
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or

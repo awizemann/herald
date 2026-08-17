@@ -51,7 +51,7 @@ enum RemoteContentBlocker {
                     encodedContentRuleList: ruleJSON
                 )
             } catch {
-                logger.error("Remote-content rule list failed to compile: \(error.localizedDescription, privacy: .public)")
+                logger.error("Remote-content rule list failed to compile: \(error.localizedDescription, privacy: .private)")
                 return nil
             }
         }

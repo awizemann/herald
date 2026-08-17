@@ -132,7 +132,7 @@ enum WebAuthenticationRunner {
             logger.warning("sign-in cancelled by the user")
             return .userCancelled
         }
-        logger.error("web authentication failed: \(error.localizedDescription, privacy: .public)")
+        logger.error("web authentication failed: \(error.localizedDescription, privacy: .private)")
         return .webAuthenticationFailed(error.localizedDescription)
     }
 }

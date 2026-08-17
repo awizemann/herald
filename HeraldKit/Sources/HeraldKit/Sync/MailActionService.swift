@@ -22,7 +22,7 @@ public nonisolated struct MailActionService: Sendable {
             _ = try await api.perform(action, onMessage: messageID)
         } catch {
             logger.warning(
-                "Message action \(action.rawValue, privacy: .public) rejected; reverting: \(error.localizedDescription, privacy: .public)"
+                "Message action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
             try? await revert(undo)
             throw error
@@ -52,7 +52,7 @@ public nonisolated struct MailActionService: Sendable {
             _ = try await api.perform(action, onConversation: representative.id, in: folder)
         } catch {
             logger.warning(
-                "Conversation action \(action.rawValue, privacy: .public) rejected; reverting: \(error.localizedDescription, privacy: .public)"
+                "Conversation action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
             try? await revert(undo)
             throw error
@@ -65,8 +65,16 @@ public nonisolated struct MailActionService: Sendable {
         do {
             try await store.revertLocalAction(undo)
         } catch {
-            logger.error("Revert failed; cache will heal on next sync: \(error.localizedDescription, privacy: .public)")
+            logger.error("Revert failed; cache will heal on next sync: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+    }
+}
+
+nonisolated extension MailActionService {
+    /// A payload-free tag for the public part of a log line. Server messages can
+    /// echo recipients or subjects, so the description itself is always private.
+    static func code(for error: any Error) -> String {
+        (error as? MailAPIError)?.logCode ?? String(describing: type(of: error))
     }
 }

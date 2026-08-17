@@ -146,11 +146,13 @@ public actor MailStore {
         }
     }
 
-    /// Every cached message in a thread, oldest first (reading order).
+    /// Every cached message in a thread, NEWEST first — the same order as the
+    /// conversation list (owner decision 2026-08-16: new mail is always on top),
+    /// so the drilled-in thread view reads like the list it came from.
     public func messages(accountID: String, threadID: String) throws -> [MessageSummary] {
         let descriptor = FetchDescriptor<CachedMessage>(
             predicate: #Predicate { $0.accountID == accountID && $0.threadID == threadID },
-            sortBy: [SortDescriptor(\.sortDate, order: .forward)]
+            sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
         )
         do {
             return try modelContext.fetch(descriptor).map(Self.message(from:))

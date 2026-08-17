@@ -648,7 +648,8 @@ final class MailViewModel {
             guard !Task.isCancelled, selectedThreadID == threadID else { return }
             threadMessages = messages
             if selectedMessageID == nil || !messages.contains(where: { $0.id == selectedMessageID }) {
-                selectedMessageID = messages.last?.id
+                // Newest first, so the newest is the head of the list.
+                selectedMessageID = messages.first?.id
             }
         } catch {
             logger.error("Thread load failed: \(error.localizedDescription, privacy: .public)")

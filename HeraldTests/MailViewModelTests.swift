@@ -585,6 +585,26 @@ func wait(
         #expect(harness.model.isShowingThread == false)
     }
 
+    /// Owner rule 2026-08-16: new mail is ALWAYS first — in the conversation list
+    /// AND inside a drilled thread — and the newest message is the one auto-selected.
+    /// Fails if either list comes back oldest-first, or if the older message is
+    /// what gets selected on entry.
+    @Test func newestIsFirstInBothListsAndAutoSelectedInTheThread() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()   // m9a at epoch, m9b at epoch+120s
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        // Conversation list: t9's latest (epoch+120) is newer than t1's (epoch) → t9 first.
+        #expect(harness.model.presentedConversations.map(\.id) == ["t9", "t1"])
+
+        harness.model.selectedThreadID = "t9"
+        try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
+        #expect(harness.model.threadMessages.map(\.id) == ["m9b", "m9a"], "thread must be newest-first")
+        #expect(harness.model.selectedMessageID == "m9b", "the newest message is auto-selected")
+    }
+
     /// The mouse path: a click both selects and opens — including a click on the
     /// row that is ALREADY selected, where the selection binding reports no change
     /// at all and nothing else would fire.

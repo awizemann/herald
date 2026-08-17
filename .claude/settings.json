@@ -1,0 +1,24 @@
+{
+  "hooks" : {
+    "SessionStart" : [
+      {
+        "hooks" : [
+          {
+            "command" : "bash \"$CLAUDE_PROJECT_DIR\/.claude\/memophant-memory-hook.sh\"",
+            "type" : "command"
+          }
+        ]
+      }
+    ],
+    "Stop" : [
+      {
+        "hooks" : [
+          {
+            "command" : "bash \"$CLAUDE_PROJECT_DIR\/.claude\/memophant-stop-hook.sh\"",
+            "type" : "command"
+          }
+        ]
+      }
+    ]
+  }
+}

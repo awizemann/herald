@@ -8,13 +8,3 @@
 5. **Agent artifacts (plans/reports/briefs) → `documents/` (exact lowercase), via `write_tier_file(tier: "documents", path: …)`** — never a repo's `docs/` folder (that's the project's own documentation) and never a case-variant like `Documents/`.
 File memory notes under one of six folders (architecture/conventions/decisions/operations/project/roadmap), never the root. When a note is grounded in code, pass `source_paths` (the repo files it depends on) so Memory Health can drift-check it — an unanchored code note can't be kept current.
 <!-- memophant:end -->
-
-# Herald — native macOS client for HQBase
-
-Read `.memory/` first (project overview, architecture, conventions). Non-negotiables:
-- Swift 6.2 approachable concurrency: `SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor`, strict concurrency. See "Herald Concurrency Rules".
-- Strict Sendable DTO boundary; views never touch @Model. See "Herald Architecture".
-- SwiftData store is a rebuildable cache — server is the system of record. See "Herald Sync Model".
-- Swift Testing, discriminating tests, URLProtocol fake server. See "Herald Testing Conventions".
-- `project.yml` is source of truth; `xcodegen generate`; build with `./scripts/build-detached.sh`.
-- Never push to the remote without explicit approval.

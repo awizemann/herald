@@ -244,6 +244,8 @@ struct ThreadMessageRow: View {
             }
             .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
         }
+        .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 2)
         .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
     }
@@ -426,6 +428,9 @@ struct ConversationRow: View {
             }
             .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
         }
+        // Stable minimum height + no vertical compression: see MailTheme.rowMinHeight.
+        .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 2)
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.

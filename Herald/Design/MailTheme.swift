@@ -112,6 +112,11 @@ enum MailTheme {
     /// sender can squeeze the date into an ellipsis — which is exactly what the
     /// one-line layout did before.
     static let dateSlotWidth: CGFloat = 78
+    /// Every list row reserves at least this height (chip/date line, sender, subject,
+    /// one preview line). macOS `List` caches a row's measured height, so a row whose
+    /// content grows after first layout — new mail arriving, mailbox names filling in —
+    /// can otherwise stay clipped at the shorter height it was first measured with.
+    static let rowMinHeight: CGFloat = 66
 
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).

@@ -15,3 +15,5 @@ HeraldKit/.build-*/
 releases/**/*.zip
 releases/**/*.delta
 releases/**/appcast.xml
+releases/**/RELEASE_NOTES.md
+releases/**/*.html

@@ -10,8 +10,9 @@
 #   ./scripts/release.sh 0.1.0 --dry-run    # everything EXCEPT notarize, publish, and tag
 #   ./scripts/release.sh 0.1.0 --build 7    # pin CURRENT_PROJECT_VERSION instead of +1
 #
-# Release notes: releases/v<VERSION>/RELEASE_NOTES.md, if present, is committed with the
-# version bump and used as the GitHub release body.
+# Release notes come from CHANGELOG.md — the "## [<VERSION>]" section is REQUIRED (preflight
+# fails without it). It becomes the GitHub release body and, rendered to HTML beside the zip,
+# the Sparkle update notes users see in "Check for Updates…". Write the notes, then release.
 #
 # ONE-TIME PREREQS (see README "Releasing"):
 #   1. "Developer ID Application" certificate for team 3Q6X2L86C4 in the login Keychain.
@@ -72,7 +73,8 @@ ENTITLEMENTS="$REPO_ROOT/Herald/Herald.entitlements"
 # Build outside the repo so nothing transient lands in git or gets signed.
 BUILD_DIR="${TMPDIR:-/tmp}/herald-release-build"
 RELEASE_DIR="$REPO_ROOT/releases/v${VERSION}"
-NOTES_FILE="$RELEASE_DIR/RELEASE_NOTES.md"
+NOTES_FILE="$RELEASE_DIR/RELEASE_NOTES.md"           # derived from CHANGELOG.md, not hand-written
+CHANGELOG_SECTION="$REPO_ROOT/scripts/changelog-section.py"
 OUT_ZIP="$RELEASE_DIR/${APP_NAME}-${VERSION}.zip"
 DOWNLOAD_PREFIX="https://github.com/${REPO}/releases/download/v${VERSION}/"
 
@@ -87,6 +89,8 @@ cd "$REPO_ROOT"
 
 # ---------- preflight ----------
 log "Preflight${DRY_RUN:+ (dry run)}"
+python3 "$CHANGELOG_SECTION" "$VERSION" >/dev/null 2>&1 \
+  || die "CHANGELOG.md has no '## [$VERSION]' section — write the release notes first (see CHANGELOG.md header)"
 require_cmd xcodebuild; require_cmd xcrun; require_cmd ditto; require_cmd gh; require_cmd xcodegen; require_cmd git
 
 # The entitlements file must parse — a malformed plist fails the archive late and cryptically,
@@ -175,7 +179,6 @@ else
     skip "commit of the version bump (project.yml is edited in your working tree — 'git checkout project.yml' to undo)"
   else
     git add "$PROJECT_YML"
-    [[ -f "$NOTES_FILE" ]] && git add "$NOTES_FILE"
     git commit -m "chore(release): v${VERSION}"
   fi
 fi
@@ -253,6 +256,10 @@ rm -rf "$VERIFY_DIR"
 # key from the Keychain, reads the version out of the .app, and writes appcast.xml.
 # --download-url-prefix points the enclosure at this version's GitHub release asset; only the
 # small appcast.xml is served from Pages, never the binary.
+# Release notes for the appcast: generate_appcast embeds a .html file that shares the
+# archive's base name, so the update prompt shows this version's CHANGELOG section.
+python3 "$CHANGELOG_SECTION" "$VERSION" --html > "${OUT_ZIP%.zip}.html" \
+  || die "could not render CHANGELOG.md section for $VERSION"
 log "generate_appcast (account: $SPARKLE_ACCOUNT)"
 "$SPARKLE_BIN/generate_appcast" \
   --account "$SPARKLE_ACCOUNT" \
@@ -277,7 +284,8 @@ git tag "v${VERSION}"
 git push origin "v${VERSION}"
 
 log "Create GitHub release ($REPO)"
-[[ -f "$NOTES_FILE" ]] || { mkdir -p "$RELEASE_DIR"; printf 'Herald v%s\n' "$VERSION" > "$NOTES_FILE"; }
+mkdir -p "$RELEASE_DIR"
+python3 "$CHANGELOG_SECTION" "$VERSION" > "$NOTES_FILE" || die "could not extract CHANGELOG.md section for $VERSION"
 gh release create "v${VERSION}" -R "$REPO" --latest \
   --title "${APP_NAME} v${VERSION}" --notes-file "$NOTES_FILE" "$OUT_ZIP"
 

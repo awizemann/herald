@@ -93,6 +93,14 @@ xcrun notarytool store-credentials "herald-notary" \
   --key <AuthKey_XXXX>.p8 --key-id <KEY_ID> --issuer <ISSUER_ID>
 ```
 
+### Release notes
+
+`CHANGELOG.md` is the single source of release notes (Keep a Changelog format). Before cutting a
+version, move the `[Unreleased]` items into a `## [x.y.z] - YYYY-MM-DD` section. `release.sh`
+refuses to run without that section, and uses it for both the GitHub Release body and the
+Sparkle update notes shown in "Check for Updates…". Back-fill after the fact with
+`gh release edit vX.Y.Z --notes-file <(python3 scripts/changelog-section.py X.Y.Z)`.
+
 ## Architecture (short version)
 
 - `HeraldKit/` — SPM package with all logic. `HeraldAPI` is a leaf target holding only the

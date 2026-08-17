@@ -12,7 +12,7 @@ struct SettingsView: View {
             MailboxSettingsPane(model: environment.mail)
                 .tabItem { Label("Mailboxes", systemImage: "tray.2") }
         }
-        .frame(width: 460, height: 320)
+        .frame(width: 640, height: 320)
     }
 }
 
@@ -44,7 +44,20 @@ private struct MailboxColorRow: View {
     let mailbox: Mailbox
 
     var body: some View {
-        LabeledContent {
+        // One line per mailbox: name + address on the left, colour + reset on the
+        // right. An explicit HStack rather than LabeledContent — in a grouped Form
+        // LabeledContent stacks its label over its content once the row is tight,
+        // which is exactly the wrap the owner asked to remove.
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                Text(mailbox.address)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
             HStack(spacing: 8) {
                 Picker("Color", selection: selectedToken) {
                     ForEach(MailTheme.mailboxPalette) { tint in
@@ -67,14 +80,11 @@ private struct MailboxColorRow: View {
                 }
                 .disabled(model.hasMailboxColorOverride(mailbox.id) == false)
             }
-        } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(name)
-                Text(mailbox.address)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            .fixedSize()
         }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(name), \(mailbox.address)")
     }
 
     private var name: String {

@@ -10,6 +10,18 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-17
+
+### Fixed
+- Sign-ins no longer expire after about an hour. HQBase's protected-resource metadata lists only
+  the API permissions (`mail:read`, `mail:write`, `mail:send`) and Herald requested exactly that
+  set, so it never asked for `offline_access` and never received a refresh token; when the first
+  access token expired, the only recovery was signing in again. Herald now always requests
+  `offline_access` in addition to the advertised scopes. Existing accounts need one more sign-in
+  to obtain a refresh token — after that, sessions persist. (#1)
+- New mail could appear as a clipped, one-line row until the list re-measured it; rows now have a
+  stable minimum height.
+
 ## [0.1.2] - 2026-08-16
 
 ### Fixed
@@ -62,7 +74,8 @@ with OAuth 2.1 PKCE bearer tokens.
 - Local cache for instant launch, background polling sync (15 s while active).
 - Sparkle auto-updates; Developer ID signed and notarized; sandboxed.
 
-[Unreleased]: https://github.com/awizemann/herald/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/awizemann/herald/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/awizemann/herald/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/awizemann/herald/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/awizemann/herald/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/awizemann/herald/releases/tag/v0.1.0

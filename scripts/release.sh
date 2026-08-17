@@ -102,7 +102,7 @@ plutil -lint "$ENTITLEMENTS" >/dev/null || die "$ENTITLEMENTS is not a valid pli
 # Clean tree, but ONLY the build inputs: the Memophant-managed tiers (.memory/, tasks/,
 # documents/, TASKS.md) are dirty here by design, so asserting the whole tree clean would make
 # releases impossible.
-BUILD_PATHS=(Herald HeraldKit HeraldTests project.yml scripts .github)
+BUILD_PATHS=(Herald HeraldKit HeraldTests project.yml scripts .github/workflows)
 DIRTY="$(git status --porcelain -- "${BUILD_PATHS[@]}" || true)"
 [[ -z "$DIRTY" ]] || die "build inputs not committed (commit or stash first):
 $DIRTY"

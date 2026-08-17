@@ -3,13 +3,21 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.1.1</title>
-            <pubDate>Sun, 16 Aug 2026 20:05:47 -0400</pubDate>
-            <sparkle:version>2</sparkle:version>
-            <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
+            <title>0.1.2</title>
+            <pubDate>Sun, 16 Aug 2026 20:28:10 -0400</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.1.1/Herald-0.1.1.zip" length="2790757" type="application/octet-stream" sparkle:edSignature="ZXjsjekmzeEMl7tnZCdXEOO2536JLFjA0U8uGcX80H9eFG0C192d51UGGyDP/BKuGrtXrntaS7RwFAl+2oyuDw=="/>
+            <description><![CDATA[<h3>Fixed</h3>
+<ul>
+<li>Release packages no longer contain AppleDouble (<code>._*</code>) entries; extracting with Finder or <code>unzip</code> now passes <code>codesign --verify --strict --deep</code>. The release script strips extended attributes, archives with <code>--norsrc</code>, and verifies the zip with <code>unzip</code>. (#2)</li>
+<li>When the server refuses a token refresh — or no refresh token was granted at sign-in — Herald now shows the &quot;Sign in again&quot; banner (whose button re-runs consent for the same account) instead of a &quot;Sync problem&quot; with a Retry that could never succeed. (#1)</li>
+<li>Error descriptions are never logged as public data; log lines carry a payload-free error code and keep the description private, so server messages that echo recipients or subjects stay out of the unified log. A source-level test guards this. (#3)</li>
+<li>Clicking a conversation&#x27;s text reliably selects it. A tap gesture added for click-to-open was racing the list&#x27;s own selection; selection now opens multi-message threads by itself. (#4)</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.1.2/Herald-0.1.2.zip" length="2740614" type="application/octet-stream" sparkle:edSignature="GwLD2PzQx5vJFmWw9h7OUTsFrtNr2IP3FlXCDXmb+EyJZS7Z/N3LSYRHYDy1XaIrXpvZNee7RmEnA6xaDr/RDA=="/>
         </item>
     </channel>
 </rss>

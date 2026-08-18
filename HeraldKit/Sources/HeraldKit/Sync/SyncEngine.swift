@@ -54,8 +54,9 @@ public nonisolated struct SyncScope: Sendable, Hashable {
     )
 }
 
-/// Polling cadence. The server has no delta endpoint and no push, so the client
-/// polls: 15s while a window is key, 60s when idle.
+/// Polling cadence. There is no push (the server's only push is browser Web
+/// Push), so the client polls — cheaply in journal mode, by re-listing on an
+/// older server: 15s while a window is key, 60s when idle.
 public nonisolated enum SyncCadence: Sendable, Hashable {
     case active
     case idle
@@ -77,11 +78,15 @@ public actor SyncEngine {
     /// Hard stop on the conversation page-walk. A server that keeps handing back
     /// a `nextCursor` must not spin the loop forever.
     public static let defaultMaxConversationPages = 20
+    /// Same idea for the message page-walk: 50 × 100 rows per folder is far more
+    /// than any cache needs and bounds a server that keeps handing back cursors.
+    public static let defaultMaxMessagePages = 50
 
     private let api: any MailAPIClient
     private let store: MailStore
     private let scope: SyncScope
     private let maxConversationPages: Int
+    private let maxMessagePages: Int
 
     private let eventStream: AsyncStream<SyncEvent>
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
@@ -110,12 +115,14 @@ public actor SyncEngine {
         api: any MailAPIClient,
         store: MailStore,
         scope: SyncScope = .default,
-        maxConversationPages: Int = SyncEngine.defaultMaxConversationPages
+        maxConversationPages: Int = SyncEngine.defaultMaxConversationPages,
+        maxMessagePages: Int = SyncEngine.defaultMaxMessagePages
     ) {
         self.api = api
         self.store = store
         self.scope = scope
         self.maxConversationPages = max(1, maxConversationPages)
+        self.maxMessagePages = max(1, maxMessagePages)
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
         self.eventContinuation = continuation
@@ -289,38 +296,229 @@ public actor SyncEngine {
         return failure.domain == URLError.errorDomain && failure.code == URLError.cancelled.rawValue
     }
 
+    // MARK: - Mode selection
+
+    /// Thrown internally when `GET /changes` answers 404 — the route does not
+    /// exist on this server. Kept private so a 404 from any OTHER call (which is
+    /// a real error) can never be mistaken for "no journal".
+    private struct ChangeFeedUnsupported: Error {}
+
+    /// Feature detection, in one place:
+    ///
+    /// - `/changes` answering **404** means the server predates the journal. The
+    ///   account is marked legacy for the lifetime of THIS engine (one app
+    ///   activation) and every later pass goes straight to the full-listing path;
+    ///   restarting the engine re-probes, which is what makes a server upgrade
+    ///   take effect without quitting Herald.
+    /// - Any successful `/changes` response means journal mode.
+    /// - Pagination is detected independently, from the `Link` header: the first
+    ///   `nextCursor` seen for an account proves the server paginates, which is
+    ///   what retires the 100-row tombstone guard.
+    private var legacyAccounts: Set<String> = []
+    private var paginatingAccounts: Set<String> = []
+
+    private func fetchChanges(cursor: String?) async throws -> ChangePage {
+        do {
+            return try await api.changes(cursor: cursor, limit: Self.changePageLimit)
+        } catch let error as MailAPIError where error == .notFound {
+            throw ChangeFeedUnsupported()
+        }
+    }
+
     private func syncEverything(accountID: String) async throws -> ChangeSet {
+        guard !legacyAccounts.contains(accountID) else {
+            return try await legacySync(accountID: accountID)
+        }
+        do {
+            return try await journalSync(accountID: accountID)
+        } catch is ChangeFeedUnsupported {
+            logger.warning("Server has no /changes route; falling back to full-listing sync for this session")
+            legacyAccounts.insert(accountID)
+            return try await legacySync(accountID: accountID)
+        }
+    }
+
+    // MARK: - Legacy mode (server without /changes)
+
+    /// Exactly the pre-journal behaviour: re-list every mailbox × folder and diff.
+    private func legacySync(accountID: String) async throws -> ChangeSet {
         var changes = ChangeSet()
         let mailboxes = try await api.listMailboxes()
         changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
 
         for mailbox in mailboxes {
-            for folder in scope.folders {
-                try Task.checkCancellation()
-                if let conversationFolder = folder.conversation {
-                    changes.formUnion(
-                        try await syncConversations(
-                            accountID: accountID,
-                            mailboxID: mailbox.id,
-                            folder: conversationFolder
-                        )
-                    )
-                }
-                if let messageFolder = folder.message {
-                    changes.formUnion(
-                        try await syncMessages(accountID: accountID, mailboxID: mailbox.id, folder: messageFolder)
-                    )
-                }
+            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: mailbox.id))
+        }
+        return changes
+    }
+
+    /// Every folder in scope for one mailbox: conversations, then messages.
+    private func syncMailbox(accountID: String, mailboxID: String) async throws -> ChangeSet {
+        var changes = ChangeSet()
+        for folder in scope.folders {
+            try Task.checkCancellation()
+            if let conversationFolder = folder.conversation {
+                changes.formUnion(
+                    try await syncConversations(accountID: accountID, mailboxID: mailboxID, folder: conversationFolder)
+                )
+            }
+            if let messageFolder = folder.message {
+                changes.formUnion(
+                    try await syncMessages(accountID: accountID, mailboxID: mailboxID, folder: messageFolder)
+                )
             }
         }
         return changes
+    }
+
+    // MARK: - Journal mode (server with /changes)
+
+    private func journalSync(accountID: String) async throws -> ChangeSet {
+        let checkpoint = try await store.syncCheckpoint(accountID: accountID)
+        guard let checkpoint, checkpoint.isBootstrapped, let cursor = checkpoint.changeCursor else {
+            return try await bootstrap(accountID: accountID)
+        }
+        do {
+            return try await steadyState(accountID: accountID, cursor: cursor, bootstrappedAt: checkpoint.bootstrappedAt)
+        } catch let error as MailAPIError where error == .cursorExpired {
+            logger.warning("Change cursor expired; discarding the checkpoint and re-bootstrapping")
+            try await store.clearSyncCheckpoint(accountID: accountID)
+            return try await bootstrap(accountID: accountID)
+        }
+    }
+
+    /// Checkpoint FIRST, then the full listing, then the changes that landed
+    /// while the listing ran. Taking the checkpoint afterwards would silently
+    /// drop every change made during the listing.
+    private func bootstrap(accountID: String) async throws -> ChangeSet {
+        let checkpoint = try await fetchChanges(cursor: nil)
+        var changes = ChangeSet()
+        let mailboxes = try await api.listMailboxes()
+        changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
+        for mailbox in mailboxes {
+            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: mailbox.id))
+        }
+        changes.formUnion(
+            try await consumeChanges(accountID: accountID, from: checkpoint.nextCursor, bootstrappedAt: Date())
+        )
+        return changes
+    }
+
+    private func steadyState(accountID: String, cursor: String, bootstrappedAt: Date?) async throws -> ChangeSet {
+        var changes = ChangeSet()
+        let mailboxes = try await api.listMailboxes()
+        let current = Set(mailboxes.map(\.id))
+        let cached = Set(try await store.mailboxes(accountID: accountID).map(\.id))
+
+        // A mailbox the server stopped returning is one we can no longer read:
+        // its cached mail must go, and the journal will never mention it again.
+        for gone in cached.subtracting(current).sorted() {
+            logger.warning("Mailbox \(gone, privacy: .public) is no longer readable; purging its cache")
+            changes.formUnion(try await store.purgeMailbox(mailboxID: gone, accountID: accountID))
+        }
+        changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
+
+        // A newly readable mailbox has no journal history we are entitled to
+        // replay, so it gets a full listing BEFORE the cursor is consumed.
+        for added in current.subtracting(cached).sorted() {
+            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: added))
+        }
+
+        changes.formUnion(
+            try await consumeChanges(accountID: accountID, from: cursor, bootstrappedAt: bootstrappedAt ?? Date())
+        )
+        return changes
+    }
+
+    /// Walks the journal from `cursor` until `hasMore == false`, persisting the
+    /// checkpoint after EACH applied page: a crash (or a thrown page) mid-cycle
+    /// resumes where it stopped instead of replaying — or worse, re-listing.
+    private func consumeChanges(accountID: String, from cursor: String, bootstrappedAt: Date) async throws -> ChangeSet {
+        var changes = ChangeSet()
+        var touched: Set<ConversationScope> = []
+        var next = cursor
+
+        while true {
+            try Task.checkCancellation()
+            let page = try await fetchChanges(cursor: next)
+            changes.formUnion(try await apply(page.changes, accountID: accountID, touched: &touched))
+            next = page.nextCursor
+            try await store.setSyncCheckpoint(
+                SyncCheckpoint(changeCursor: next, bootstrappedAt: bootstrappedAt),
+                accountID: accountID
+            )
+            guard page.hasMore else { break }
+        }
+
+        // Conversation rows are derived, so only the scopes the batch actually
+        // touched are re-listed — a quiet pass costs zero conversation calls.
+        for scope in touched.sorted(by: { ($0.mailboxID ?? "", $0.folder.rawValue) < ($1.mailboxID ?? "", $1.folder.rawValue) }) {
+            changes.formUnion(
+                try await syncConversations(accountID: accountID, mailboxID: scope.mailboxID, folder: scope.folder)
+            )
+        }
+        return changes
+    }
+
+    /// One (mailbox, conversation folder) listing the journal made stale.
+    private nonisolated struct ConversationScope: Sendable, Hashable {
+        let mailboxID: String?
+        let folder: ConversationFolder
+    }
+
+    private func apply(
+        _ changes: [MessageChange],
+        accountID: String,
+        touched: inout Set<ConversationScope>
+    ) async throws -> ChangeSet {
+        var result = ChangeSet()
+        // Upserts go in one batch so change detection runs once per row: an
+        // echoed upsert identical to an optimistic local action is a no-op and
+        // must not repaint the list mid-POST.
+        let upserts = changes.compactMap { change -> MessageSummary? in
+            guard case .upsert(let summary) = change else { return nil }
+            return summary
+        }
+        if !upserts.isEmpty {
+            result.formUnion(try await store.upsertMessages(upserts, accountID: accountID))
+            for summary in upserts {
+                touched.formUnion(conversationScopes(mailboxID: summary.mailboxID, folder: summary.folder))
+            }
+        }
+
+        for change in changes {
+            guard case .delete(let messageID, let mailboxID) = change else { continue }
+            let deletion = try await store.deleteMessage(id: messageID, accountID: accountID)
+            result.formUnion(deletion.changes)
+            touched.formUnion(
+                conversationScopes(mailboxID: deletion.mailboxID ?? mailboxID, folder: deletion.folder)
+            )
+        }
+        return result
+    }
+
+    /// The conversation listings one message change can affect.
+    ///
+    /// `folder == nil` (a tombstone for a message we never cached) means we do
+    /// not know which listing held it, so every folder in scope is refreshed.
+    /// `starred` is always included when it is in scope: starring never changes
+    /// the message folder, so nothing else would reveal it.
+    private func conversationScopes(mailboxID: String?, folder: MailFolder?) -> Set<ConversationScope> {
+        var scopes: Set<ConversationScope> = []
+        for syncFolder in scope.folders {
+            guard let conversationFolder = syncFolder.conversation else { continue }
+            if conversationFolder == .starred || folder == nil || syncFolder.message == folder {
+                scopes.insert(ConversationScope(mailboxID: mailboxID, folder: conversationFolder))
+            }
+        }
+        return scopes
     }
 
     /// Page-walks a folder's conversations until `nextCursor` is nil or the cap
     /// is hit, then tombstones whatever the server stopped returning.
     private func syncConversations(
         accountID: String,
-        mailboxID: String,
+        mailboxID: String?,
         folder: ConversationFolder
     ) async throws -> ChangeSet {
         var changes = ChangeSet()
@@ -377,22 +575,68 @@ public actor SyncEngine {
     /// truncated, so it must not be treated as "the whole folder".
     static let serverMessageListCap = 100
 
-    /// One call is the whole folder ONLY when it is below the server's cap; a
-    /// full-cap response is treated as truncated and nothing is tombstoned
-    /// (deleting rows the server didn't get to return would erase real mail from
-    /// the cache on every pass). Upstream PR3 (pagination + updatedSince) removes
-    /// this limitation; until then busy folders show the newest 100 in the cache.
+    /// Page size asked for on `GET /messages` and `GET /changes` (the servers'
+    /// maximum, and their default).
+    static let messagePageLimit = 100
+    static let changePageLimit = 100
+
+    /// Lists one folder and tombstones what the server stopped returning.
+    ///
+    /// Two servers, one function:
+    /// - **Paginating** (a `Link` header appeared, now or earlier this session):
+    ///   page-walk to the end and tombstone normally — the listing is complete.
+    /// - **Pre-pagination**: one call is the whole folder ONLY when it comes back
+    ///   below the silent 100-row cap; a full-cap response may be truncated and
+    ///   tombstoning is skipped, or every message the server didn't get to return
+    ///   would be erased from the cache on every pass.
     private func syncMessages(
         accountID: String,
         mailboxID: String,
         folder: MailFolder
     ) async throws -> ChangeSet {
-        let messages = try await api.listMessages(folder: folder, mailboxID: mailboxID, search: nil)
-        var changes = try await store.upsertMessages(messages, accountID: accountID)
-        if messages.count >= Self.serverMessageListCap {
-            logger.warning(
-                "Message list for a folder hit the server cap (\(messages.count, privacy: .public)); skipping tombstoning to avoid deleting unreturned mail"
+        var changes = ChangeSet()
+        var seen: Set<String> = []
+        var cursor: String?
+        var pages = 0
+        var reachedEnd = false
+        var paginates = paginatingAccounts.contains(accountID)
+
+        while pages < maxMessagePages {
+            try Task.checkCancellation()
+            let page = try await api.listMessages(
+                folder: folder,
+                mailboxID: mailboxID,
+                search: nil,
+                limit: Self.messagePageLimit,
+                cursor: cursor
             )
+            pages += 1
+            if page.nextCursor != nil {
+                paginatingAccounts.insert(accountID)
+                paginates = true
+            }
+            seen.formUnion(page.messages.map(\.id))
+            changes.formUnion(try await store.upsertMessages(page.messages, accountID: accountID))
+            guard let next = page.nextCursor else {
+                // No next link: the end of a paginated walk, or a whole listing
+                // from a server that cannot paginate at all.
+                reachedEnd = paginates || page.messages.count < Self.serverMessageListCap
+                if !reachedEnd {
+                    logger.warning(
+                        "Message list hit the pre-pagination server cap (\(page.messages.count, privacy: .public)); skipping tombstoning to avoid deleting unreturned mail"
+                    )
+                }
+                break
+            }
+            cursor = next
+        }
+
+        guard reachedEnd else {
+            if pages >= maxMessagePages {
+                logger.warning(
+                    "Message page cap (\(self.maxMessagePages, privacy: .public)) hit for \(folder.rawValue, privacy: .public); skipping tombstoning to avoid deleting unseen pages"
+                )
+            }
             return changes
         }
         changes.formUnion(
@@ -400,7 +644,7 @@ public actor SyncEngine {
                 accountID: accountID,
                 mailboxID: mailboxID,
                 folder: folder,
-                keeping: Set(messages.map(\.id))
+                keeping: seen
             )
         )
         return changes

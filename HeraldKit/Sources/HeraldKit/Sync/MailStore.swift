@@ -406,9 +406,134 @@ public actor MailStore {
         }
     }
 
+    /// Removes ONE cached message and its body sidecar, and reports the listing
+    /// scope it was in.
+    ///
+    /// Used for journal tombstones. Conversation rows are deliberately NOT
+    /// touched here: a thread's row is re-derived from whatever messages remain,
+    /// which the engine does by re-listing the affected (mailbox, folder) scope.
+    @discardableResult
+    public func deleteMessage(id: String, accountID: String) throws -> MessageDeletion {
+        do {
+            guard let row = try fetchMessage(id: id, accountID: accountID) else {
+                return MessageDeletion(changes: ChangeSet(), mailboxID: nil, folder: nil)
+            }
+            let mailboxID = row.mailboxKey.isEmpty ? nil : row.mailboxKey
+            let folder = MailFolder(rawValue: row.folderRaw)
+            modelContext.delete(row)
+            try modelContext.delete(
+                model: CachedMessageBody.self,
+                where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+            )
+            try save()
+            return MessageDeletion(changes: ChangeSet(deleted: [id]), mailboxID: mailboxID, folder: folder)
+        } catch {
+            logger.error("Message delete failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// Drops everything cached for one mailbox — used when the server stops
+    /// returning it (access revoked, mailbox deleted). Bodies go with the
+    /// messages; other mailboxes are untouched.
+    @discardableResult
+    public func purgeMailbox(mailboxID: String, accountID: String) throws -> ChangeSet {
+        do {
+            var changes = ChangeSet()
+            let messages = try modelContext.fetch(
+                FetchDescriptor<CachedMessage>(
+                    predicate: #Predicate { $0.accountID == accountID && $0.mailboxKey == mailboxID }
+                )
+            )
+            for row in messages {
+                let id = row.id
+                changes.deleted.insert(id)
+                try modelContext.delete(
+                    model: CachedMessageBody.self,
+                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+                )
+                modelContext.delete(row)
+            }
+            let conversations = try modelContext.fetch(
+                FetchDescriptor<CachedConversation>(
+                    predicate: #Predicate { $0.accountID == accountID && $0.mailboxKey == mailboxID }
+                )
+            )
+            for row in conversations {
+                changes.deleted.insert(row.threadID)
+                modelContext.delete(row)
+            }
+            try modelContext.delete(
+                model: CachedMailbox.self,
+                where: #Predicate { $0.accountID == accountID && $0.id == mailboxID }
+            )
+            changes.deleted.insert(mailboxID)
+            try save()
+            return changes
+        } catch {
+            logger.error("Mailbox purge failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    // MARK: - Sync checkpoint
+
+    /// Where the account's change-journal sync got to, or `nil` if it never started.
+    public func syncCheckpoint(accountID: String) throws -> SyncCheckpoint? {
+        do {
+            guard let row = try fetchCheckpoint(accountID: accountID) else { return nil }
+            return SyncCheckpoint(changeCursor: row.changeCursor, bootstrappedAt: row.bootstrappedAt)
+        } catch {
+            logger.error("Checkpoint fetch failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    public func setSyncCheckpoint(_ checkpoint: SyncCheckpoint, accountID: String) throws {
+        do {
+            guard let row = try fetchCheckpoint(accountID: accountID) else {
+                modelContext.insert(
+                    CachedSyncCheckpoint(
+                        accountID: accountID,
+                        changeCursor: checkpoint.changeCursor,
+                        bootstrappedAt: checkpoint.bootstrappedAt
+                    )
+                )
+                try save()
+                return
+            }
+            if row.changeCursor != checkpoint.changeCursor { row.changeCursor = checkpoint.changeCursor }
+            if row.bootstrappedAt != checkpoint.bootstrappedAt { row.bootstrappedAt = checkpoint.bootstrappedAt }
+            try save()
+        } catch {
+            logger.error("Checkpoint store failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// Forgets the checkpoint so the next pass re-bootstraps (410 `CHANGE_CURSOR_EXPIRED`).
+    public func clearSyncCheckpoint(accountID: String) throws {
+        do {
+            try modelContext.delete(model: CachedSyncCheckpoint.self, where: #Predicate { $0.accountID == accountID })
+            try save()
+        } catch {
+            logger.error("Checkpoint clear failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    private func fetchCheckpoint(accountID: String) throws -> CachedSyncCheckpoint? {
+        var descriptor = FetchDescriptor<CachedSyncCheckpoint>(
+            predicate: #Predicate { $0.accountID == accountID }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
+    }
+
     /// Drops every cached row for an account (sign-out, or a forced rebuild).
     public func deleteAll(accountID: String) throws {
         do {
+            try modelContext.delete(model: CachedSyncCheckpoint.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessageBody.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessage.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedConversation.self, where: #Predicate { $0.accountID == accountID })

@@ -37,7 +37,16 @@ public nonisolated protocol MailAPIClient: Sendable {
     func listMailboxes() async throws -> [Mailbox]
 
     // MARK: Messages
-    func listMessages(folder: MailFolder?, mailboxID: String?, search: String?) async throws -> [MessageSummary]
+    /// One page of messages. `limit`/`cursor` are ignored by servers older than
+    /// the pagination release, which answer with the whole (capped) list and no
+    /// `Link` header — so `nextCursor` comes back `nil` there.
+    func listMessages(
+        folder: MailFolder?,
+        mailboxID: String?,
+        search: String?,
+        limit: Int?,
+        cursor: String?
+    ) async throws -> MessagePage
     func message(id: String) async throws -> MessageDetail
     func thread(messageID: String) async throws -> [MessageDetail]
     func messageHTML(id: String, loadRemoteImages: Bool) async throws -> MessageHTML
@@ -62,6 +71,15 @@ public nonisolated protocol MailAPIClient: Sendable {
         in folder: ConversationFolder
     ) async throws -> ConversationActionResult
 
+    // MARK: Changes
+    /// The durable change journal. A `nil` cursor is a CHECKPOINT request: it
+    /// returns no history, only the journal's current high-water cursor.
+    ///
+    /// Throws ``MailAPIError/cursorExpired`` when the journal no longer covers
+    /// the cursor (re-bootstrap), and ``MailAPIError/notFound`` on a server that
+    /// predates the endpoint (fall back to full listing).
+    func changes(cursor: String?, limit: Int?) async throws -> ChangePage
+
     // MARK: Drafts
     func listDrafts() async throws -> [Draft]
     func draft(id: String) async throws -> Draft
@@ -77,9 +95,19 @@ public nonisolated protocol MailAPIClient: Sendable {
 }
 
 nonisolated extension MailAPIClient {
-    /// Convenience for the common unfiltered listing.
-    public func listMessages(folder: MailFolder? = nil, mailboxID: String? = nil) async throws -> [MessageSummary] {
-        try await listMessages(folder: folder, mailboxID: mailboxID, search: nil)
+    /// Convenience for callers that want one (server-capped) page as a bare
+    /// array — search, and any listing small enough that paging is pointless.
+    public func listMessages(
+        folder: MailFolder? = nil,
+        mailboxID: String? = nil,
+        search: String? = nil
+    ) async throws -> [MessageSummary] {
+        try await listMessages(folder: folder, mailboxID: mailboxID, search: search, limit: nil, cursor: nil).messages
+    }
+
+    /// Convenience: a fresh checkpoint at the journal's current high-water mark.
+    public func changesCheckpoint() async throws -> ChangePage {
+        try await changes(cursor: nil, limit: nil)
     }
 
     /// Convenience: first page of a folder's conversations.

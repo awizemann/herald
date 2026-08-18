@@ -13,7 +13,13 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 public nonisolated enum MailStoreContainer {
     /// Canonical model list. Adding a model means adding it here and nowhere else.
     public static var models: [any PersistentModel.Type] {
-        [CachedMailbox.self, CachedConversation.self, CachedMessage.self, CachedMessageBody.self]
+        [
+            CachedMailbox.self,
+            CachedConversation.self,
+            CachedMessage.self,
+            CachedMessageBody.self,
+            CachedSyncCheckpoint.self,
+        ]
     }
 
     /// Canonical schema. No `VersionedSchema`: the store is a rebuildable cache.

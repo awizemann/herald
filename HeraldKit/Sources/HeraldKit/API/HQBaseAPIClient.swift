@@ -59,15 +59,41 @@ public actor HQBaseAPIClient: MailAPIClient {
 
     // MARK: - Messages
 
-    public func listMessages(folder: MailFolder?, mailboxID: String?, search: String?) async throws -> [MessageSummary] {
+    public func listMessages(
+        folder: MailFolder?,
+        mailboxID: String?,
+        search: String?,
+        limit: Int?,
+        cursor: String?
+    ) async throws -> MessagePage {
         try await perform {
             let query = Operations.ListMessages.Input.Query(
                 folder: folder.flatMap { .init(rawValue: $0.rawValue) },
                 mailboxId: mailboxID,
-                search: search
+                search: search,
+                limit: limit,
+                cursor: cursor
             )
             switch try await client.listMessages(.init(query: query)) {
-            case .ok(let ok): return try ok.body.json.map(MessageSummary.init)
+            case .ok(let ok):
+                return MessagePage(
+                    messages: try ok.body.json.map(MessageSummary.init),
+                    // Absent on the last page, and on every pre-pagination server.
+                    nextCursor: LinkHeader.nextCursor(from: ok.headers.link)
+                )
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    // MARK: - Changes
+
+    public func changes(cursor: String?, limit: Int?) async throws -> ChangePage {
+        try await perform {
+            let query = Operations.ListMessageChanges.Input.Query(cursor: cursor, limit: limit)
+            switch try await client.listMessageChanges(.init(query: query)) {
+            case .ok(let ok): return try ChangePage(ok.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
             }

@@ -9,8 +9,12 @@ public nonisolated enum MailAPIError: Error, Sendable, Hashable {
     case unauthorized
     /// 403 with `WWW-Authenticate: … error="insufficient_scope"`; payload is the required scope.
     case insufficientScope(String)
-    /// 404.
+    /// 404 — including the "this server does not have that route" case, which is
+    /// how a pre-`/changes` HQBase answers the journal endpoint.
     case notFound
+    /// 410 `CHANGE_CURSOR_EXPIRED`: the journal no longer covers the stored
+    /// change cursor, so the client must re-bootstrap.
+    case cursorExpired
     /// Any other non-2xx, carrying the server's `{error:{code,message}}` body.
     case server(code: String, message: String)
     /// The request never produced an HTTP response (offline, TLS, cancelled).
@@ -46,6 +50,7 @@ nonisolated extension MailAPIError {
         case .unauthorized: "unauthorized"
         case .insufficientScope: "insufficient_scope"
         case .notFound: "not_found"
+        case .cursorExpired: "cursor_expired"
         case .server(let code, _): "server(\(code))"
         case .transport(let failure): "transport(\(failure.domain)/\(failure.code))"
         case .decoding: "decoding"
@@ -62,6 +67,8 @@ nonisolated extension MailAPIError: LocalizedError {
             "This account is not authorized for \(scope)."
         case .notFound:
             "The requested item no longer exists."
+        case .cursorExpired:
+            "Herald's sync position expired; it will resynchronise from scratch."
         case .server(_, let message):
             message
         case .transport(let failure):

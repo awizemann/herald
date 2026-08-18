@@ -283,7 +283,7 @@ struct SyncEngineTests {
         #expect(Set(conversationFolders) == [.inbox, .starred, .sent, .archived, .trash])
 
         let messageFolders = calls.compactMap { call -> MailFolder? in
-            guard case let .listMessages(folder, _) = call else { return nil }
+            guard case let .listMessages(folder, _, _) = call else { return nil }
             return folder
         }
         #expect(

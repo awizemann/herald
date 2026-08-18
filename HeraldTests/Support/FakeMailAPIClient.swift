@@ -46,8 +46,20 @@ actor FakeMailAPIClient: MailAPIClient {
         return []
     }
 
-    func listMessages(folder: MailFolder?, mailboxID: String?, search: String?) async throws -> [MessageSummary] {
-        []
+    func listMessages(
+        folder: MailFolder?,
+        mailboxID: String?,
+        search: String?,
+        limit: Int?,
+        cursor: String?
+    ) async throws -> MessagePage {
+        MessagePage(messages: [], nextCursor: nil)
+    }
+
+    /// The app suites run against a pre-journal server: `.notFound` is what makes
+    /// the engine take the legacy full-listing path, which is what they assert on.
+    func changes(cursor: String?, limit: Int?) async throws -> ChangePage {
+        throw MailAPIError.notFound
     }
 
     func message(id: String) async throws -> MessageDetail {

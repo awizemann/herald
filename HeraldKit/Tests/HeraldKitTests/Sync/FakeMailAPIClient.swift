@@ -11,7 +11,8 @@ actor FakeMailAPIClient: MailAPIClient {
     enum Call: Sendable, Hashable {
         case listMailboxes
         case listConversations(folder: ConversationFolder?, mailboxID: String?, cursor: String?)
-        case listMessages(folder: MailFolder?, mailboxID: String?)
+        case listMessages(folder: MailFolder?, mailboxID: String?, cursor: String?)
+        case changes(cursor: String?)
         case performMessage(MessageAction, String)
         case performConversation(ConversationAction, String, ConversationFolder)
         // Compose surface (P0.5). Additive: the sync suite matches its own cases.
@@ -32,8 +33,25 @@ actor FakeMailAPIClient: MailAPIClient {
     /// Conversation pages keyed by the cursor that requests them ("" = first page).
     private var conversationPages: [String: ConversationPage] = [:]
     private var messagesByFolder: [MailFolder: [MessageSummary]] = [:]
+    /// Scripted message pages keyed by (scope, cursor). Present only for the
+    /// scopes a test paginates; every other scope answers from `messagesByFolder`
+    /// with NO Link header — which is exactly how a pre-pagination server behaves.
+    private var messagePages: [MessagePageKey: MessagePage] = [:]
     private var listFailure: MailAPIError?
     private var actionFailure: MailAPIError?
+
+    // MARK: Changes feed
+    /// `false` = a server that predates `GET /changes` (404 on the route).
+    private var supportsChanges = false
+    private var checkpointCursor = "chk_0"
+    private var changePagesByCursor: [String: ChangePage] = [:]
+    private var changeFailures: [String: MailAPIError] = [:]
+
+    struct MessagePageKey: Hashable, Sendable {
+        var folder: MailFolder?
+        var mailboxID: String?
+        var cursor: String?
+    }
 
     // MARK: Gate
     private var gateArmed = false
@@ -58,6 +76,62 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func setMessages(_ messages: [MessageSummary], folder: MailFolder) {
         messagesByFolder[folder] = messages
+    }
+
+    /// Scripts a paginated listing for one scope: page `i` links to page `i + 1`
+    /// through the `Link`-derived cursor, and the last page has none.
+    func setMessagePages(_ pages: [[MessageSummary]], folder: MailFolder?, mailboxID: String?) {
+        var cursor: String?
+        for (index, page) in pages.enumerated() {
+            let next: String? = index == pages.count - 1
+                ? nil
+                : "\(folder?.rawValue ?? "all")-\(mailboxID ?? "all")-p\(index + 1)"
+            messagePages[MessagePageKey(folder: folder, mailboxID: mailboxID, cursor: cursor)] =
+                MessagePage(messages: page, nextCursor: next)
+            cursor = next
+        }
+    }
+
+    func setSupportsChanges(_ supported: Bool) { supportsChanges = supported }
+    func setCheckpointCursor(_ cursor: String) { checkpointCursor = cursor }
+
+    /// Chains change pages from the checkpoint cursor: each page is served for
+    /// the cursor the previous one handed out.
+    func setChangePages(_ pages: [ChangePage]) {
+        changePagesByCursor = [:]
+        var cursor = checkpointCursor
+        for page in pages {
+            changePagesByCursor[cursor] = page
+            cursor = page.nextCursor
+        }
+    }
+
+    /// Makes `GET /changes` fail ONCE for exactly one cursor (410, a transport
+    /// blip…). One-shot on purpose: a permanent 410 would make the engine's
+    /// re-bootstrap fail too, and the test could not tell recovery from a loop.
+    func setChangeFailure(_ failure: MailAPIError?, forCursor cursor: String) {
+        changeFailures[cursor] = failure
+    }
+
+    func changeCursors() -> [String?] {
+        calls.compactMap { call in
+            guard case .changes(let cursor) = call else { return nil }
+            return .some(cursor)
+        }
+    }
+
+    func messageCursors() -> [String?] {
+        calls.compactMap { call in
+            guard case .listMessages(_, _, let cursor) = call else { return nil }
+            return .some(cursor)
+        }
+    }
+
+    func conversationScopes() -> [String] {
+        calls.compactMap { call in
+            guard case .listConversations(let folder, let mailboxID, _) = call else { return nil }
+            return "\(mailboxID ?? "all"):\(folder?.rawValue ?? "all")"
+        }
     }
 
     func setListFailure(_ failure: MailAPIError?) { listFailure = failure }
@@ -105,13 +179,34 @@ actor FakeMailAPIClient: MailAPIClient {
         return mailboxes
     }
 
-    func listMessages(folder: MailFolder?, mailboxID: String?, search: String?) async throws -> [MessageSummary] {
-        calls.append(.listMessages(folder: folder, mailboxID: mailboxID))
+    func listMessages(
+        folder: MailFolder?,
+        mailboxID: String?,
+        search: String?,
+        limit: Int?,
+        cursor: String?
+    ) async throws -> MessagePage {
+        calls.append(.listMessages(folder: folder, mailboxID: mailboxID, cursor: cursor))
         if let listFailure { throw listFailure }
-        guard let folder else { return messagesByFolder.values.flatMap { $0 } }
+        if let page = messagePages[MessagePageKey(folder: folder, mailboxID: mailboxID, cursor: cursor)] {
+            return page
+        }
+        guard let folder else { return MessagePage(messages: messagesByFolder.values.flatMap { $0 }, nextCursor: nil) }
         let messages = messagesByFolder[folder] ?? []
-        guard let mailboxID else { return messages }
-        return messages.filter { $0.mailboxID == mailboxID }
+        guard let mailboxID else { return MessagePage(messages: messages, nextCursor: nil) }
+        return MessagePage(messages: messages.filter { $0.mailboxID == mailboxID }, nextCursor: nil)
+    }
+
+    func changes(cursor: String?, limit: Int?) async throws -> ChangePage {
+        calls.append(.changes(cursor: cursor))
+        // A server without the route answers 404, which is the ONLY signal the
+        // engine may read as "no journal here".
+        guard supportsChanges else { throw MailAPIError.notFound }
+        guard let cursor else {
+            return ChangePage(changes: [], nextCursor: checkpointCursor, hasMore: false)
+        }
+        if let failure = changeFailures.removeValue(forKey: cursor) { throw failure }
+        return changePagesByCursor[cursor] ?? ChangePage(changes: [], nextCursor: cursor, hasMore: false)
     }
 
     func listConversations(

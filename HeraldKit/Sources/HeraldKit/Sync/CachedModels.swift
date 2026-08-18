@@ -180,6 +180,57 @@ public nonisolated final class CachedMessageBody {
     }
 }
 
+/// Where the account's sync got to: the change-journal cursor to resume from and
+/// whether the full bootstrap listing ever completed.
+///
+/// Still part of the rebuildable cache — losing it costs one checkpoint plus one
+/// full listing, never mail.
+@Model
+public nonisolated final class CachedSyncCheckpoint {
+    #Unique<CachedSyncCheckpoint>([\.accountID])
+    #Index<CachedSyncCheckpoint>([\.accountID])
+
+    public var accountID: String = ""
+    /// Opaque cursor from `GET /changes`; `nil` before the first checkpoint.
+    public var changeCursor: String?
+    /// When the full bootstrap listing finished. `nil` means "bootstrap again".
+    public var bootstrappedAt: Date?
+
+    public init(accountID: String, changeCursor: String?, bootstrappedAt: Date?) {
+        self.accountID = accountID
+        self.changeCursor = changeCursor
+        self.bootstrappedAt = bootstrappedAt
+    }
+}
+
+/// The checkpoint as a value type (no `@Model` escapes the store).
+public nonisolated struct SyncCheckpoint: Sendable, Hashable {
+    public let changeCursor: String?
+    public let bootstrappedAt: Date?
+
+    public init(changeCursor: String?, bootstrappedAt: Date?) {
+        self.changeCursor = changeCursor
+        self.bootstrappedAt = bootstrappedAt
+    }
+
+    /// A checkpoint the engine can resume from: both halves present.
+    public var isBootstrapped: Bool { changeCursor != nil && bootstrappedAt != nil }
+}
+
+/// What deleting one cached message removed, plus the listing scope it lived in
+/// — the engine needs the scope to know which conversation lists to re-derive.
+public nonisolated struct MessageDeletion: Sendable, Hashable {
+    public let changes: ChangeSet
+    public let mailboxID: String?
+    public let folder: MailFolder?
+
+    public init(changes: ChangeSet, mailboxID: String?, folder: MailFolder?) {
+        self.changes = changes
+        self.mailboxID = mailboxID
+        self.folder = folder
+    }
+}
+
 /// A cached body handed back as a value type (no `@Model` escapes the store).
 public nonisolated struct CachedBody: Sendable, Hashable {
     public let messageID: String

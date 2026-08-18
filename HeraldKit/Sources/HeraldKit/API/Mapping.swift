@@ -60,6 +60,30 @@ nonisolated extension MessageSummary {
     }
 }
 
+nonisolated extension MessageChange {
+    /// The generated `oneOf` names its cases after the schemas, and the decoder
+    /// tries them in declaration order — so the discriminator (`type`) is what
+    /// actually separates them, not the case name.
+    init(_ generated: Components.Schemas.MessageChange) {
+        switch generated {
+        case .MessageChangeUpsert(let upsert):
+            self = .upsert(MessageSummary(upsert.message))
+        case .MessageChangeDelete(let delete):
+            self = .delete(messageID: delete.messageId, mailboxID: delete.mailboxId)
+        }
+    }
+}
+
+nonisolated extension ChangePage {
+    init(_ generated: Components.Schemas.MessageChangePage) {
+        self.init(
+            changes: generated.changes.map(MessageChange.init),
+            nextCursor: generated.nextCursor,
+            hasMore: generated.hasMore
+        )
+    }
+}
+
 nonisolated extension Attachment {
     init(_ generated: Components.Schemas.Attachment) {
         self.init(

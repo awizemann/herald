@@ -83,6 +83,9 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
         case 404:
             logger.warning("not found on \(operationID, privacy: .public)")
             return .notFound
+        case 410 where payload?.code == "CHANGE_CURSOR_EXPIRED":
+            logger.warning("change cursor expired on \(operationID, privacy: .public); re-bootstrap required")
+            return .cursorExpired
         default:
             let code = payload?.code ?? "http_\(response.status.code)"
             let message = payload?.message ?? response.status.reasonPhrase

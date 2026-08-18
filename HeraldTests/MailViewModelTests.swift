@@ -415,6 +415,31 @@ func wait(
             harness.model.presentedConversations.map(\.id) == ["t6"]
         }
     }
+
+    /// A message that RESOLVES (so it is not the "unknown id" branch) can still
+    /// name a mailbox created server-side since the last mailbox reload. Its row
+    /// then draws with no mailbox chip, and the list caches that shorter row.
+    /// Fails on the pre-fix code: only the unresolvable branch reloaded mailboxes.
+    @Test func aNewMessageInAnUnlistedMailboxReloadsTheMailboxes() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: nil, folder: .inbox)
+        await harness.model.start()
+        #expect(harness.model.mailboxName(for: "mbC") == nil)
+
+        try await harness.store.upsertMailboxes([Harness.mailbox("mbC")], accountID: "acct")
+        let fresh = MailFixtures.message(id: "m9", threadID: "t9", mailboxID: "mbC", subject: "New")
+        try await harness.store.upsertMessages([fresh], accountID: "acct")
+        try await harness.store.upsertConversations(
+            [MailFixtures.conversation(fresh)], accountID: "acct", mailboxID: "mbC", folder: .inbox
+        )
+        harness.events.yield(.changed(ChangeSet(inserted: ["m9"])))
+
+        try await wait("the new row to be listed") {
+            harness.model.presentedConversations.contains { $0.id == "t9" }
+        }
+        #expect(harness.model.mailboxName(for: "mbC") != nil, "the row's chip needs the mailbox name on first render")
+    }
 }
 
 @MainActor

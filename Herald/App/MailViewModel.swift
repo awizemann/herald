@@ -577,6 +577,14 @@ final class MailViewModel {
                     continue
                 }
                 if message.threadID == selectedThreadID { reloadThread = true }
+                // A message can resolve fine and still name a mailbox we have never
+                // listed (added server-side since the last mailbox reload). Its row
+                // would draw with no chip and the sender on line one — and the list
+                // caches that shorter row. Mailboxes reload before conversations
+                // below, so the chip is there on the row's first render.
+                if let mailboxID = message.mailboxID, mailboxNames[mailboxID] == nil {
+                    reloadMailboxList = true
+                }
                 if inScope(message) || visibleThreads.contains(message.threadID) {
                     reloadConversationList = true
                 }

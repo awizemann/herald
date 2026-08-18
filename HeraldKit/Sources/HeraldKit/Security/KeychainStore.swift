@@ -8,7 +8,16 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 ///
 /// Secret VALUES are never logged — only keys and `OSStatus` codes.
 public nonisolated struct KeychainStore: SecretStore {
+    /// Debug builds get their OWN namespace. A login-keychain item is ACL-locked to
+    /// the code signature that created it, and the dev copy (Apple Development
+    /// cert) and the release app (Developer ID cert) are different signatures to
+    /// the Keychain — sharing one item meant a password prompt on every dev launch,
+    /// and two processes rotating one refresh token signed each other out.
+    #if DEBUG
+    public static let defaultService = "com.wizemann.herald.debug"
+    #else
     public static let defaultService = "com.wizemann.herald"
+    #endif
 
     /// `kSecAttrService`. Overridable so tests can use a throwaway namespace.
     public let service: String

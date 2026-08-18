@@ -63,6 +63,12 @@ struct ConversationListView: View {
             // selection, so clicks on text often failed to select at all.
         }
         .listStyle(.inset)
+        // The row's own `minHeight` cannot win this one: macOS `List` is an
+        // NSTableView that caches a measured height per row identity, and a
+        // freshly inserted row it has not measured yet is drawn at
+        // `defaultMinListRowHeight` — 24pt by default, which is exactly the
+        // one-line row new mail was arriving as. Raise the FLOOR to a full row.
+        .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or
         // menu shortcut these are window-global and fire while the user is typing
         // in the search field — which is how a bare ⌫ deletes the wrong thing.
@@ -156,6 +162,8 @@ struct ThreadMessageListView: View {
                 .tag(message.id)
             }
             .listStyle(.inset)
+            // Same unmeasured-row floor as the conversation list.
+            .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
         }
         // ⎋ backs out, as it does everywhere else on macOS. ⌘[ rides on the back
         // button itself so the shortcut and the control cannot drift apart.

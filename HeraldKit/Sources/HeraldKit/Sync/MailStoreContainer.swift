@@ -29,8 +29,16 @@ public nonisolated enum MailStoreContainer {
     public static var defaultStoreURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        // Debug builds keep a separate cache, matching their separate Keychain
+        // namespace (see KeychainStore.defaultService): a dev copy and the release
+        // app never share a store, so both can run at once.
+        #if DEBUG
+        let folder = "Herald-Debug"
+        #else
+        let folder = "Herald"
+        #endif
         return base
-            .appendingPathComponent("Herald", isDirectory: true)
+            .appendingPathComponent(folder, isDirectory: true)
             .appendingPathComponent("MailCache.store")
     }
 

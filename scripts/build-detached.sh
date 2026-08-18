@@ -4,15 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Two Herald processes share ONE Keychain token item, and HQBase rotates the refresh token on
-# every use with no reuse grace — a dev copy and the release app sign each other out.
-RELEASE_APP="/Applications/Herald.app"
-if [ -z "${HERALD_ALLOW_BOTH:-}" ] && pgrep -f "^$RELEASE_APP/Contents/MacOS/Herald" >/dev/null 2>&1; then
-  echo "Refusing to launch: the release Herald at $RELEASE_APP is running."
-  echo "Two Herald processes share one Keychain refresh token and will sign each other out."
-  echo "Quit it first, or re-run with HERALD_ALLOW_BOTH=1 to override."
-  exit 1
-fi
+# Debug builds use their own Keychain namespace (com.wizemann.herald.debug) and their own
+# SwiftData cache (Application Support/Herald-Debug), so the dev copy and the release app can
+# run side by side without sharing a refresh token or a store. Sign in once in the dev copy.
 
 if [ ! -d Herald.xcodeproj ] || [ project.yml -nt Herald.xcodeproj/project.pbxproj ]; then
   xcodegen generate

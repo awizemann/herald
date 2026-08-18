@@ -116,7 +116,11 @@ enum MailTheme {
     /// one preview line). macOS `List` caches a row's measured height, so a row whose
     /// content grows after first layout — new mail arriving, mailbox names filling in —
     /// can otherwise stay clipped at the shorter height it was first measured with.
-    static let rowMinHeight: CGFloat = 66
+    /// It also feeds `defaultMinListRowHeight` on both lists — the height an
+    /// unmeasured, freshly inserted row is drawn at — so it must be the FULL
+    /// height of a four-line row (chip, sender, subject, two preview lines ≈ the
+    /// ~71pt trailing column plus padding), not a partial one.
+    static let rowMinHeight: CGFloat = 88
 
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).

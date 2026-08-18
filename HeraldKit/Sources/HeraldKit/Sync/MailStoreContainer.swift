@@ -18,6 +18,7 @@ public nonisolated enum MailStoreContainer {
             CachedConversation.self,
             CachedMessage.self,
             CachedMessageBody.self,
+            CachedDraft.self,
             CachedSyncCheckpoint.self,
         ]
     }

@@ -40,10 +40,20 @@ enum MailTheme {
         }
     }
 
-    /// Folders the sidebar shows, in order. Drafts arrives with the composer.
+    /// Folders the sidebar shows, in order.
     /// `starred` is conversation-only on the server (there is no starred *message*
     /// folder — the list is derived from `starredAt`), see `SyncFolder.starred`.
+    ///
+    /// Drafts is NOT here and cannot be: it is not a `ConversationFolder` at all
+    /// (the conversation enum has `starred` where the message enum has `drafts`)
+    /// and drafts are not messages. It is a special sidebar item — see
+    /// `MailViewModel.SidebarItem` — drawn from the two tokens below.
     static let sidebarFolders: [ConversationFolder] = [.inbox, .starred, .sent, .archived, .trash]
+
+    /// The Drafts sidebar item. Its own tokens rather than a `title(for:)` case,
+    /// because there is no folder value to switch on.
+    static let draftsTitle = "Drafts"
+    static let draftsSymbol = "doc.text"
 
     // MARK: Status
 

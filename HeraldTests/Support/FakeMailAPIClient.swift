@@ -162,11 +162,28 @@ actor FakeMailAPIClient: MailAPIClient {
         return ConversationActionResult(threadID: id, affected: conversationAffected)
     }
 
+    // MARK: Drafts
+    //
+    // Recorded, not stubbed away: "the composer was seeded from the CACHE" is
+    // only assertable if a network fetch would have been visible.
+
+    private(set) var deletedDraftIDs: [String] = []
+    private(set) var fetchedDraftIDs: [String] = []
+    private var draftDeleteError: MailAPIError?
+
+    func setDraftDeleteError(_ error: MailAPIError?) { draftDeleteError = error }
+
     func listDrafts() async throws -> [Draft] { [] }
-    func draft(id: String) async throws -> Draft { throw MailAPIError.notFound }
+    func draft(id: String) async throws -> Draft {
+        fetchedDraftIDs.append(id)
+        throw MailAPIError.notFound
+    }
     func createDraft(_ input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
     func updateDraft(id: String, with input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
-    func deleteDraft(id: String) async throws {}
+    func deleteDraft(id: String) async throws {
+        deletedDraftIDs.append(id)
+        if let draftDeleteError { throw draftDeleteError }
+    }
     func addDraftAttachment(
         draftID: String,
         filename: String,

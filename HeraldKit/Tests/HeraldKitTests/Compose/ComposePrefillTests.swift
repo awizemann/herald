@@ -137,6 +137,80 @@ import Testing
         #expect(draft.subject == "Fwd: Invoice question")
     }
 
+    // MARK: - Reopening a stored draft
+
+    /// Fails if reopening a draft loses its version stamp: the first autosave
+    /// would then `POST` a SECOND draft instead of `PATCH`ing this one, and the
+    /// user would end up with two copies of the same message in the folder.
+    @Test("Reopening a draft carries its version stamp into the next save")
+    func reopenedDraftKeepsItsVersion() {
+        let stored = Draft(
+            id: "dft_1",
+            version: 4,
+            updatedAt: Date(timeIntervalSince1970: 3_000),
+            attachments: [DraftAttachment(id: "att_1", filename: "q.txt", contentType: "text/plain", sizeBytes: 3)],
+            content: DraftInput(
+                mailboxID: "mbx_support",
+                from: "support@example.com",
+                to: ["ada@example.net"],
+                cc: ["billing@example.com"],
+                subject: "Quote",
+                text: "Here it is."
+            )
+        )
+
+        let composed = ComposePrefill.draft(stored)
+
+        #expect(composed.serverDraft?.id == "dft_1")
+        #expect(composed.draftInput.version == 4, "PATCH without the version is an immediate 409")
+        #expect(composed.to == ["ada@example.net"])
+        #expect(composed.cc == ["billing@example.com"])
+        #expect(composed.subject == "Quote")
+        #expect(composed.body == "Here it is.")
+        #expect(composed.mailboxID == "mbx_support")
+        #expect(composed.uploadedAttachments.map(\.id) == ["att_1"])
+        // Fails if reopening marks the draft dirty: closing a draft you only
+        // looked at would save it, bump its version and raise the unsaved sheet.
+        #expect(!composed.isDirty)
+    }
+
+    /// Fails if the stored `replyToMessageId` is dropped on reopen — the draft
+    /// would then send through `POST /send` as a fresh message with no threading
+    /// and no quoted original, instead of `POST /reply`.
+    @Test("A reopened reply draft is still a reply")
+    func reopenedReplyKeepsItsMode() {
+        let stored = Draft(
+            id: "dft_2",
+            version: 1,
+            updatedAt: Date(timeIntervalSince1970: 3_000),
+            attachments: [],
+            content: DraftInput(replyToMessageID: "msg_01", from: "support@example.com", subject: "Re: Invoice question")
+        )
+
+        let composed = ComposePrefill.draft(stored)
+
+        #expect(composed.mode == .reply(toMessageID: "msg_01", replyAll: false))
+        #expect(composed.draftInput.replyToMessageID == "msg_01")
+    }
+
+    /// Same for a forward, which the v1 API sends through `POST /send` but only
+    /// quotes correctly when `forwardOfMessageId` survives.
+    @Test("A reopened forward draft is still a forward")
+    func reopenedForwardKeepsItsMode() {
+        let stored = Draft(
+            id: "dft_3",
+            version: 1,
+            updatedAt: Date(timeIntervalSince1970: 3_000),
+            attachments: [],
+            content: DraftInput(forwardOfMessageID: "msg_02", from: "support@example.com", subject: "Fwd: Invoice")
+        )
+
+        let composed = ComposePrefill.draft(stored)
+
+        #expect(composed.mode == .forward(messageID: "msg_02"))
+        #expect(composed.draftInput.forwardOfMessageID == "msg_02")
+    }
+
     /// Fails on a validator that accepts "a@b" or an address with a space —
     /// both are rejected by the server after a wasted round trip.
     @Test("Address validation catches the typos worth catching")

@@ -180,6 +180,54 @@ public nonisolated final class CachedMessageBody {
     }
 }
 
+/// One unsent draft, cached whole.
+///
+/// Drafts are NOT messages on the server: they live in their own tables, they
+/// never appear in `GET /messages?folder=drafts` (which is dead), and they are
+/// not written to the `/changes` journal. The only way to see them is
+/// `GET /drafts`, which returns the WHOLE list with no pagination and no
+/// `updatedSince` — so this table is reconciled by full-list diff.
+///
+/// The row carries every editable field rather than a summary, because opening
+/// the composer from the Drafts folder must not cost a round trip: the whole
+/// ``Draft`` (including its `version` stamp, which is the optimistic-concurrency
+/// token `PATCH /drafts/{id}` needs) is rebuilt from here.
+@Model
+public nonisolated final class CachedDraft {
+    #Unique<CachedDraft>([\.accountID, \.id])
+    // The list query is (accountID) newest-first, so `updatedAt` trails the
+    // account for an index-served sort; the second index serves single-row lookup.
+    #Index<CachedDraft>(
+        [\.accountID, \.updatedAt],
+        [\.accountID, \.id]
+    )
+
+    /// Server draft id.
+    public var id: String = ""
+    public var accountID: String = ""
+    /// Optimistic-concurrency stamp; the value a `PATCH` must echo back.
+    public var version: Int = 0
+    public var updatedAt: Date = Date.distantPast
+
+    /// `mailboxID ?? ""` — same predicate-friendly form as everywhere else.
+    public var mailboxKey: String = ""
+    public var replyToMessageID: String?
+    public var forwardOfMessageID: String?
+    public var fromAddress: String = ""
+    public var toAddresses: [String] = []
+    public var ccAddresses: [String] = []
+    public var bccAddresses: [String] = []
+    public var subject: String = ""
+    public var textBody: String = ""
+    public var htmlBody: String = ""
+    public var attachments: [DraftAttachment] = []
+
+    public init(id: String, accountID: String) {
+        self.id = id
+        self.accountID = accountID
+    }
+}
+
 /// Where the account's sync got to: the change-journal cursor to resume from and
 /// whether the full bootstrap listing ever completed.
 ///

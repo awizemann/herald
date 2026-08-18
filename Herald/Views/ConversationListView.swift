@@ -14,7 +14,12 @@ struct MiddleColumnView: View {
 
     var body: some View {
         ZStack {
-            if model.isShowingThread {
+            if model.isShowingDrafts {
+                // Drafts are not conversations and not messages — a different
+                // list entirely, in the same slot.
+                DraftListView(model: model)
+                    .transition(.opacity)
+            } else if model.isShowingThread {
                 ThreadMessageListView(model: model)
                     .transition(.opacity)
             } else {
@@ -24,6 +29,7 @@ struct MiddleColumnView: View {
         }
         // A cross-fade, and none at all when the user asked for less motion.
         .animation(reduceMotion ? nil : MailTheme.Animation.quick, value: model.isShowingThread)
+        .animation(reduceMotion ? nil : MailTheme.Animation.quick, value: model.isShowingDrafts)
     }
 }
 

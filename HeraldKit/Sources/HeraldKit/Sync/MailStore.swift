@@ -521,7 +521,11 @@ public actor MailStore {
             // Nothing is left to fence, and a surviving entry would silently
             // block the NEXT account's journal from writing the same id.
             pendingMutations = pendingMutations.filter { $0.key.accountID != accountID }
+            // Same reasoning for the draft fence: a surviving entry would stop the
+            // NEXT account's poll from ever tombstoning that id.
+            openDrafts = openDrafts.filter { $0.accountID != accountID }
             try modelContext.delete(model: CachedSyncCheckpoint.self, where: #Predicate { $0.accountID == accountID })
+            try modelContext.delete(model: CachedDraft.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessageBody.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessage.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedConversation.self, where: #Predicate { $0.accountID == accountID })
@@ -538,6 +542,13 @@ public actor MailStore {
     /// Messages whose optimistic state is not yet confirmed by the server,
     /// keyed by message id. See ``applyMessageUpserts(_:accountID:)``.
     var pendingMutations: [PendingKey: PendingMutation] = [:]
+
+    /// Drafts with a composer open on them. Same idea as ``pendingMutations``,
+    /// for the one table the poll reconciles by full-list diff: while an entry
+    /// exists, `reconcileDrafts` may not delete the row and may not write a
+    /// listing older than the composer's last save over it. See
+    /// `MailStore+Drafts.swift`, which owns every use of it.
+    var openDrafts: Set<DraftKey> = []
 
     /// Test seam: whether a message is currently fenced against journal upserts.
     /// A leak here is a message the journal can never correct again.

@@ -50,6 +50,20 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
         return false
     }
 
+    /// Worth exactly one more attempt: the network or the server failed us, so the
+    /// grant itself is probably still good. Never true for `invalid_grant` — retrying
+    /// a dead grant is the classic sign-out loop.
+    public var isRetryable: Bool {
+        switch self {
+        case .transport:
+            true
+        case .server(let error, _):
+            error == "server_error" || error == "temporarily_unavailable" || error.hasPrefix("http_5")
+        default:
+            false
+        }
+    }
+
     /// Wraps a thrown error without letting an unexpected type escape as itself.
     static func wrapTransport(_ error: any Error) -> OAuthError {
         if let oauth = error as? OAuthError { return oauth }

@@ -229,6 +229,133 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
     }
 }
 
+// MARK: - Two-processes-one-Keychain harness
+
+/// The shared Keychain item two Herald processes fight over: ONE
+/// ``KeychainAccountStore`` over one ``InMemorySecretStore``, exactly as production
+/// stacks them, so both providers read and write the same bytes.
+nonisolated final class SharedKeychain: Sendable {
+    let secrets = InMemorySecretStore()
+    let store: KeychainAccountStore
+
+    init() {
+        store = KeychainAccountStore(secrets: secrets)
+    }
+
+    @discardableResult
+    func seed(_ tokens: OAuthTokens, for accountID: Account.ID) throws -> OAuthTokens {
+        try store.setTokens(tokens, for: accountID)
+        return tokens
+    }
+}
+
+/// One process's view of the shared store, able to serve a **stale snapshot** for the
+/// next N reads.
+///
+/// This is how the real interleaving is reproduced without threads or sleeps: process
+/// B read the item microseconds before process A's rotation landed, so B is holding
+/// tokens that the Keychain no longer has. Every read past the queued snapshots hits
+/// the shared store for real.
+nonisolated final class StaleReadingStore: AccountStore, @unchecked Sendable {
+    /// A box, not a bare `OAuthTokens?`: a queue of optionals read through an
+    /// optional lookup is a double optional, and "no snapshot queued" would flatten
+    /// into "the snapshot says there are no tokens".
+    private struct Snapshot {
+        let tokens: OAuthTokens?
+    }
+
+    private let base: any AccountStore
+    private let lock = NSLock()
+    private var queued: [Snapshot] = []
+    private var reads = 0
+
+    init(_ base: any AccountStore) {
+        self.base = base
+    }
+
+    /// Queues one read that will see `tokens` instead of what the store actually holds.
+    func serveStale(_ tokens: OAuthTokens?) {
+        lock.withLock { queued.append(Snapshot(tokens: tokens)) }
+    }
+
+    var tokenReadCount: Int { lock.withLock { reads } }
+    var pendingStaleReads: Int { lock.withLock { queued.count } }
+
+    func tokens(for accountID: Account.ID) throws -> OAuthTokens? {
+        let stale: Snapshot? = lock.withLock {
+            reads += 1
+            return queued.isEmpty ? nil : queued.removeFirst()
+        }
+        if let stale { return stale.tokens }
+        return try base.tokens(for: accountID)
+    }
+
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
+        try base.setTokens(tokens, for: accountID)
+    }
+
+    func accounts() throws -> [Account] { try base.accounts() }
+    func add(_ account: Account) throws { try base.add(account) }
+    func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
+    func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
+    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+}
+
+/// A ``TokenRefreshing`` that behaves like better-auth's oauth-provider: every
+/// successful refresh ROTATES (new access + new refresh token) and marks the redeemed
+/// refresh token revoked, with **no reuse grace**. Replaying a revoked token answers
+/// `invalid_grant`.
+///
+/// `intercept` runs before the token is judged and can throw (a 5xx or a transport
+/// blip) and/or stand in for the other process doing something in that window.
+nonisolated final class RotatingRefresher: TokenRefreshing, @unchecked Sendable {
+    typealias Interception = @Sendable (Int, RotatingRefresher) throws -> Void
+
+    private let lock = NSLock()
+    private var issued = 0
+    private var revoked: Set<String> = []
+    private var seen: [String] = []
+    private let intercept: Interception
+
+    init(revoked: Set<String> = [], intercept: @escaping Interception = { _, _ in }) {
+        self.revoked = revoked
+        self.intercept = intercept
+    }
+
+    /// Every refresh token this refresher was asked to redeem, in order.
+    var sentTokens: [String] { lock.withLock { seen } }
+    var callCount: Int { lock.withLock { seen.count } }
+
+    /// Marks a refresh token spent, as if another process had redeemed it.
+    func revoke(_ refreshToken: String) {
+        lock.withLock { _ = revoked.insert(refreshToken) }
+    }
+
+    func refresh(refreshToken: String) async throws -> OAuthTokens {
+        let (index, isRevoked) = lock.withLock { () -> (Int, Bool) in
+            seen.append(refreshToken)
+            return (seen.count, revoked.contains(refreshToken))
+        }
+        try intercept(index, self)
+
+        guard !isRevoked else {
+            // Reuse of a rotated token invalidates the family — the server's behavior,
+            // and the reason a second process must never replay ours.
+            throw OAuthError.server(error: "invalid_grant", description: "refresh token revoked")
+        }
+        return lock.withLock {
+            revoked.insert(refreshToken)
+            issued += 1
+            return OAuthTokens(
+                accessToken: "access-\(issued)",
+                refreshToken: "refresh-\(issued)",
+                expiresAt: Date().addingTimeInterval(3600),
+                scope: "mail:read offline_access"
+            )
+        }
+    }
+}
+
 // MARK: - Refresher fake
 
 /// A ``TokenRefreshing`` that counts calls and can hold the first one open until the

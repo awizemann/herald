@@ -83,4 +83,19 @@ public nonisolated struct OAuthTokens: Sendable, Codable, Hashable {
 
     /// Refresh this long before the token actually expires.
     public static let refreshLeeway: TimeInterval = 60
+
+    /// Bounds for the *jittered* proactive refresh window.
+    ///
+    /// Two Herald processes (a release build and a dev copy) share one Keychain
+    /// item, so a fixed leeway makes both wake on the same token at the same
+    /// instant and race to redeem the same rotated refresh token. A per-provider
+    /// random window spreads them out; it reduces the race, it does not remove it —
+    /// ``AccountTokenProvider``'s re-read-before-refresh is the correctness fix.
+    public static let refreshLeewayRange: ClosedRange<TimeInterval> = 60...180
+
+    /// A fresh draw from ``refreshLeewayRange``. One per provider, not per call:
+    /// a leeway that moved on every call would flap a token in and out of "usable".
+    public static func jitteredRefreshLeeway() -> TimeInterval {
+        .random(in: refreshLeewayRange)
+    }
 }

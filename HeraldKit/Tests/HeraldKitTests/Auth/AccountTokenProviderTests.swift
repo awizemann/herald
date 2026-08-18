@@ -176,3 +176,150 @@ import Testing
         #expect(await refresher.callCount == 1, "The stale 401 burned a second refresh token")
     }
 }
+
+/// Two Herald processes (the release app and a dev copy) share ONE Keychain token
+/// item. HQBase's authorization server rotates the refresh token on every use with no
+/// reuse grace, and replaying a rotated token invalidates the whole family — so the
+/// second process does not merely fail, it signs BOTH processes out.
+///
+/// Modelled as two ``AccountTokenProvider``s over one ``SharedKeychain``, with one of
+/// them reading through a ``StaleReadingStore`` so the "I read the item just before
+/// the other process rotated it" interleaving is reproduced without threads or sleeps.
+@Suite struct SharedKeychainRefreshRaceTests {
+    private let accountID = "https://mail.test.invalid"
+
+    /// The tokens both processes start from: expired, so both want to refresh.
+    private func expiredTokens() -> OAuthTokens {
+        OAuthTokens(
+            accessToken: "access-0",
+            refreshToken: "refresh-0",
+            expiresAt: Date().addingTimeInterval(-10),
+            scope: "mail:read offline_access"
+        )
+    }
+
+    /// A fixed leeway keeps these tests independent of the jitter in (e).
+    private func provider(
+        store: any AccountStore,
+        refresher: any TokenRefreshing
+    ) -> AccountTokenProvider {
+        AccountTokenProvider(accountID: accountID, store: store, refresher: refresher, refreshLeeway: 60)
+    }
+
+    /// (a) Fails today: B holds tokens it read before A's rotation landed, so it POSTs
+    /// `grant_type=refresh_token` with the already-rotated `refresh-0`, gets
+    /// `invalid_grant`, and takes the shared item down with it. The fix is to re-read
+    /// the store immediately before spending the grant.
+    @Test("a provider whose tokens were rotated by another process adopts them instead of refreshing")
+    func staleProviderAdoptsRotatedTokensWithoutRefreshing() async throws {
+        let keychain = SharedKeychain()
+        let stale = expiredTokens()
+        try keychain.seed(stale, for: accountID)
+        let refresher = RotatingRefresher()
+
+        let a = provider(store: keychain.store, refresher: refresher)
+        let bStore = StaleReadingStore(keychain.store)
+        let b = provider(store: bStore, refresher: refresher)
+
+        // Process A refreshes for real: refresh-0 is now revoked server-side.
+        #expect(try await a.accessToken() == "access-1")
+
+        // Process B's first read landed before A's write.
+        bStore.serveStale(stale)
+        #expect(try await b.accessToken() == "access-1")
+        #expect(refresher.sentTokens == ["refresh-0"], "B replayed the rotated refresh token")
+        #expect(try keychain.store.tokens(for: accountID)?.refreshToken == "refresh-1")
+    }
+
+    /// (b) Fails today: `invalid_grant` unconditionally deletes the shared item, so the
+    /// process that legitimately rotated the grant finds "no refresh token" on its next
+    /// call. B must notice the store no longer holds the token that was rejected.
+    @Test("invalid_grant for a token another process already rotated adopts the new tokens instead of clearing")
+    func staleInvalidGrantAdoptsRatherThanClears() async throws {
+        let keychain = SharedKeychain()
+        let stale = expiredTokens()
+        try keychain.seed(stale, for: accountID)
+        let refresher = RotatingRefresher()
+
+        let a = provider(store: keychain.store, refresher: refresher)
+        let bStore = StaleReadingStore(keychain.store)
+        let b = provider(store: bStore, refresher: refresher)
+
+        #expect(try await a.accessToken() == "access-1")
+
+        // Both of B's reads before the POST see the pre-rotation snapshot, so B really
+        // does send the revoked token and really does get invalid_grant.
+        bStore.serveStale(stale)
+        bStore.serveStale(stale)
+
+        #expect(try await b.accessToken() == "access-1")
+        #expect(refresher.sentTokens == ["refresh-0", "refresh-0"])
+        #expect(bStore.pendingStaleReads == 0, "B never reached the post-rejection re-read")
+        // The item A depends on survived.
+        #expect(try keychain.store.tokens(for: accountID)?.accessToken == "access-1")
+        #expect(try keychain.store.tokens(for: accountID)?.refreshToken == "refresh-1")
+    }
+
+    /// (c) Regression guard for (b): when the store still holds the very token the
+    /// server rejected, nobody rotated anything and the grant really is dead. Fails if
+    /// the (b) fix is written as "never clear on invalid_grant", which would leave the
+    /// user stuck retrying a dead grant forever.
+    @Test("invalid_grant with no competing rotation still clears the tokens and demands re-auth")
+    func genuineInvalidGrantStillRequiresReauthentication() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(expiredTokens(), for: accountID)
+        // The server considers this grant dead before we even start.
+        let refresher = RotatingRefresher(revoked: ["refresh-0"])
+        let p = provider(store: keychain.store, refresher: refresher)
+
+        await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await p.accessToken() }
+        #expect(refresher.sentTokens == ["refresh-0"])
+        #expect(try keychain.store.tokens(for: accountID) == nil)
+    }
+
+    /// (d) Fails today twice over: there is no retry after a 5xx at all, and a retry
+    /// that resends the buffered token would replay a grant another process rotated in
+    /// exactly the window the 500 opened.
+    @Test("a retry after a 5xx re-reads the store and adopts, instead of resending the same refresh token")
+    func retryAfterServerErrorReReadsTheStore() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(expiredTokens(), for: accountID)
+        let accountID = accountID
+        let store = keychain.store
+        let rotated = OAuthTokens(
+            accessToken: "access-9",
+            refreshToken: "refresh-9",
+            expiresAt: Date().addingTimeInterval(3600),
+            scope: "mail:read offline_access"
+        )
+
+        let refresher = RotatingRefresher { index, refresher in
+            guard index == 1 else { return }
+            // The other process completes its refresh in the window our 500 opens.
+            refresher.revoke("refresh-0")
+            try store.setTokens(rotated, for: accountID)
+            throw OAuthError.server(error: "http_500", description: nil)
+        }
+        let p = provider(store: keychain.store, refresher: refresher)
+
+        #expect(try await p.accessToken() == "access-9")
+        #expect(refresher.sentTokens == ["refresh-0"], "The retry replayed the rotated refresh token")
+        #expect(try keychain.store.tokens(for: accountID)?.refreshToken == "refresh-9")
+    }
+
+    /// (e) Fails on a fixed 60s leeway: two processes holding one token would decide to
+    /// refresh at the same instant on every cycle, which is what turns the race from
+    /// rare into constant.
+    @Test("the proactive refresh window is jittered inside [60, 180] and stays injectable")
+    func refreshLeewayIsJitteredAndInjectable() {
+        let keychain = SharedKeychain()
+        let refresher = RotatingRefresher()
+        let drawn = (0..<50).map { _ in
+            AccountTokenProvider(accountID: accountID, store: keychain.store, refresher: refresher).refreshLeeway
+        }
+
+        #expect(drawn.allSatisfy { OAuthTokens.refreshLeewayRange.contains($0) })
+        #expect(Set(drawn).count > 1, "Every provider woke on the same schedule")
+        #expect(provider(store: keychain.store, refresher: refresher).refreshLeeway == 60)
+    }
+}

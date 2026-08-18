@@ -101,6 +101,14 @@ public actor SyncEngine {
     private var isSyncing = false
     private var refreshPending = false
 
+    /// Bumped by `start()` and `stop()`. Only ever ONE pass is in flight (that is
+    /// what the coalescing above guarantees), so a pass records the generation it
+    /// began under and every step compares it to the current one: the moment they
+    /// diverge the pass unwinds instead of writing more rows into a store the app
+    /// is about to purge.
+    private var passGeneration = 0
+    private var runningPassGeneration = 0
+
     /// Wait state: the loop parks on `wakeContinuation` until either the cadence
     /// timer or `refreshNow()`/`stop()` resumes it.
     private var wakeContinuation: CheckedContinuation<Void, Never>?
@@ -152,10 +160,22 @@ public actor SyncEngine {
     }
 
     public func stop() {
+        passGeneration &+= 1
         loopTask?.cancel()
         loopTask = nil
         refreshPending = false
         signalWake()
+    }
+
+    /// `stop()` only ASKS: the in-flight pass is still parked on a URLSession call
+    /// and will keep going — and writing — for as long as that call takes. A
+    /// caller that is about to `deleteAll` the cache (sign-out, account switch)
+    /// must wait for the loop to actually unwind, or the purge races the pass and
+    /// the next account starts on the previous one's rows.
+    public func stopAndWait() async {
+        let task = loopTask
+        stop()
+        await task?.value
     }
 
     /// Asks for a pass now. Coalesced: if a pass is already running this marks
@@ -257,12 +277,22 @@ public actor SyncEngine {
 
     // MARK: - One pass
 
+    /// Every step of a pass funnels through here before it touches the store.
+    /// `Task.isCancelled` alone is not enough: it is observed only where the code
+    /// looks, and `stop()` returning does not mean the pass has noticed yet.
+    private func checkPassIsCurrent() throws {
+        try Task.checkCancellation()
+        guard runningPassGeneration == passGeneration else { throw CancellationError() }
+    }
+
     private func runPass(accountID: String) async {
         isSyncing = true
+        runningPassGeneration = passGeneration
         defer { isSyncing = false }
         emit(.began)
         do {
             let changes = try await syncEverything(accountID: accountID)
+            try checkPassIsCurrent()
             consecutiveFailures = 0
             if !changes.isEmpty { emit(.changed(changes)) }
             emit(.finished)
@@ -317,10 +347,16 @@ public actor SyncEngine {
     private var legacyAccounts: Set<String> = []
     private var paginatingAccounts: Set<String> = []
 
+    /// A 404 means "no such route" ONLY on the cursor-less probe. With a cursor
+    /// in hand the account has already answered `/changes` successfully at least
+    /// once, so a 404 there is a transient server fault (a bad deploy, a proxy);
+    /// treating it as "no journal" silently drops the account into full re-listing
+    /// for the rest of the session and re-lists every mailbox every 15 seconds.
     private func fetchChanges(cursor: String?) async throws -> ChangePage {
         do {
             return try await api.changes(cursor: cursor, limit: Self.changePageLimit)
         } catch let error as MailAPIError where error == .notFound {
+            guard cursor == nil else { throw error }
             throw ChangeFeedUnsupported()
         }
     }
@@ -344,6 +380,7 @@ public actor SyncEngine {
     private func legacySync(accountID: String) async throws -> ChangeSet {
         var changes = ChangeSet()
         let mailboxes = try await api.listMailboxes()
+        try checkPassIsCurrent()
         changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
 
         for mailbox in mailboxes {
@@ -356,7 +393,7 @@ public actor SyncEngine {
     private func syncMailbox(accountID: String, mailboxID: String) async throws -> ChangeSet {
         var changes = ChangeSet()
         for folder in scope.folders {
-            try Task.checkCancellation()
+            try checkPassIsCurrent()
             if let conversationFolder = folder.conversation {
                 changes.formUnion(
                     try await syncConversations(accountID: accountID, mailboxID: mailboxID, folder: conversationFolder)
@@ -394,12 +431,26 @@ public actor SyncEngine {
         let checkpoint = try await fetchChanges(cursor: nil)
         var changes = ChangeSet()
         let mailboxes = try await api.listMailboxes()
-        changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
-        for mailbox in mailboxes {
-            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: mailbox.id))
-        }
+        let cached = Set(try await store.mailboxes(accountID: accountID).map(\.id))
         changes.formUnion(
-            try await consumeChanges(accountID: accountID, from: checkpoint.nextCursor, bootstrappedAt: Date())
+            try await listMailboxes(mailboxes, accountID: accountID, cached: cached, listKnown: true)
+        )
+        // The listing is complete, so the checkpoint it was taken against is
+        // durable NOW. Persisting it only after the catch-up meant one flaky
+        // `/changes` read threw the whole listing away and re-listed every
+        // mailbox on the next pass.
+        let bootstrappedAt = Date()
+        try checkPassIsCurrent()
+        try await store.setSyncCheckpoint(
+            SyncCheckpoint(changeCursor: checkpoint.nextCursor, bootstrappedAt: bootstrappedAt),
+            accountID: accountID
+        )
+        changes.formUnion(
+            try await consumeChanges(
+                accountID: accountID,
+                from: checkpoint.nextCursor,
+                bootstrappedAt: bootstrappedAt
+            )
         )
         return changes
     }
@@ -414,19 +465,49 @@ public actor SyncEngine {
         // its cached mail must go, and the journal will never mention it again.
         for gone in cached.subtracting(current).sorted() {
             logger.warning("Mailbox \(gone, privacy: .public) is no longer readable; purging its cache")
+            try checkPassIsCurrent()
             changes.formUnion(try await store.purgeMailbox(mailboxID: gone, accountID: accountID))
         }
-        changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
 
-        // A newly readable mailbox has no journal history we are entitled to
-        // replay, so it gets a full listing BEFORE the cursor is consumed.
-        for added in current.subtracting(cached).sorted() {
-            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: added))
-        }
+        changes.formUnion(
+            try await listMailboxes(mailboxes, accountID: accountID, cached: cached, listKnown: false)
+        )
 
         changes.formUnion(
             try await consumeChanges(accountID: accountID, from: cursor, bootstrappedAt: bootstrappedAt ?? Date())
         )
+        return changes
+    }
+
+    /// Writes the mailbox rows, with ONE ordering rule that matters: a mailbox
+    /// the cache has never seen gets its row only AFTER its listing succeeds.
+    ///
+    /// Persisting the row first makes the mailbox "known" — and a listing that
+    /// then throws leaves a mailbox that no later pass will ever bootstrap
+    /// (steady state lists only mailboxes it considers new) and that the journal
+    /// only ever tells us deltas about. The user sees a permanently empty
+    /// mailbox. Rows the cache already has are written up front, since their
+    /// listing is not what makes them trustworthy.
+    private func listMailboxes(
+        _ mailboxes: [Mailbox],
+        accountID: String,
+        cached: Set<String>,
+        listKnown: Bool
+    ) async throws -> ChangeSet {
+        var changes = ChangeSet()
+        let known = mailboxes.filter { cached.contains($0.id) }
+        if !known.isEmpty {
+            try checkPassIsCurrent()
+            changes.formUnion(try await store.upsertMailboxes(known, accountID: accountID))
+        }
+        for mailbox in mailboxes.sorted(by: { $0.id < $1.id }) {
+            let isNew = !cached.contains(mailbox.id)
+            guard isNew || listKnown else { continue }
+            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: mailbox.id))
+            guard isNew else { continue }
+            try checkPassIsCurrent()
+            changes.formUnion(try await store.upsertMailboxes([mailbox], accountID: accountID))
+        }
         return changes
     }
 
@@ -435,27 +516,35 @@ public actor SyncEngine {
     /// resumes where it stopped instead of replaying — or worse, re-listing.
     private func consumeChanges(accountID: String, from cursor: String, bootstrappedAt: Date) async throws -> ChangeSet {
         var changes = ChangeSet()
-        var touched: Set<ConversationScope> = []
         var next = cursor
 
         while true {
-            try Task.checkCancellation()
+            try checkPassIsCurrent()
             let page = try await fetchChanges(cursor: next)
+            var touched: Set<ConversationScope> = []
             changes.formUnion(try await apply(page.changes, accountID: accountID, touched: &touched))
+
+            // Conversation rows are derived, so only the scopes this page
+            // actually touched are re-listed — a quiet pass costs zero
+            // conversation calls. It happens BEFORE the cursor moves: a cursor
+            // persisted while the derived rows were still stale is a cache that
+            // never heals, because the page that would have fixed it is now
+            // behind the cursor and will never be read again.
+            for scope in touched.sorted(by: {
+                ($0.mailboxID ?? "", $0.folder.rawValue) < ($1.mailboxID ?? "", $1.folder.rawValue)
+            }) {
+                changes.formUnion(
+                    try await syncConversations(accountID: accountID, mailboxID: scope.mailboxID, folder: scope.folder)
+                )
+            }
+
             next = page.nextCursor
+            try checkPassIsCurrent()
             try await store.setSyncCheckpoint(
                 SyncCheckpoint(changeCursor: next, bootstrappedAt: bootstrappedAt),
                 accountID: accountID
             )
             guard page.hasMore else { break }
-        }
-
-        // Conversation rows are derived, so only the scopes the batch actually
-        // touched are re-listed — a quiet pass costs zero conversation calls.
-        for scope in touched.sorted(by: { ($0.mailboxID ?? "", $0.folder.rawValue) < ($1.mailboxID ?? "", $1.folder.rawValue) }) {
-            changes.formUnion(
-                try await syncConversations(accountID: accountID, mailboxID: scope.mailboxID, folder: scope.folder)
-            )
         }
         return changes
     }
@@ -466,35 +555,62 @@ public actor SyncEngine {
         let folder: ConversationFolder
     }
 
+    /// Applies one page IN JOURNAL ORDER.
+    ///
+    /// Partitioning the page into "all upserts, then all deletes" reorders
+    /// history, and both orders come off the wire: `[delete m1, upsert m1]` (a
+    /// message deleted and re-delivered) ended with m1 ABSENT, and the general
+    /// case is that the last word in the page must be the one that wins. The
+    /// journal's order IS the truth, so only ADJACENT upserts are batched — which
+    /// is all the batching change detection ever needed.
     private func apply(
         _ changes: [MessageChange],
         accountID: String,
         touched: inout Set<ConversationScope>
     ) async throws -> ChangeSet {
         var result = ChangeSet()
-        // Upserts go in one batch so change detection runs once per row: an
-        // echoed upsert identical to an optimistic local action is a no-op and
-        // must not repaint the list mid-POST.
-        let upserts = changes.compactMap { change -> MessageSummary? in
-            guard case .upsert(let summary) = change else { return nil }
-            return summary
-        }
-        if !upserts.isEmpty {
-            result.formUnion(try await store.upsertMessages(upserts, accountID: accountID))
-            for summary in upserts {
-                touched.formUnion(conversationScopes(mailboxID: summary.mailboxID, folder: summary.folder))
-            }
-        }
+        var batch: [MessageSummary] = []
 
         for change in changes {
-            guard case .delete(let messageID, let mailboxID) = change else { continue }
-            let deletion = try await store.deleteMessage(id: messageID, accountID: accountID)
-            result.formUnion(deletion.changes)
-            touched.formUnion(
-                conversationScopes(mailboxID: deletion.mailboxID ?? mailboxID, folder: deletion.folder)
-            )
+            switch change {
+            case .upsert(let summary):
+                batch.append(summary)
+            case .delete(let messageID, let mailboxID):
+                result.formUnion(try await flush(&batch, accountID: accountID, touched: &touched))
+                try checkPassIsCurrent()
+                let deletion = try await store.deleteMessage(id: messageID, accountID: accountID)
+                result.formUnion(deletion.changes)
+                touched.formUnion(
+                    conversationScopes(mailboxID: deletion.mailboxID ?? mailboxID, folder: deletion.folder)
+                )
+            }
         }
+        result.formUnion(try await flush(&batch, accountID: accountID, touched: &touched))
         return result
+    }
+
+    /// Writes a run of adjacent upserts and records every conversation listing
+    /// they made stale — including, for a message that MOVED, the listing it
+    /// moved OUT of. Refreshing only the destination leaves the source list
+    /// showing a thread that is no longer in it until something else touches it.
+    private func flush(
+        _ batch: inout [MessageSummary],
+        accountID: String,
+        touched: inout Set<ConversationScope>
+    ) async throws -> ChangeSet {
+        guard !batch.isEmpty else { return ChangeSet() }
+        let upserts = batch
+        batch.removeAll(keepingCapacity: true)
+        try checkPassIsCurrent()
+        let result = try await store.applyMessageUpserts(upserts, accountID: accountID)
+        for summary in upserts {
+            touched.formUnion(conversationScopes(mailboxID: summary.mailboxID, folder: summary.folder))
+            guard let previous = result.previousScopes[summary.id],
+                  previous.mailboxID != summary.mailboxID || previous.folder != summary.folder
+            else { continue }
+            touched.formUnion(conversationScopes(mailboxID: previous.mailboxID, folder: previous.folder))
+        }
+        return result.changes
     }
 
     /// The conversation listings one message change can affect.
@@ -528,7 +644,7 @@ public actor SyncEngine {
         var reachedEnd = false
 
         while pages < maxConversationPages {
-            try Task.checkCancellation()
+            try checkPassIsCurrent()
             let page = try await api.listConversations(
                 folder: folder,
                 mailboxID: mailboxID,
@@ -558,6 +674,7 @@ public actor SyncEngine {
             )
             return changes
         }
+        try checkPassIsCurrent()
         changes.formUnion(
             try await store.deleteMissingConversations(
                 accountID: accountID,
@@ -602,7 +719,7 @@ public actor SyncEngine {
         var paginates = paginatingAccounts.contains(accountID)
 
         while pages < maxMessagePages {
-            try Task.checkCancellation()
+            try checkPassIsCurrent()
             let page = try await api.listMessages(
                 folder: folder,
                 mailboxID: mailboxID,
@@ -639,6 +756,7 @@ public actor SyncEngine {
             }
             return changes
         }
+        try checkPassIsCurrent()
         changes.formUnion(
             try await store.deleteMissingMessages(
                 accountID: accountID,

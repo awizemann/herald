@@ -39,6 +39,11 @@ actor FakeMailAPIClient: MailAPIClient {
     private var messagePages: [MessagePageKey: MessagePage] = [:]
     private var listFailure: MailAPIError?
     private var actionFailure: MailAPIError?
+    /// `GET /messages` failures scoped to ONE mailbox, so a test can break a
+    /// single mailbox's listing without also breaking `GET /mailboxes`.
+    private var messageListFailures: [String: MailAPIError] = [:]
+    /// The `limit` the engine asked for, per `listMessages` call, in order.
+    private var recordedMessageLimits: [Int?] = []
 
     // MARK: Changes feed
     /// `false` = a server that predates `GET /changes` (404 on the route).
@@ -135,6 +140,12 @@ actor FakeMailAPIClient: MailAPIClient {
     }
 
     func setListFailure(_ failure: MailAPIError?) { listFailure = failure }
+
+    func setMessageListFailure(_ failure: MailAPIError?, forMailbox mailboxID: String) {
+        messageListFailures[mailboxID] = failure
+    }
+
+    func messageLimits() -> [Int?] { recordedMessageLimits }
     func setActionFailure(_ failure: MailAPIError?) { actionFailure = failure }
 
     func callCount(where predicate: @Sendable (Call) -> Bool) -> Int {
@@ -187,14 +198,28 @@ actor FakeMailAPIClient: MailAPIClient {
         cursor: String?
     ) async throws -> MessagePage {
         calls.append(.listMessages(folder: folder, mailboxID: mailboxID, cursor: cursor))
+        recordedMessageLimits.append(limit)
         if let listFailure { throw listFailure }
+        if let mailboxID, let failure = messageListFailures[mailboxID] { throw failure }
         if let page = messagePages[MessagePageKey(folder: folder, mailboxID: mailboxID, cursor: cursor)] {
             return page
         }
-        guard let folder else { return MessagePage(messages: messagesByFolder.values.flatMap { $0 }, nextCursor: nil) }
+        // The real server CLAMPS to `limit` and never returns more; a fake that
+        // ignored it could not tell a client asking for 100 from one asking for 5.
+        guard let folder else {
+            return MessagePage(messages: Self.clamp(messagesByFolder.values.flatMap { $0 }, to: limit), nextCursor: nil)
+        }
         let messages = messagesByFolder[folder] ?? []
-        guard let mailboxID else { return MessagePage(messages: messages, nextCursor: nil) }
-        return MessagePage(messages: messages.filter { $0.mailboxID == mailboxID }, nextCursor: nil)
+        guard let mailboxID else { return MessagePage(messages: Self.clamp(messages, to: limit), nextCursor: nil) }
+        return MessagePage(
+            messages: Self.clamp(messages.filter { $0.mailboxID == mailboxID }, to: limit),
+            nextCursor: nil
+        )
+    }
+
+    private nonisolated static func clamp(_ messages: [MessageSummary], to limit: Int?) -> [MessageSummary] {
+        guard let limit else { return messages }
+        return Array(messages.prefix(limit))
     }
 
     func changes(cursor: String?, limit: Int?) async throws -> ChangePage {
@@ -226,6 +251,9 @@ actor FakeMailAPIClient: MailAPIClient {
     @discardableResult
     func perform(_ action: MessageAction, onMessage id: String) async throws -> MessageSummary {
         calls.append(.performMessage(action, id))
+        // Gated like the listing calls, so a test can hold a POST open and act on
+        // the cache while the optimistic write is still unconfirmed.
+        await awaitGate()
         if let actionFailure { throw actionFailure }
         return Self.applying(action, to: SyncFixtures.message(id))
     }
@@ -323,6 +351,9 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func createDraft(_ input: DraftInput) async throws -> Draft {
         calls.append(.createDraft(input))
+        // Gated so a test can hold the one non-idempotent call open and prove a
+        // second save really did arrive while it was in flight.
+        await awaitGate()
         draftSequence += 1
         let draft = Draft(
             id: "drf_\(draftSequence)",

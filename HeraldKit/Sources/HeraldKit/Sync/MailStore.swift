@@ -26,22 +26,74 @@ public nonisolated struct ConversationStateSnapshot: Sendable, Hashable {
 }
 
 /// Everything needed to undo one optimistic local action.
+///
+/// `token` identifies the action across the whole in-flight window: the store
+/// keys its pending-mutation set by it, so a LATER action on the same message
+/// takes ownership and an earlier action's completion cannot clear the newer
+/// one's fence.
 public nonisolated struct LocalActionUndo: Sendable, Hashable {
     public var accountID: String
+    public var token: UUID
     public var messages: [MessageStateSnapshot]
     public var conversations: [ConversationStateSnapshot]
 
     public init(
         accountID: String,
+        token: UUID = UUID(),
         messages: [MessageStateSnapshot] = [],
         conversations: [ConversationStateSnapshot] = []
     ) {
         self.accountID = accountID
+        self.token = token
         self.messages = messages
         self.conversations = conversations
     }
 
     public var isEmpty: Bool { messages.isEmpty && conversations.isEmpty }
+}
+
+/// Pending mutations are keyed per ACCOUNT as well as per message: the `#Unique`
+/// is (accountID, messageID) and two signed-in servers reuse ids, so a bare id
+/// would fence the wrong account's row.
+nonisolated struct PendingKey: Sendable, Hashable {
+    let accountID: String
+    let messageID: String
+}
+
+/// The optimistic state one in-flight local action wrote, held until the POST
+/// settles. While an entry exists, `upsertMessages` refuses to overwrite these
+/// three fields — a journal page cut mid-POST is by definition OLDER than the
+/// mutation the user just made.
+nonisolated struct PendingMutation: Sendable, Hashable {
+    let token: UUID
+    let readAt: Date?
+    let starredAt: Date?
+    let folderRaw: String
+}
+
+/// Where one cached message was listed, before an upsert moved it. A folder move
+/// makes BOTH the old and the new conversation listing stale.
+public nonisolated struct MessageScope: Sendable, Hashable {
+    public let mailboxID: String?
+    public let folder: MailFolder?
+
+    public init(mailboxID: String?, folder: MailFolder?) {
+        self.mailboxID = mailboxID
+        self.folder = folder
+    }
+}
+
+/// What a batch of message upserts changed, plus — for every row that already
+/// existed — the scope it was in BEFORE the upsert.
+public nonisolated struct MessageUpsertResult: Sendable, Hashable {
+    public let changes: ChangeSet
+    /// Keyed by message id; present only for rows that existed beforehand.
+    public let previousScopes: [String: MessageScope]
+
+    public init(changes: ChangeSet, previousScopes: [String: MessageScope]) {
+        self.changes = changes
+        self.previousScopes = previousScopes
+    }
 }
 
 /// The ONLY place `@Model` is touched.
@@ -326,22 +378,46 @@ public actor MailStore {
     /// scope arguments are not needed — a message that moved folder is an update.
     @discardableResult
     public func upsertMessages(_ messages: [MessageSummary], accountID: String) throws -> ChangeSet {
-        guard !messages.isEmpty else { return ChangeSet() }
+        try applyMessageUpserts(messages, accountID: accountID).changes
+    }
+
+    /// The same upsert, reporting each pre-existing row's previous listing scope.
+    ///
+    /// Two invariants live here:
+    /// - A row with a PENDING local mutation keeps its optimistic
+    ///   `readAt`/`starredAt`/`folder`; everything else in the summary is
+    ///   accepted. A journal page assembled before the user's POST landed would
+    ///   otherwise un-star the row under their cursor.
+    /// - The previous (mailbox, folder) is handed back so the caller can refresh
+    ///   the listing the message MOVED OUT of, not just the one it landed in.
+    @discardableResult
+    public func applyMessageUpserts(
+        _ messages: [MessageSummary],
+        accountID: String
+    ) throws -> MessageUpsertResult {
+        guard !messages.isEmpty else { return MessageUpsertResult(changes: ChangeSet(), previousScopes: [:]) }
         var changes = ChangeSet()
+        var previousScopes: [String: MessageScope] = [:]
         do {
             let existing = try fetchMessages(accountID: accountID, ids: messages.map(\.id))
             for dto in messages {
                 guard let row = existing[dto.id] else {
                     let row = CachedMessage(id: dto.id, accountID: accountID)
-                    _ = Self.apply(dto, to: row)
+                    _ = Self.apply(dto, to: row, pending: nil)
                     modelContext.insert(row)
                     changes.inserted.insert(dto.id)
                     continue
                 }
-                if Self.apply(dto, to: row) { changes.updated.insert(dto.id) }
+                previousScopes[dto.id] = MessageScope(
+                    mailboxID: row.mailboxKey.isEmpty ? nil : row.mailboxKey,
+                    folder: MailFolder(rawValue: row.folderRaw)
+                )
+                if Self.apply(dto, to: row, pending: pendingMutations[PendingKey(accountID: accountID, messageID: dto.id)]) {
+                    changes.updated.insert(dto.id)
+                }
             }
             if !changes.isEmpty { try save() }
-            return changes
+            return MessageUpsertResult(changes: changes, previousScopes: previousScopes)
         } catch {
             logger.error("Message upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error
@@ -420,6 +496,9 @@ public actor MailStore {
             }
             let mailboxID = row.mailboxKey.isEmpty ? nil : row.mailboxKey
             let folder = MailFolder(rawValue: row.folderRaw)
+            // The row is gone; a fence left behind would outlive everything it
+            // could ever protect.
+            pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
             modelContext.delete(row)
             try modelContext.delete(
                 model: CachedMessageBody.self,
@@ -448,6 +527,7 @@ public actor MailStore {
             for row in messages {
                 let id = row.id
                 changes.deleted.insert(id)
+                pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
                 try modelContext.delete(
                     model: CachedMessageBody.self,
                     where: #Predicate { $0.accountID == accountID && $0.messageID == id }
@@ -533,6 +613,9 @@ public actor MailStore {
     /// Drops every cached row for an account (sign-out, or a forced rebuild).
     public func deleteAll(accountID: String) throws {
         do {
+            // Nothing is left to fence, and a surviving entry would silently
+            // block the NEXT account's journal from writing the same id.
+            pendingMutations = pendingMutations.filter { $0.key.accountID != accountID }
             try modelContext.delete(model: CachedSyncCheckpoint.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessageBody.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMessage.self, where: #Predicate { $0.accountID == accountID })
@@ -546,6 +629,16 @@ public actor MailStore {
     }
 
     // MARK: - Optimistic local actions
+
+    /// Messages whose optimistic state is not yet confirmed by the server,
+    /// keyed by message id. See ``applyMessageUpserts(_:accountID:)``.
+    private var pendingMutations: [PendingKey: PendingMutation] = [:]
+
+    /// Test seam: whether a message is currently fenced against journal upserts.
+    /// A leak here is a message the journal can never correct again.
+    func hasPendingMutation(messageID: String, accountID: String) -> Bool {
+        pendingMutations[PendingKey(accountID: accountID, messageID: messageID)] != nil
+    }
 
     /// Applies a message action locally, right now, and returns the undo token.
     /// An empty undo means the message is not cached (nothing to revert).
@@ -567,6 +660,7 @@ public actor MailStore {
                 conversations: conversationRows.map(Self.snapshot)
             )
             Self.mutate(row, with: action)
+            markPending(row, token: undo.token)
             try refreshConversationRows(conversationRows, accountID: accountID, threadID: threadID)
             try save()
             return undo
@@ -597,6 +691,7 @@ public actor MailStore {
             let messageAction = MessageAction(rawValue: action.rawValue)
             for row in messageRows {
                 if let messageAction { Self.mutate(row, with: messageAction) }
+                markPending(row, token: undo.token)
             }
             try refreshConversationRows(conversationRows, accountID: accountID, threadID: threadID)
             try save()
@@ -607,32 +702,67 @@ public actor MailStore {
         }
     }
 
-    /// Restores the exact pre-action state. Used when the server rejects the action.
+    /// The server ACCEPTED the action: its answer is authoritative, so the fence
+    /// comes down first and the returned summaries are written over the
+    /// optimistic guess (they carry the server's real timestamps).
+    @discardableResult
+    public func completeLocalAction(
+        _ undo: LocalActionUndo,
+        applying summaries: [MessageSummary] = []
+    ) throws -> ChangeSet {
+        clearPending(undo)
+        guard !summaries.isEmpty else {
+            try refreshConversations(for: undo)
+            return ChangeSet()
+        }
+        let changes = try upsertMessages(summaries, accountID: undo.accountID)
+        try refreshConversations(for: undo)
+        return changes
+    }
+
+    /// The server REJECTED the action. The fence comes down either way, but the
+    /// row is only rolled back if it still holds exactly what the action wrote:
+    /// a journal page (or a later action) that has since moved it on is newer
+    /// truth, and restoring a stale snapshot over it would resurrect the past.
     public func revertLocalAction(_ undo: LocalActionUndo) throws {
+        let pending = pendingSnapshot(undo)
+        clearPending(undo)
         guard !undo.isEmpty else { return }
         do {
             let byID = try fetchMessages(accountID: undo.accountID, ids: undo.messages.map(\.messageID))
+            var revertedThreads: Set<String> = []
             for snapshot in undo.messages {
                 guard let row = byID[snapshot.messageID] else { continue }
+                // Only this action's own optimistic write may be undone. A
+                // missing entry means a LATER action (or a tombstone) took the
+                // row over; a differing one means the row moved on while the
+                // POST was in flight. Either way the snapshot is stale history
+                // and restoring it would resurrect the past.
+                guard let optimistic = pending[snapshot.messageID],
+                      row.readAt == optimistic.readAt,
+                      row.starredAt == optimistic.starredAt,
+                      row.folderRaw == optimistic.folderRaw
+                else {
+                    logger.warning("Skipping revert: the row moved on since the action was sent")
+                    continue
+                }
                 row.readAt = snapshot.readAt
                 row.starredAt = snapshot.starredAt
                 row.folderRaw = snapshot.folderRaw
+                revertedThreads.insert(row.threadID)
             }
-            for snapshot in undo.conversations {
-                let threadID = snapshot.threadID
-                let listFolder = snapshot.listFolder
-                let mailboxKey = snapshot.mailboxKey
-                let accountID = undo.accountID
-                var descriptor = FetchDescriptor<CachedConversation>(
-                    predicate: #Predicate {
-                        $0.accountID == accountID
-                            && $0.threadID == threadID
-                            && $0.listFolder == listFolder
-                            && $0.mailboxKey == mailboxKey
-                    }
-                )
-                descriptor.fetchLimit = 1
-                guard let row = try modelContext.fetch(descriptor).first else { continue }
+            // Conversation rows are derived, so re-derive them rather than
+            // restoring a snapshot that may now disagree with the messages.
+            for threadID in revertedThreads {
+                let rows = try fetchConversationRows(accountID: undo.accountID, threadID: threadID)
+                try refreshConversationRows(rows, accountID: undo.accountID, threadID: threadID)
+            }
+            // A thread with no cached messages left has nothing to derive from;
+            // its snapshot is the only truth available.
+            for snapshot in undo.conversations where !revertedThreads.contains(snapshot.threadID) {
+                guard try fetchThreadMessages(accountID: undo.accountID, threadID: snapshot.threadID).isEmpty,
+                      let row = try fetchConversationRow(snapshot, accountID: undo.accountID)
+                else { continue }
                 row.readAt = snapshot.readAt
                 row.starredAt = snapshot.starredAt
                 row.folderRaw = snapshot.folderRaw
@@ -644,6 +774,65 @@ public actor MailStore {
             logger.error("Local action revert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+    }
+
+    private func markPending(_ row: CachedMessage, token: UUID) {
+        pendingMutations[PendingKey(accountID: row.accountID, messageID: row.id)] = PendingMutation(
+            token: token,
+            readAt: row.readAt,
+            starredAt: row.starredAt,
+            folderRaw: row.folderRaw
+        )
+    }
+
+    /// This action's own pending entries — a message the user acted on AGAIN
+    /// belongs to the newer token and is not ours to read or clear.
+    private func pendingSnapshot(_ undo: LocalActionUndo) -> [String: PendingMutation] {
+        var result: [String: PendingMutation] = [:]
+        for snapshot in undo.messages {
+            let key = PendingKey(accountID: undo.accountID, messageID: snapshot.messageID)
+            guard let entry = pendingMutations[key], entry.token == undo.token else { continue }
+            result[snapshot.messageID] = entry
+        }
+        return result
+    }
+
+    private func clearPending(_ undo: LocalActionUndo) {
+        for snapshot in undo.messages {
+            let key = PendingKey(accountID: undo.accountID, messageID: snapshot.messageID)
+            guard pendingMutations[key]?.token == undo.token else { continue }
+            pendingMutations[key] = nil
+        }
+    }
+
+    private func refreshConversations(for undo: LocalActionUndo) throws {
+        var threads: Set<String> = Set(undo.conversations.map(\.threadID))
+        let byID = try fetchMessages(accountID: undo.accountID, ids: undo.messages.map(\.messageID))
+        for row in byID.values { threads.insert(row.threadID) }
+        for threadID in threads {
+            let rows = try fetchConversationRows(accountID: undo.accountID, threadID: threadID)
+            try refreshConversationRows(rows, accountID: undo.accountID, threadID: threadID)
+        }
+        try save()
+    }
+
+    private func fetchConversationRow(
+        _ snapshot: ConversationStateSnapshot,
+        accountID: String
+    ) throws -> CachedConversation? {
+        let threadID = snapshot.threadID
+        let listFolder = snapshot.listFolder
+        let mailboxKey = snapshot.mailboxKey
+        var descriptor = FetchDescriptor<CachedConversation>(
+            predicate: #Predicate {
+                $0.accountID == accountID
+                    && $0.threadID == threadID
+                    && $0.listFolder == listFolder
+                    && $0.mailboxKey == mailboxKey
+            }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
     }
 
     // MARK: - Private fetch helpers
@@ -830,21 +1019,31 @@ public actor MailStore {
         return changed
     }
 
-    private nonisolated static func apply(_ dto: MessageSummary, to row: CachedMessage) -> Bool {
+    /// `pending` fences the three fields an optimistic local action owns while
+    /// its POST is in flight: they keep the optimistic value, everything else in
+    /// the summary is accepted as usual.
+    private nonisolated static func apply(
+        _ dto: MessageSummary,
+        to row: CachedMessage,
+        pending: PendingMutation?
+    ) -> Bool {
         var changed = false
         if row.threadID != dto.threadID { row.threadID = dto.threadID; changed = true }
         let mailboxKey = dto.mailboxID ?? ""
         if row.mailboxKey != mailboxKey { row.mailboxKey = mailboxKey; changed = true }
         if row.directionRaw != dto.direction.rawValue { row.directionRaw = dto.direction.rawValue; changed = true }
-        if row.folderRaw != dto.folder.rawValue { row.folderRaw = dto.folder.rawValue; changed = true }
+        let folderRaw = pending?.folderRaw ?? dto.folder.rawValue
+        if row.folderRaw != folderRaw { row.folderRaw = folderRaw; changed = true }
         if row.fromAddress != dto.fromAddress { row.fromAddress = dto.fromAddress; changed = true }
         if row.toAddresses != dto.to { row.toAddresses = dto.to; changed = true }
         if row.subject != dto.subject { row.subject = dto.subject; changed = true }
         if row.snippet != dto.snippet { row.snippet = dto.snippet; changed = true }
         if row.receivedAt != dto.receivedAt { row.receivedAt = dto.receivedAt; changed = true }
         if row.sentAt != dto.sentAt { row.sentAt = dto.sentAt; changed = true }
-        if row.readAt != dto.readAt { row.readAt = dto.readAt; changed = true }
-        if row.starredAt != dto.starredAt { row.starredAt = dto.starredAt; changed = true }
+        let readAt = pending.map(\.readAt) ?? dto.readAt
+        if row.readAt != readAt { row.readAt = readAt; changed = true }
+        let starredAt = pending.map(\.starredAt) ?? dto.starredAt
+        if row.starredAt != starredAt { row.starredAt = starredAt; changed = true }
         if row.hasAttachments != dto.hasAttachments { row.hasAttachments = dto.hasAttachments; changed = true }
         if row.createdAt != dto.createdAt { row.createdAt = dto.createdAt; changed = true }
         if row.sortDate != dto.displayDate { row.sortDate = dto.displayDate; changed = true }

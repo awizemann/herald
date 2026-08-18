@@ -68,8 +68,20 @@ import Testing
         let outbox = OutboxService(api: api)
         let draft = Self.draft()
 
+        // `async let` alone does NOT guarantee the second save starts while the
+        // first is still in flight — under load the first finished first and the
+        // test passed for the wrong reason (~1 run in 8). The gate holds the
+        // create open and the join counter proves the overlap really happened.
+        await api.armGate()
         async let first = outbox.saveDraft(draft)
+        try await waitUntil("the first create to reach the server") {
+            await api.callCount { if case .createDraft = $0 { true } else { false } } == 1
+        }
         async let second = outbox.saveDraft(draft)
+        try await waitUntil("the second save to join the in-flight create") {
+            await outbox.joinedCreateCount == 1
+        }
+        await api.openGate()
         let saved = try await [first, second]
 
         let creates = await api.calls.count { if case .createDraft = $0 { true } else { false } }

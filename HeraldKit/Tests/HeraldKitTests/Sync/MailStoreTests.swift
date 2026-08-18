@@ -109,6 +109,47 @@ struct MailStoreTests {
         #expect(m2?.readAt == alreadyRead, "Revert must not clobber unrelated state")
     }
 
+    /// A revert restores a snapshot of the past. If the row has since moved on —
+    /// the user kept triaging, or a tombstone took it — restoring that snapshot
+    /// resurrects state the user already replaced. Fails on any revert that fires
+    /// unconditionally: pre-fix the rejected archive dragged the message back out
+    /// of the trash the user had just put it in.
+    @Test("A rejected action does not roll back a row a later action already moved")
+    func staleRevertLeavesANewerLocalChangeAlone() async throws {
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
+
+        let archive = try await store.applyLocalAction(.archive, messageID: "m1", accountID: account)
+        // The user keeps going before the first POST answers; trash owns the row now.
+        _ = try await store.applyLocalAction(.trash, messageID: "m1", accountID: account)
+
+        // Only now does the archive come back rejected.
+        try await store.revertLocalAction(archive)
+
+        #expect(
+            try await store.message(id: "m1", accountID: account)?.folder == .trash,
+            "a stale revert resurrected the pre-archive folder"
+        )
+        // …and the still-current action keeps its fence.
+        #expect(await store.hasPendingMutation(messageID: "m1", accountID: account))
+    }
+
+    /// The mirror: a revert whose optimistic write is still the row's state is the
+    /// ONLY case that may roll back, and it must also drop the fence — a leaked
+    /// pending entry is a message the journal can never correct again.
+    @Test("A rejected action rolls back its own untouched write and clears the fence")
+    func revertOfAnUntouchedRowStillApplies() async throws {
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
+
+        let undo = try await store.applyLocalAction(.star, messageID: "m1", accountID: account)
+        #expect(await store.hasPendingMutation(messageID: "m1", accountID: account))
+        try await store.revertLocalAction(undo)
+
+        #expect(try await store.message(id: "m1", accountID: account)?.starredAt == nil)
+        #expect(await store.hasPendingMutation(messageID: "m1", accountID: account) == false)
+    }
+
     /// Fails if the container throws on an unreadable store file. The cache is
     /// rebuildable, so a corrupt file must cost a re-sync, not a broken launch.
     @Test("A corrupt store file is deleted and rebuilt")

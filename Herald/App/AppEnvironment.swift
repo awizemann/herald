@@ -150,7 +150,10 @@ final class AppEnvironment {
     /// Stops and drops whatever account graph is currently live.
     private func teardownGraph() async {
         mail?.stop()
-        if let engine = syncEngine { await engine.stop() }
+        // `stopAndWait`, not `stop`: sign-out and account switch both purge the
+        // cache immediately afterwards, and a pass still unwinding would write
+        // the OLD account's rows in behind the purge.
+        if let engine = syncEngine { await engine.stopAndWait() }
         syncEngine = nil
         outbox = nil
         composeContexts.removeAll()

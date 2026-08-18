@@ -40,6 +40,11 @@ public actor OutboxService {
     /// otherwise create two drafts and orphan one. Later callers join this task.
     private var pendingCreates: [ComposeDraft.ID: Task<Draft, any Error>] = [:]
 
+    /// Test seam: how many saves have JOINED someone else's in-flight create.
+    /// It is what makes "the second save really did overlap the first" assertable
+    /// instead of hoped-for — `async let` alone guarantees no interleaving.
+    var joinedCreateCount = 0
+
     public init(api: any MailAPIClient, attachmentByteLimit: Int = OutboxService.defaultAttachmentByteLimit) {
         self.api = api
         self.attachmentByteLimit = attachmentByteLimit
@@ -77,6 +82,7 @@ public actor OutboxService {
     /// this caller joined an existing create rather than starting it.
     private func createServerDraft(for draft: ComposeDraft) async throws(OutboxError) -> (Draft, joined: Bool) {
         if let running = pendingCreates[draft.id] {
+            joinedCreateCount += 1
             return (try await join(running), joined: true)
         }
         let input = draft.draftInput

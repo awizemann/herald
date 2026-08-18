@@ -87,7 +87,42 @@ actor FakeMailAPIClient: MailAPIClient {
     func perform(_ action: MessageAction, onMessage id: String) async throws -> MessageSummary {
         performed.append(PerformedAction(action: action.rawValue, id: id))
         if let actionError { throw actionError }
-        return MailFixtures.message(id: id)
+        // The real server answers with the UPDATED summary, and `MailActionService`
+        // now writes it back as authoritative. A stub that ignored the action made
+        // every successful mark-read look like a server that refused it.
+        let base = details[id]?.summary ?? MailFixtures.message(id: id)
+        return Self.applying(action, to: base)
+    }
+
+    /// The action applied to the summary the way the server applies it, so the
+    /// answer describes the row the client just changed rather than a fresh stub.
+    private nonisolated static func applying(
+        _ action: MessageAction,
+        to summary: MessageSummary
+    ) -> MessageSummary {
+        let now = MailFixtures.epoch
+        let folder: MailFolder = switch action {
+        case .archive: .archived
+        case .trash: .trash
+        default: summary.folder
+        }
+        return MessageSummary(
+            id: summary.id,
+            threadID: summary.threadID,
+            mailboxID: summary.mailboxID,
+            direction: summary.direction,
+            folder: folder,
+            fromAddress: summary.fromAddress,
+            to: summary.to,
+            subject: summary.subject,
+            snippet: summary.snippet,
+            receivedAt: summary.receivedAt,
+            sentAt: summary.sentAt,
+            readAt: action == .read ? now : (action == .unread ? nil : summary.readAt),
+            starredAt: action == .star ? now : (action == .unstar ? nil : summary.starredAt),
+            hasAttachments: summary.hasAttachments,
+            createdAt: summary.createdAt
+        )
     }
 
     func trustRemoteMedia(messageID: String) async throws { trusted.append(messageID) }

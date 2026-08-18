@@ -33,6 +33,24 @@ struct JournalSyncTests {
         }
     }
 
+    /// Like `runPasses`, but reports whether each pass ENDED in `.failed`.
+    /// Used where the distinction between "reported a failure" and "quietly fell
+    /// back to another mode" is the whole point of the test.
+    @discardableResult
+    private func runPassOutcomes(_ engine: SyncEngine, count: Int) async -> [Bool] {
+        var outcomes: [Bool] = []
+        for await event in engine.events {
+            switch event {
+            case .finished: outcomes.append(false)
+            case .failed: outcomes.append(true)
+            default: continue
+            }
+            if outcomes.count == count { await engine.stop(); return outcomes }
+            await engine.refreshNow()
+        }
+        return outcomes
+    }
+
     private func makeEngine(_ api: FakeMailAPIClient, _ store: MailStore) -> SyncEngine {
         SyncEngine(api: api, store: store, scope: Self.inboxOnly)
     }
@@ -382,23 +400,300 @@ struct JournalSyncTests {
     /// `upsertMessages` reported that echo as a change, the list would repaint —
     /// and any row the user is mid-triage on would flicker — for no new
     /// information. Fails the moment change detection is weakened to blind
-    /// assignment. (A DIFFERING echo still reverts: that is a failed POST.)
+    /// assignment.
+    ///
+    /// The second half used to assert that a DIFFERING echo overwrites a PENDING
+    /// row — which is the bug audit item 1 removed, not a contract: an older
+    /// journal page must never win against an unconfirmed local action. What is
+    /// genuinely required is that a differing upsert still lands on a row nobody
+    /// is holding, and that is what it asserts now.
     @Test("An echoed upsert identical to the optimistic local state is a no-op")
     func equalEchoedUpsertIsANoOp() async throws {
         let store = try MailStore.inMemory()
         _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
-        _ = try await store.applyLocalAction(.read, messageID: "m1", accountID: account)
+        let undo = try await store.applyLocalAction(.read, messageID: "m1", accountID: account)
         let optimistic = try #require(try await store.message(id: "m1", accountID: account))
 
         // Exactly what the server journals back once the POST lands.
         let echoed = try await store.upsertMessages([optimistic], accountID: account)
         #expect(echoed.isEmpty, "an identical echo must not produce a ChangeSet, got \(echoed)")
 
-        // And the server disagreeing (the POST failed) still comes through.
+        // Once the action settles the fence is gone, and a differing journal
+        // upsert for that (now unheld) row updates it like any other.
+        try await store.completeLocalAction(undo)
         let differing = try await store.upsertMessages(
             [SyncFixtures.message("m1", readAt: nil)],
             accountID: account
         )
-        #expect(differing.updated == ["m1"], "a genuinely different echo must still update the row")
+        #expect(differing.updated == ["m1"], "a differing upsert on a non-pending row must still update it")
+        #expect(try await store.message(id: "m1", accountID: account)?.readAt == nil)
+    }
+
+    // MARK: - Audit fixes (2026-08-18)
+
+    /// A cursor persisted while the DERIVED conversation rows are still stale is
+    /// a cache that never heals: the page that would have fixed them is now
+    /// behind the cursor and is never read again. Refreshing only after the whole
+    /// walk loses every earlier page's scopes the moment a later page throws.
+    /// Fails on the end-of-walk refresh: pages 1–2 refreshed nothing.
+    @Test("Touched conversation scopes are refreshed per page, before that page's cursor is stored")
+    func conversationScopesRefreshBeforeTheCursorAdvances() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setChangePages([
+            ChangePage(changes: [.upsert(SyncFixtures.message("m1"))], nextCursor: "c1", hasMore: true),
+            ChangePage(changes: [.upsert(SyncFixtures.message("m2"))], nextCursor: "c2", hasMore: true),
+            ChangePage(changes: [.upsert(SyncFixtures.message("m3"))], nextCursor: "c3", hasMore: false),
+        ])
+        // Page three never arrives.
+        await api.setChangeFailure(.transport(.init(URLError(.timedOut))), forCursor: "c2")
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        let scopes = await api.conversationScopes()
+        #expect(
+            scopes == ["mbx_a:inbox", "mbx_a:inbox"],
+            "each applied page must refresh its own scopes before its cursor lands, got \(scopes)"
+        )
+        #expect(try await store.syncCheckpoint(accountID: account)?.changeCursor == "c2")
+    }
+
+    /// A message that MOVES makes two listings stale, not one. Refreshing only
+    /// the destination leaves the source list showing a thread that is no longer
+    /// in it until something unrelated happens to touch that scope. Fails on the
+    /// destination-only version: archived is refreshed, inbox is not.
+    @Test("A journal upsert that moves a message refreshes the old scope as well as the new")
+    func folderMoveRefreshesBothScopes() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("m1", folder: .archived))],
+                nextCursor: "c1",
+                hasMore: false
+            )
+        ])
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        _ = try await store.upsertMessages([SyncFixtures.message("m1", folder: .inbox)], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = SyncEngine(
+            api: api,
+            store: store,
+            scope: SyncScope(folders: [.inbox, .archived])
+        )
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        let scopes = Set(await api.conversationScopes())
+        #expect(
+            scopes == ["mbx_a:inbox", "mbx_a:archived"],
+            "the listing the message moved OUT of must be refreshed too, got \(scopes)"
+        )
+    }
+
+    /// Writing a new mailbox's row before its listing succeeds makes the mailbox
+    /// "known" — and steady state only bootstrap-lists mailboxes it considers
+    /// NEW. A listing that then throws leaves a mailbox no pass will ever list
+    /// again, showing the user a permanently empty folder. Fails if the row
+    /// survives the failed listing.
+    @Test("A new mailbox whose listing fails is not persisted, and the next pass bootstraps it")
+    func newMailboxRowWaitsForItsListing() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a"), SyncFixtures.mailbox("mbx_b")])
+        await api.setMessages([SyncFixtures.message("m_b", mailboxID: "mbx_b")], folder: .inbox)
+        await api.setMessageListFailure(.transport(.init(URLError(.timedOut))), forMailbox: "mbx_b")
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        #expect(
+            try await store.mailboxes(accountID: account).map(\.id) == ["mbx_a"],
+            "a mailbox whose bootstrap listing failed must not be recorded as known"
+        )
+
+        // The next pass still treats it as new, so it gets its listing.
+        await api.setMessageListFailure(nil, forMailbox: "mbx_b")
+        let engine2 = makeEngine(api, store)
+        await engine2.start(accountID: account)
+        await runOnePass(engine2)
+
+        #expect(try await store.mailboxes(accountID: account).map(\.id) == ["mbx_a", "mbx_b"])
+        #expect(try await store.message(id: "m_b", accountID: account) != nil, "the retry must actually list it")
+    }
+
+    /// `stop()` only ASKS the loop to end; the pass is still parked on a request
+    /// and keeps writing when it returns. Sign-out purges the cache immediately
+    /// afterwards, so an un-awaited stop lets the OLD account's rows land behind
+    /// the purge. Fails on any teardown that does not wait for the pass to unwind.
+    @Test("stopAndWait outlives the in-flight pass, so a purge after it stays purged")
+    func stopAndWaitFencesThePassAgainstAPurge() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages([SyncFixtures.message("m1")], folder: .inbox)
+        await api.armGate()
+
+        let store = try MailStore.inMemory()
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        try await waitUntil("the pass to park mid-request") {
+            await api.callCount { $0 == .listMailboxes } == 1
+        }
+
+        let stopper = Task { await engine.stopAndWait() }
+        await api.openGate()
+        await stopper.value
+
+        let callsAtStop = await api.calls.count
+        try await store.deleteAll(accountID: account)
+
+        #expect(try await store.mailboxes(accountID: account).isEmpty, "the stopped pass wrote in behind the purge")
+        #expect(try await store.message(id: "m1", accountID: account) == nil)
+        #expect(try await store.syncCheckpoint(accountID: account) == nil)
+        #expect(await api.calls.count == callsAtStop, "the pass was still issuing requests after stopAndWait returned")
+    }
+
+    /// A 404 means "no such route" only on the cursor-less probe. With a cursor
+    /// in hand the account has already used `/changes` successfully, so a 404
+    /// there is a transient server fault. Treating it as "no journal" drops the
+    /// account into full re-listing every 15 seconds for the rest of the session.
+    /// Fails on the un-scoped 404 check: the pass would succeed via legacy and
+    /// re-list every mailbox.
+    @Test("A 404 on a CURSORED /changes page is a pass failure, not a legacy fallback")
+    func cursoredNotFoundDoesNotFlipToLegacy() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages([SyncFixtures.message("m1")], folder: .inbox)
+        await api.setChangeFailure(.notFound, forCursor: "chk_0")
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        let outcomes = await runPassOutcomes(engine, count: 1)
+
+        #expect(outcomes == [true], "a 404 on a cursored page must be reported as a failed pass")
+        let calls = await api.calls
+        #expect(
+            !calls.contains(.changes(cursor: nil)),
+            "the account must stay in journal mode; only the probe may re-checkpoint"
+        )
+        #expect(
+            !calls.contains { if case .listMessages = $0 { return true } else { return false } },
+            "a legacy fallback re-listed every mailbox"
+        )
+        #expect(try await store.syncCheckpoint(accountID: account)?.changeCursor == "chk_0", "the cursor must survive")
+    }
+
+    /// The journal is ORDERED. Partitioning a page into "all upserts, then all
+    /// deletes" replays it out of order, and both orders occur: a message
+    /// delivered and then deleted, and one deleted and then re-delivered. Fails
+    /// on the partitioned version, which gets exactly one of the two backwards.
+    @Test("A change page is applied in journal order, not upserts-then-deletes")
+    func changePageIsAppliedInOrder() async throws {
+        func run(_ changes: [MessageChange], seeded: Bool) async throws -> Bool {
+            let api = FakeMailAPIClient()
+            await api.setSupportsChanges(true)
+            await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+            await api.setChangePages([ChangePage(changes: changes, nextCursor: "c1", hasMore: false)])
+
+            let store = try MailStore.inMemory()
+            _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+            if seeded { _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account) }
+            try await seedCheckpoint(store)
+
+            let engine = makeEngine(api, store)
+            await engine.start(accountID: account)
+            await runOnePass(engine)
+            return try await store.message(id: "m1", accountID: account) != nil
+        }
+
+        let deliveredThenDeleted = try await run(
+            [.upsert(SyncFixtures.message("m1")), .delete(messageID: "m1", mailboxID: "mbx_a")],
+            seeded: false
+        )
+        #expect(deliveredThenDeleted == false, "the delete came last and must win")
+
+        let deletedThenRedelivered = try await run(
+            [.delete(messageID: "m1", mailboxID: "mbx_a"), .upsert(SyncFixtures.message("m1"))],
+            seeded: true
+        )
+        #expect(deletedThenRedelivered, "the upsert came last and must win")
+    }
+
+    /// The bootstrap listing is the expensive half of a first sync. Persisting
+    /// its checkpoint only after the catch-up read meant one flaky `/changes`
+    /// call threw the entire listing away and re-listed every mailbox next pass.
+    /// Fails on that ordering: the second pass re-lists.
+    @Test("The bootstrap checkpoint is persisted before catch-up, so a flaky /changes costs no re-listing")
+    func bootstrapCheckpointSurvivesAFailedCatchUp() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages([SyncFixtures.message("m1")], folder: .inbox)
+        // One-shot: the first catch-up read after the listing times out.
+        await api.setChangeFailure(.transport(.init(URLError(.timedOut))), forCursor: "chk_0")
+
+        let store = try MailStore.inMemory()
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        let outcomes = await runPassOutcomes(engine, count: 2)
+
+        #expect(outcomes == [true, false], "pass 1 fails on catch-up, pass 2 resumes cleanly")
+        let checkpoint = try await store.syncCheckpoint(accountID: account)
+        #expect(checkpoint?.changeCursor == "chk_0")
+        #expect(checkpoint?.bootstrappedAt != nil, "the completed listing must be recorded before catch-up")
+
+        let listings = await api.callCount { if case .listMessages = $0 { return true } else { return false } }
+        #expect(listings == 1, "the second pass re-listed a bootstrap it had already completed")
+    }
+
+    /// `GET /messages` clamps to `limit` and the engine asks for the server's
+    /// maximum. A fake that ignored `limit` could not tell a client asking for
+    /// 100 from one asking for 5 — and neither could this suite. Fails if the
+    /// engine stops sending a limit, or sends a different one.
+    @Test("The engine asks for full 100-row message pages and the server's clamp is honoured")
+    func messageListingAsksForTheServerMaximum() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages(
+            (0..<150).map { SyncFixtures.message("m\($0)", threadID: "t\($0)") },
+            folder: .inbox
+        )
+
+        let store = try MailStore.inMemory()
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        #expect(await api.messageLimits() == [SyncEngine.messagePageLimit], "the engine must ask for a full page")
+        let cached = try await store.messages(
+            accountID: account,
+            mailboxID: "mbx_a",
+            folder: .inbox,
+            limit: 500
+        )
+        #expect(cached.count == SyncEngine.messagePageLimit, "the fake must clamp to the limit it was sent")
     }
 }

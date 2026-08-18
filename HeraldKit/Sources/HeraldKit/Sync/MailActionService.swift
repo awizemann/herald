@@ -18,13 +18,25 @@ public nonisolated struct MailActionService: Sendable {
     /// the caller can surface it — the cache is already back to its old state.
     public func perform(_ action: MessageAction, on messageID: String, accountID: String) async throws {
         let undo = try await store.applyLocalAction(action, messageID: messageID, accountID: accountID)
+        let confirmed: MessageSummary
         do {
-            _ = try await api.perform(action, onMessage: messageID)
+            confirmed = try await api.perform(action, onMessage: messageID)
         } catch {
             logger.warning(
                 "Message action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
             try? await revert(undo)
+            throw error
+        }
+        // The server answers with the updated summary. Discarding it left the
+        // optimistic guess (a client-side `Date()`) in the cache until some later
+        // journal page happened to correct it; it is authoritative, so it is
+        // written straight in as the fence comes down. A store failure here must
+        // NOT be mistaken for a rejected action — the server already accepted it.
+        do {
+            try await store.completeLocalAction(undo, applying: [confirmed])
+        } catch {
+            logger.error("Confirmed action could not be recorded: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -55,6 +67,15 @@ public nonisolated struct MailActionService: Sendable {
                 "Conversation action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
             try? await revert(undo)
+            throw error
+        }
+        // `POST /conversations/{id}/{action}` reports only a thread id and a
+        // count, so there is no authoritative summary to write back — the fence
+        // simply comes down and the journal supplies the server's timestamps.
+        do {
+            try await store.completeLocalAction(undo)
+        } catch {
+            logger.error("Confirmed action could not be recorded: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }

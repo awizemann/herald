@@ -349,6 +349,65 @@ struct MailActionServiceTests {
         #expect(messages.allSatisfy { $0.readAt != nil }, "Every message in the thread must be read")
     }
 
+    /// A journal page is assembled on the server BEFORE the user's POST lands, so
+    /// it legitimately describes the pre-action state. Applying it verbatim
+    /// un-starred the row under the user's cursor and the star only came back on
+    /// some later poll. Fails on any `upsertMessages` that overwrites a message
+    /// with an unconfirmed local mutation — and equally on a fence so broad that
+    /// the rest of the summary stops being accepted.
+    @Test("A journal upsert during an in-flight star does not un-star the message")
+    func journalUpsertDoesNotClobberAnInFlightAction() async throws {
+        let api = FakeMailAPIClient()
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
+        await api.armGate()
+
+        let service = MailActionService(api: api, store: store)
+        let post = Task { try await service.perform(.star, on: "m1", accountID: account) }
+        try await waitUntil("the star to reach the server") {
+            await api.callCount { $0 == .performMessage(.star, "m1") } == 1
+        }
+
+        // Exactly what an older journal page carries: the same row, unstarred.
+        let applied = try await store.upsertMessages(
+            [SyncFixtures.message("m1", subject: "Re: Subject")],
+            accountID: account
+        )
+        let midFlight = try #require(try await store.message(id: "m1", accountID: account))
+        #expect(midFlight.starredAt != nil, "an older journal page un-starred a row mid-POST")
+        #expect(midFlight.subject == "Re: Subject", "only the mutated fields are fenced; the rest still applies")
+        #expect(applied.updated == ["m1"])
+
+        await api.openGate()
+        try await post.value
+
+        #expect(try await store.message(id: "m1", accountID: account)?.starredAt != nil)
+        #expect(
+            await store.hasPendingMutation(messageID: "m1", accountID: account) == false,
+            "the fence outlived the POST; the journal could never correct this row again"
+        )
+    }
+
+    /// The server's answer carries the REAL timestamps. It used to be discarded
+    /// (`_ = try await api.perform(...)`), leaving a client-side `Date()` in the
+    /// cache until some later journal page happened to correct it. Fails if the
+    /// returned summary is not written back.
+    @Test("A successful action writes back the summary the server returned")
+    func successfulActionAppliesTheServerSummary() async throws {
+        let api = FakeMailAPIClient()
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
+
+        let service = MailActionService(api: api, store: store)
+        try await service.perform(.read, on: "m1", accountID: account)
+
+        // The fake answers the way the server does: readAt = 4_000.
+        #expect(
+            try await store.message(id: "m1", accountID: account)?.readAt == Date(timeIntervalSince1970: 4_000),
+            "the server's timestamp was thrown away in favour of the optimistic guess"
+        )
+    }
+
     /// REAL-SERVER regression (2026-08-15): the server's conversation-action `id`
     /// is a MESSAGE id — it resolves the mailbox for the access check from it.
     /// Sending the thread id yielded 403 MAILBOX_FORBIDDEN on star/archive.

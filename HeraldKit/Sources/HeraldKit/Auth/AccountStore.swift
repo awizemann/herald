@@ -42,7 +42,7 @@ public nonisolated final class KeychainAccountStore: AccountStore {
     private let secrets: any SecretStore
     /// Guards the read-modify-write of the account index; individual `SecItem`
     /// calls are atomic but the index is not.
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
 
     public init(secrets: any SecretStore = KeychainStore()) {
         self.secrets = secrets

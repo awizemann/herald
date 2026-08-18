@@ -94,14 +94,10 @@ public nonisolated enum MailStoreContainer {
         let manager = FileManager.default
         for suffix in ["", "-shm", "-wal"] {
             let target = URL(fileURLWithPath: url.path + suffix)
-            guard manager.fileExists(atPath: target.path) else { continue }
-            do {
-                try manager.removeItem(at: target)
-            } catch {
-                logger.error(
-                    "Could not delete \(target.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .private)"
-                )
-            }
+            // No fileExists() pre-check: it is a TOCTOU race and pointless here.
+            // A missing sidecar throwing ENOENT is harmless on a rebuildable cache,
+            // so removal is best-effort — we simply try each path and move on.
+            try? manager.removeItem(at: target)
         }
     }
 }

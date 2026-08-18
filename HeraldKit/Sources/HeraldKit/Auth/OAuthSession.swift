@@ -136,6 +136,7 @@ public nonisolated struct OAuthSession: Sendable, TokenRefreshing {
         guard (200..<300).contains(response.status) else {
             throw OAuthHTTP.oauthError(from: response)
         }
+        // A 2xx with a body we cannot decode is not a token; the decode failure is reduced to a single `.malformedTokenResponse`, so the specific parse error carries no useful information to the caller.
         guard let payload = try? JSONDecoder().decode(TokenResponse.self, from: response.body) else {
             logger.error("token response was 2xx but unreadable")
             throw OAuthError.malformedTokenResponse

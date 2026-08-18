@@ -10,7 +10,15 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// persisted per origin in the Keychain and reused forever after.
 public nonisolated struct DynamicClientRegistration: Sendable {
     /// Herald's custom-scheme redirect. Must match the app's `CFBundleURLTypes`.
-    public static let redirectURI = URL(string: "com.wizemann.herald:/oauth/callback")!
+    /// The string is a compile-time constant that always parses; the `precondition`
+    /// documents that invariant and traps with a clear message (instead of a bare
+    /// `!`) only if the literal is ever edited into something malformed.
+    public static let redirectURI: URL = {
+        guard let url = URL(string: "com.wizemann.herald:/oauth/callback") else {
+            preconditionFailure("Herald redirect URI literal is not a valid URL")
+        }
+        return url
+    }()
     public static let callbackScheme = "com.wizemann.herald"
     public static let clientName = "Herald"
 
@@ -43,6 +51,7 @@ public nonisolated struct DynamicClientRegistration: Sendable {
         let response = try await OAuthHTTP.postJSON(endpoint, body: try JSONEncoder().encode(body), using: session)
         // Registration answers 201 Created; accept any 2xx rather than pinning 200.
         guard (200..<300).contains(response.status) else {
+            // The error body is best-effort context; if it is not the documented RFC 7591 shape we fall through to the HTTP-status error below, so an unparseable body just yields the less-specific failure rather than crashing.
             if let oauth = try? JSONDecoder().decode(RegistrationErrorPayload.self, from: response.body) {
                 logger.error("client registration rejected: \(oauth.error, privacy: .public)")
                 throw OAuthError.server(error: oauth.error, description: oauth.errorDescription)
@@ -50,6 +59,7 @@ public nonisolated struct DynamicClientRegistration: Sendable {
             logger.error("client registration failed with HTTP \(response.status)")
             throw OAuthError.registrationFailed(status: response.status)
         }
+        // A 2xx whose body is not a decodable RegistrationResponse gives us no `client_id`, which is indistinguishable from a failed registration; the specific decode error adds nothing, so it collapses to `registrationFailed`.
         guard let registered = try? JSONDecoder().decode(RegistrationResponse.self, from: response.body) else {
             logger.error("client registration response had no client_id")
             throw OAuthError.registrationFailed(status: response.status)

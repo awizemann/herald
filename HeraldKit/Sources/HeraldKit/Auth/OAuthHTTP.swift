@@ -87,6 +87,7 @@ nonisolated enum OAuthHTTP {
                 case errorDescription = "error_description"
             }
         }
+        // The error body is best-effort context; an unparseable body just falls back to the HTTP-status error, so the caller still gets a `.server` error either way.
         guard let payload = try? JSONDecoder().decode(Payload.self, from: response.body) else {
             logger.error("token endpoint returned HTTP \(response.status) with an unreadable body")
             return .server(error: "http_\(response.status)", description: nil)

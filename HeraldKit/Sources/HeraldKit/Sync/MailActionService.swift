@@ -25,7 +25,13 @@ public nonisolated struct MailActionService: Sendable {
             logger.warning(
                 "Message action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
-            try? await revert(undo)
+            // Best-effort revert: never rethrown (the original API error is what the
+            // caller needs), but a revert failure is logged rather than swallowed.
+            do {
+                try await revert(undo)
+            } catch let revertError {
+                logger.warning("Revert after a rejected message action failed (\(Self.code(for: revertError), privacy: .public))")
+            }
             throw error
         }
         // The server answers with the updated summary. Discarding it left the
@@ -67,7 +73,13 @@ public nonisolated struct MailActionService: Sendable {
             logger.warning(
                 "Conversation action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
-            try? await revert(undo)
+            // Best-effort revert: never rethrown (the original API error is what the
+            // caller needs), but a revert failure is logged rather than swallowed.
+            do {
+                try await revert(undo)
+            } catch let revertError {
+                logger.warning("Revert after a rejected conversation action failed (\(Self.code(for: revertError), privacy: .public))")
+            }
             throw error
         }
         // A 200 with `affected: 0` is the server saying the action matched no
@@ -80,7 +92,13 @@ public nonisolated struct MailActionService: Sendable {
             logger.warning(
                 "Conversation action \(action.rawValue, privacy: .public) affected no messages in \(folder.rawValue, privacy: .public); reverting the optimistic change"
             )
-            try? await revert(undo)
+            // Best-effort revert: not rethrown (an affected:0 result is not an error
+            // to the caller), but a revert failure is logged rather than swallowed.
+            do {
+                try await revert(undo)
+            } catch let revertError {
+                logger.warning("Revert of a no-op conversation action failed (\(Self.code(for: revertError), privacy: .public))")
+            }
             return
         }
         // `POST /conversations/{id}/{action}` reports only a thread id and a

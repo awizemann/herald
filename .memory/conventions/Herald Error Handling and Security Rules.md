@@ -5,6 +5,8 @@ permalink: hqbase-mac/conventions/herald-error-handling-and-security-rules
 tags:
 - errors
 - security
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 ## Observations

@@ -6,6 +6,8 @@ tags:
 - decision
 - swiftdata
 - sync
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 ## Observations
@@ -30,3 +32,15 @@ tags:
 - [gotcha] MailStore lookups MUST be account-scoped (body sidecar, message(id:), local actions) — the #Unique is (accountID, messageID) and two HQBase instances reuse ids; fixed in P0.6 with a two-account test #accounts
 - [gotcha] A running actor method pins the actor: replacing `AppEnvironment.syncEngine` without `await stop()` leaks the loop forever (unbounded event stream buffers with no consumer) — activate() now stops the old graph first #lifecycle
 - [todo] Optimistic action vs concurrent sync pass has no fence (a pass mid-POST can snap the row back until the next poll) — follow-up: pending-mutation set in MailStore respected by upserts #followup
+
+## Update (2026-08-18 — journal mode)
+- [decision] SyncEngine has two modes chosen per pass by feature detection: JOURNAL (server has /changes: checkpoint → paginated bootstrap per mailbox+folder → conversations → consume changes; steady state = re-list mailboxes (purge vanished, bootstrap new BEFORE the journal) → page /changes to hasMore=false persisting the cursor AFTER EACH applied page → re-list conversations only for touched (mailbox, conversation-folder) scopes, always incl. starred; 410 → clear checkpoint + re-bootstrap) and LEGACY (today's re-list; page-walks fully once a Link/cursor has ever been seen for the account, else the 100-cap guard applies). A 404 from /changes marks the account legacy for the engine's lifetime (re-probed on next activation) #journal
+- [fact] `CachedSyncCheckpoint` @Model (accountID unique: changeCursor, bootstrappedAt) lives in the rebuildable cache — nuking the cache forces a clean re-bootstrap by design; message page-walks are capped at 50 pages (skip tombstoning + warn when hit) #checkpoint
+- [gotcha] Tombstoning a message cannot fix conversation rows (denormalized per listing scope) — journal mode must re-list touched scopes; nothing but the starred scope reveals a star change #derived
+- [decision] Journal-sync hardening (audit of c78f421, fixed in bf7d2e1): MailStore keeps a PENDING-MUTATION fence per (account, message) — journal upserts never overwrite readAt/starredAt/folder while a local action is in flight; on POST success the server's returned summary is applied as authoritative and the fence dropped; revert happens only if the row still equals the optimistic snapshot. Conversation scopes are refreshed PER PAGE before that page's cursor is persisted; a folder move refreshes old AND new scopes; a new mailbox's row is written only after its listing succeeds; `stopAndWait()` + pass-generation guard mean no store writes after stop; a cursored 404 on /changes is a pass failure (only the cursor-less probe flips to legacy); pages apply in journal order; the bootstrap checkpoint is persisted before catch-up #hardening
+- [gotcha] The journal removes re-listing's 15s self-healing — every "cursor advanced but derived state not updated" path becomes a durable divergence; treat cursor-persist as a transaction boundary #atomicity
+
+## Update (2026-08-18 — v0.2.0 shipped; issue fixes)
+- [fact] CORRECTION: `MailStore.applyLocalAction` for archive/trash now MATERIALISES the destination conversation-scope row (`materializeMovedScope`) and records it in `LocalActionUndo.insertedConversations` for revert — the earlier fact "only the message folder changes; the VM filters by latest.folder" is now half true (the filter remains as a belt) #materialize
+- [rule] Programmatic selection advances (after archive/trash) NEVER drill (`select(_:drill:)` / `drillsOnSelection` flag); only user selection drills. Refresh sets `reloadsWhenPassFinishes` → `.finished` reloads the presented scope + counts #selection
+- [fact] Trash scope: conversation-level archive/trash are server no-ops (`affected: 0`), and there is NO restore action in v1 → Herald offers per-message "Move to Archive" (`MailActionService.perform(_:onMessagesOfThread:)`) and never sends the no-op conversation actions; `affected == 0` reverts the optimistic move immediately. Upstream HQBase/hqbase#42 asks for `restore` #trash

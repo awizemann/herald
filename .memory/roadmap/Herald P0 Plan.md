@@ -5,6 +5,8 @@ permalink: hqbase-mac/roadmap/herald-p0-plan
 tags:
 - roadmap
 - p0
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 P0 = a usable read/triage/reply client against a v1.1.0 HQBase: add account (origin + OAuth PKCE),
@@ -44,3 +46,12 @@ reply/new message (plain text), local cache for instant launch, polling sync.
 - [done] v0.1.2: fixes for bermanto's issues #1 (missing/refused refresh → reauth banner; OAuthError now maps to .unauthorized), #2 (AppleDouble-free zip, unzip-verified), #3 (private error descriptions + logCode, source guard), #4 (removed tap gesture racing List selection). #2/#3/#4 closed; #1 open pending his answer on whether offline_access was in the granted scopes #shipped
 - [fact] Sparkle self-update from 0.1.0 → 0.1.1 confirmed by the owner; release notes now flow from CHANGELOG.md (see Herald Release Pipeline) #verified
 - [todo] Session close 2026-08-16: all work on main (hqbase-mac 09e438d), worktrees removed, scratch cleaned; fork branches docs/native-client-oauth + docs/conversation-action-id retained for open PRs #30/#31; ~/Developer/hqbase checkout belongs to another live session (feat/hqbase-domain-move) — leave it alone #state
+
+## Update (2026-08-17 — v0.1.3)
+- [done] v0.1.3 shipped: offline_access root-cause fix (see API contract note), stable row min height. Herald #1 closed with root cause (was ours, not the reporter's). release.sh build-input preflight narrowed to .github/workflows (Memophant shims are not build inputs) #shipped
+- [gotcha] Debugging tip that cracked it: `log show --style compact --predicate 'subsystem == "com.wizemann.herald"'` — run via a bash script file, zsh mangles the predicate quoting and `2>/dev/null` hides the "too many arguments" error #logs
+
+## Update (2026-08-18 — v0.2.0 SHIPPED; session close)
+- [done] v0.2.0: journal/pagination sync (with hardening from audit), auth cross-process fix (root cause #3: refresh rotation family invalidation across two Herald processes), maintainer issues #5 #6 #8 fixed; #7 open (needs upstream restore action, HQBase/hqbase#42); upstream #41 (reuse interval) filed. Kit 157 / app 78 tests #shipped
+- [todo] Next session: (1) watch #41/#42/#32 and Herald #7; (2) when an HQBase release includes #35/#37, verify journal mode live and retire the 100-cap guard note; (3) if #42 lands, wire "Put back"; (4) cosmetic: re-auth banner replaces the account header instead of stacking; (5) polish tickets on the board #next
+- [fact] Session close 2026-08-18: all work on main (hqbase-mac 25b552c), fork branches deleted (all merged upstream), worktrees + scratch cleaned; ~/Developer/hqbase belongs to another live session (feat/hqbase-domain-move) #state

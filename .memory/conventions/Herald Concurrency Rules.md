@@ -2,9 +2,9 @@
 title: Herald Concurrency Rules
 type: note
 permalink: hqbase-mac/conventions/herald-concurrency-rules
-tags:
-- swift6
-- concurrency
+tags: [swift6, concurrency]
+created: 2026-08-16
+updated: 2026-08-18
 ---
 
 Both targets build with SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor (Swift 6.2 approachable
@@ -32,3 +32,8 @@ concurrency) and strict concurrency. Every unannotated top-level decl is implici
 ## Update (2026-08-15 — real-run crash: framework callbacks)
 - [gotcha] CRASH CLASS: under default-MainActor isolation, a closure literal passed to a framework API whose parameter is NOT declared @Sendable (e.g. `ASWebAuthenticationSession(url:callbackURLScheme:completionHandler:)`) is inferred @MainActor; when the framework calls it off-main the runtime traps in `dispatch_assert_queue` (EXC_BREAKPOINT, `_swift_task_checkIsolatedSwift`). Rule: write `{ @Sendable args in Task { @MainActor in … } }` for EVERY framework completion handler that may fire off-main. Audit any new AppKit/WebKit/AuthenticationServices/URLSession-delegate closure for this #callback-isolation
 - [check] `grep -rn "completionHandler\|) { [a-zA-Z_, ]* in" --include=*.swift HeraldKit/Sources Herald | grep -v "@Sendable"` — review each framework callback hit #guards
+
+
+## Update (2026-08-18 — os_unfair_lock over actor for sync nonisolated stores)
+- [decision] `KeychainAccountStore` guards its account-index read-modify-write with `OSAllocatedUnfairLock` (os_unfair_lock), NOT an actor. `AccountStore` is a deliberately SYNCHRONOUS `nonisolated protocol: Sendable` so the `AccountTokenProvider` actor and test fakes call it synchronously off-main; making the impl an actor forces the whole protocol async and ripples through the auth path + every fake. Rule: a type behind a sync nonisolated protocol serializes shared state with os_unfair_lock, not by becoming an actor (commit 9df695d, t-e2af8452) #locks
+- [gotcha] Standards-audit guidance "prefer actor for shared mutable state" does NOT apply when the type must satisfy a sync nonisolated protocol — os_unfair_lock is the sanctioned primitive there (04 §1 already names it over NSLock) #audit

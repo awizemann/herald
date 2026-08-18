@@ -5,6 +5,8 @@ permalink: hqbase-mac/project/herald-project-overview
 tags:
 - project
 - hqbase
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 Herald (working codename) is a native macOS email client for HQBase (https://hqbase.io, AGPL,

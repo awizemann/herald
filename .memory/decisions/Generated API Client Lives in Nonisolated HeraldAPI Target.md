@@ -6,6 +6,8 @@ tags:
 - decision
 - openapi
 - concurrency
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 ## Observations

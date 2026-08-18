@@ -5,6 +5,8 @@ permalink: hqbase-mac/architecture/herald-architecture
 tags:
 - architecture
 - swift6
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 Layers (adapted from the ShabuBox standard §3 — strict Sendable boundary):

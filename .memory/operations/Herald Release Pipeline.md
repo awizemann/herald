@@ -6,6 +6,8 @@ tags:
 - release
 - sparkle
 - operations
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -32,3 +34,4 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [rule] RUNBOOK step 0: write the version's notes in CHANGELOG.md (`## [x.y.z] - date`, Keep-a-Changelog; move `[Unreleased]` items down). release.sh PREFLIGHT FAILS without that section; `scripts/changelog-section.py <v> [--html]` extracts it → GitHub Release body AND `Herald-<v>.html` beside the zip so generate_appcast embeds it as the Sparkle update notes. releases/**/RELEASE_NOTES.md and *.html are derived and gitignored #release-notes
 - [done] Sparkle self-update PROVEN 2026-08-16: installed 0.1.0 offered and installed 0.1.1 — the pipeline is verified end to end #verified
 - [rule] Full release runbook: (1) CHANGELOG section, (2) tree clean on main, (3) `NOTARY_PROFILE=shabubox-notary ./scripts/release.sh <v>` [--dry-run first if anything changed in the pipeline], (4) verify `curl -s https://awizemann.github.io/herald/appcast.xml | grep <v>` and `spctl -a -vv` on the downloaded zip, (5) push main (release.sh commits the version bump) #runbook
+- [gotcha] 2026-08-18: the notarytool keychain profile `shabubox-notary` vanished from the login keychain (worked for 0.1.3 an hour earlier; Sparkle key + Herald items intact; cause unknown). Recreate with `xcrun notarytool store-credentials shabubox-notary --key <p8> --key-id <id> --issuer <issuer>` (or --apple-id/--team-id/--password). Preflight fails cleanly before any bump #notary

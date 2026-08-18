@@ -4,6 +4,8 @@ type: note
 permalink: hqbase-mac/conventions/herald-testing-conventions
 tags:
 - testing
+created: 2026-08-16
+updated: 2026-08-16
 ---
 
 ## Observations

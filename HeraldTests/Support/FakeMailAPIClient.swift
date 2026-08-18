@@ -23,15 +23,30 @@ actor FakeMailAPIClient: MailAPIClient {
 
     /// Set to make every `perform` fail, so the revert path can be driven.
     var actionError: MailAPIError?
+    /// What a CONVERSATION action reports it changed. `0` is what the real server
+    /// answers for an archive issued from Trash (upstream
+    /// conversation-queries.ts:190-192) — a 200 that did nothing.
+    var conversationAffected = 1
     var details: [String: MessageDetail] = [:]
     var html: [String: MessageHTML] = [:]
 
     func setActionError(_ error: MailAPIError?) { actionError = error }
+    func setConversationAffected(_ affected: Int) { conversationAffected = affected }
     func setDetail(_ detail: MessageDetail) { details[detail.id] = detail }
     func setHTML(_ value: MessageHTML, for id: String) { html[id] = value }
 
     func actionCount(_ action: String, on id: String) -> Int {
         performed.count { $0.action == action && $0.id == id }
+    }
+
+    /// Conversation calls carry a folder, message calls never do — which route an
+    /// action went down is the whole question in the Trash (issue #8).
+    func conversationActionIDs(_ action: String) -> [String] {
+        performed.filter { $0.action == action && $0.folder != nil }.map(\.id)
+    }
+
+    func messageActionIDs(_ action: String) -> [String] {
+        performed.filter { $0.action == action && $0.folder == nil }.map(\.id)
     }
 
     /// The folders conversation actions were sent with, in order.
@@ -144,7 +159,7 @@ actor FakeMailAPIClient: MailAPIClient {
     ) async throws -> ConversationActionResult {
         performed.append(PerformedAction(action: action.rawValue, id: id, folder: folder))
         if let actionError { throw actionError }
-        return ConversationActionResult(threadID: id, affected: 1)
+        return ConversationActionResult(threadID: id, affected: conversationAffected)
     }
 
     func listDrafts() async throws -> [Draft] { [] }

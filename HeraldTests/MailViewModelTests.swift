@@ -103,6 +103,60 @@ private struct Harness {
         await api.setDetail(MailFixtures.detail(second, htmlAvailable: false))
     }
 
+    /// The issue-#5 layout: three single-message rows above a two-message
+    /// thread — `t1`, `t2`, `t3` newest first, then `t9` (oldest) last.
+    func seedSinglesAboveAThread() async throws {
+        try await store.upsertMailboxes([Self.mailbox("mbA")], accountID: "acct")
+        let singles = (1...3).map { index in
+            MailFixtures.message(
+                id: "m\(index)",
+                threadID: "t\(index)",
+                mailboxID: "mbA",
+                subject: "Single \(index)",
+                date: MailFixtures.epoch.addingTimeInterval(TimeInterval(400 - index * 100))
+            )
+        }
+        let first = MailFixtures.message(
+            id: "m9a", threadID: "t9", mailboxID: "mbA", subject: "Long thread",
+            date: MailFixtures.epoch
+        )
+        let second = MailFixtures.message(
+            id: "m9b", threadID: "t9", mailboxID: "mbA", subject: "Long thread",
+            date: MailFixtures.epoch.addingTimeInterval(50)
+        )
+        try await store.upsertMessages(singles + [first, second], accountID: "acct")
+        try await store.upsertConversations(
+            singles.map { MailFixtures.conversation($0) }
+                + [MailFixtures.conversation(second, messageCount: 2)],
+            accountID: "acct",
+            mailboxID: "mbA",
+            folder: .inbox
+        )
+        for message in singles { await api.setDetail(MailFixtures.detail(message, htmlAvailable: false)) }
+    }
+
+    /// A two-message thread that already lives in the TRASH listing scope, so
+    /// "archive from the Trash" is reachable.
+    func seedTrashedThread() async throws {
+        try await store.upsertMailboxes([Self.mailbox("mbA")], accountID: "acct")
+        let first = MailFixtures.message(
+            id: "m7a", threadID: "t7", mailboxID: "mbA", folder: .trash, subject: "Deleted"
+        )
+        let second = MailFixtures.message(
+            id: "m7b", threadID: "t7", mailboxID: "mbA", folder: .trash, subject: "Deleted",
+            date: MailFixtures.epoch.addingTimeInterval(60)
+        )
+        try await store.upsertMessages([first, second], accountID: "acct")
+        try await store.upsertConversations(
+            [MailFixtures.conversation(second, messageCount: 2)],
+            accountID: "acct",
+            mailboxID: "mbA",
+            folder: .trash
+        )
+        await api.setDetail(MailFixtures.detail(first, htmlAvailable: false))
+        await api.setDetail(MailFixtures.detail(second, htmlAvailable: false))
+    }
+
     /// One unread starred conversation in mailbox A's STARRED listing scope.
     func seedStarredThread() async throws {
         let starred = MailFixtures.message(
@@ -250,6 +304,191 @@ func wait(
 }
 
 @MainActor
+@Suite struct MailViewModelTrashVisibilityTests {
+    /// Issue #6: a deleted mail did not show up in Trash. The optimistic action
+    /// moved every MESSAGE to the trash folder but created no conversation row in
+    /// the `trash` LISTING scope, so the Trash list queried the store and found
+    /// nothing until a later poll happened to list one. Fails on the pre-fix
+    /// store: the trash scope stays empty.
+    @Test func aJustDeletedThreadShowsUpInTheTrashList() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        await harness.model.perform(.trash, onThread: "t1")
+        #expect(harness.model.presentedConversations.isEmpty, "the row must leave the inbox")
+
+        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        await (try #require(harness.model.reloadTask)).value
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
+    }
+
+    /// A server that rejects the delete must not leave the invented Trash row
+    /// behind — the thread would then be listed in two folders at once.
+    @Test func aRejectedDeleteLeavesNoRowInTheTrashList() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        await harness.api.setActionError(.server(code: "boom", message: "nope"))
+        await harness.model.perform(.trash, onThread: "t1")
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"], "the inbox row must come back")
+
+        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        await (try #require(harness.model.reloadTask)).value
+        #expect(harness.model.presentedConversations.isEmpty)
+    }
+
+    /// Issue #6, second half: Refresh appeared to do nothing. The view-model only
+    /// reacted to ChangeSets, so a pass whose changes resolved to nothing the
+    /// current scope was keyed by left the list exactly as it was — while leaving
+    /// the folder and coming back showed the new rows. Fails on the pre-fix code:
+    /// the row written behind the view-model's back never appears.
+    @Test func refreshReloadsThePresentedScopeWhenThePassFinishes() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
+
+        // Exactly what a sync pass does — with no `.changed` event to react to.
+        let arrival = MailFixtures.message(
+            id: "m5", threadID: "t5", mailboxID: "mbA", subject: "New",
+            date: MailFixtures.epoch.addingTimeInterval(600)
+        )
+        try await harness.store.upsertMessages([arrival], accountID: "acct")
+        try await harness.store.upsertConversations(
+            [MailFixtures.conversation(arrival)], accountID: "acct", mailboxID: "mbA", folder: .inbox
+        )
+
+        await harness.model.refresh()
+        harness.events.yield(.finished)
+
+        try await wait("the finished pass to reload the presented scope") {
+            harness.model.presentedConversations.map(\.id) == ["t5", "t1"]
+        }
+        // The badges come from the same reload, one store round trip later.
+        try await wait("the unread badges to be recounted") {
+            harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .inbox)] == 2
+        }
+    }
+
+    /// A `.finished` that no Refresh asked for must NOT reload: the change
+    /// detection the store does is the whole reason the list is not rebuilt on
+    /// every poll. Fails if the reload is unconditional.
+    @Test func aRoutinePassDoesNotReloadThePresentedScope() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        let baseline = harness.model.conversationReloadCount
+
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        try await wait("the pass to be recorded") { harness.model.lastSyncedAt != nil }
+        #expect(harness.model.conversationReloadCount == baseline)
+    }
+
+    /// The sync-driven half of issue #6: the pass creates the Trash-scope row
+    /// itself and reports a THREAD id, which resolves to no cached message. That
+    /// used to fall through to "must be a new mailbox" and reload nothing the
+    /// user could see. Fails on the pre-fix code: the Trash list stays empty.
+    @Test func aNewConversationRowInTheOpenScopeReloadsTheList() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        await harness.model.start()
+        #expect(harness.model.presentedConversations.isEmpty)
+
+        let deleted = MailFixtures.message(
+            id: "m6", threadID: "t6", mailboxID: "mbA", folder: .trash, subject: "Gone"
+        )
+        try await harness.store.upsertMessages([deleted], accountID: "acct")
+        try await harness.store.upsertConversations(
+            [MailFixtures.conversation(deleted)], accountID: "acct", mailboxID: "mbA", folder: .trash
+        )
+        harness.events.yield(.changed(ChangeSet(inserted: ["t6"])))
+
+        try await wait("the new trash row to be listed") {
+            harness.model.presentedConversations.map(\.id) == ["t6"]
+        }
+    }
+}
+
+@MainActor
+@Suite struct MailViewModelTrashActionTests {
+    /// Issue #8: "Archive" from the Trash made the mail vanish everywhere. The
+    /// CONVERSATION-level archive only moves inbox/catchall messages
+    /// (upstream conversation-queries.ts:190-192), so from Trash the server did
+    /// nothing while Herald moved the row locally. The message route is the only
+    /// way out of the trash the v1 API has. Fails on the pre-fix code: one
+    /// conversation call, no message calls.
+    @Test func archiveInTheTrashGoesThroughEveryMessageOfTheThread() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTrashedThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        await harness.model.start()
+        #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
+
+        await harness.model.perform(.archive, onThread: "t7")
+
+        #expect(await harness.api.messageActionIDs("archive").sorted() == ["m7a", "m7b"])
+        #expect(await harness.api.conversationActionIDs("archive").isEmpty)
+        #expect(harness.model.presentedConversations.isEmpty, "the thread must leave the Trash list")
+        #expect(harness.model.actionError == nil)
+    }
+
+    /// Outside the Trash the conversation route is still the right one: one call
+    /// for the whole thread, not one per message.
+    @Test func archiveOutsideTheTrashStaysAConversationCall() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        await harness.model.perform(.archive, onThread: "t1")
+
+        #expect(await harness.api.conversationActionIDs("archive") == ["m1"])
+        #expect(await harness.api.messageActionIDs("archive").isEmpty)
+    }
+
+    /// Trashing what is already in the Trash is a server no-op, so Herald must
+    /// not send it — and must not move the row locally either.
+    @Test func trashInTheTrashIsNotSentAtAll() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTrashedThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        await harness.model.start()
+
+        await harness.model.perform(.trash, onThread: "t7")
+
+        #expect(await harness.api.actionCount("trash", on: "m7b") == 0)
+        #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
+        #expect(harness.model.offersTrashAction == false)
+        #expect(harness.model.archiveActionTitle == "Move to Archive")
+    }
+
+    /// A 200 that reports `affected: 0` is the server saying it changed nothing.
+    /// Waiting for a later sync pass to heal the optimistic move is what made the
+    /// mail "lost" in the meantime. Fails on the pre-fix service, which treated
+    /// any non-throwing response as success and left the row archived locally.
+    @Test func aConversationActionThatAffectedNothingRevertsImmediately() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        await harness.api.setConversationAffected(0)
+
+        await harness.model.perform(.archive, onThread: "t1")
+
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1"], "the row was not put back")
+        #expect(try await harness.store.message(id: "m1", accountID: "acct")?.folder == .inbox)
+    }
+}
+
+@MainActor
 @Suite struct MailViewModelSelectionTests {
     /// Two folder switches in a row used to leave the first reload running: it
     /// finishes against the OLD scope and assigns its rows while the selection has
@@ -356,6 +595,46 @@ func wait(
         await harness.model.perform(.trash, onThread: "t1")
 
         #expect(harness.model.selectedThreadID == "t2")
+    }
+
+    /// Issue #5: with a multi-message thread below the selected row, deleting the
+    /// selected row advanced the selection onto the thread — and the `didSet`
+    /// that drills into a multi-message selection then dropped the user INSIDE
+    /// it. Fails on the pre-fix code, where `isShowingThread` comes back true:
+    /// a programmatic advance must select without drilling.
+    @Test func advancingPastADeletedRowSelectsTheThreadWithoutOpeningIt() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedSinglesAboveAThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        #expect(harness.model.presentedConversations.map(\.id) == ["t1", "t2", "t3", "t9"])
+
+        harness.model.selectedThreadID = "t3" // The row directly above the thread.
+        #expect(harness.model.isShowingThread == false)
+
+        await harness.model.perform(.archive, onThread: "t3")
+
+        #expect(harness.model.selectedThreadID == "t9", "the selection did not follow the archive")
+        #expect(
+            harness.model.isShowingThread == false,
+            "a programmatic advance drilled into the thread the user never opened"
+        )
+    }
+
+    /// The user path still drills: the fix must be scoped to the programmatic
+    /// advance, not turn selection-drilling off everywhere.
+    @Test func aUserSelectionStillDrillsAfterAnAdvance() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedSinglesAboveAThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+        harness.model.selectedThreadID = "t3"
+        await harness.model.perform(.archive, onThread: "t3")
+        #expect(harness.model.isShowingThread == false)
+
+        harness.model.selectedThreadID = "t1"
+        harness.model.selectedThreadID = "t9" // The user arrows onto it themselves.
+        #expect(harness.model.isShowingThread, "selecting a multi-message thread must still drill in")
     }
 
     /// Fails if the selection moves on ANY action rather than only on one that

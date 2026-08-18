@@ -31,6 +31,12 @@ struct SelectedIsStarredKey: FocusedValueKey {
     typealias Value = Bool
 }
 
+/// The folder the key window is listing. Same reason as the keys above: the
+/// Trash scope renames Archive and drops Move to Trash (issue #8).
+struct SelectionFolderKey: FocusedValueKey {
+    typealias Value = ConversationFolder
+}
+
 extension FocusedValues {
     var mailModel: MailViewModel? {
         get { self[MailModelFocusKey.self] }
@@ -56,6 +62,11 @@ extension FocusedValues {
         get { self[SelectedIsStarredKey.self] }
         set { self[SelectedIsStarredKey.self] = newValue }
     }
+
+    var selectionFolder: ConversationFolder? {
+        get { self[SelectionFolderKey.self] }
+        set { self[SelectionFolderKey.self] = newValue }
+    }
 }
 
 /// Every mail action has a menu item and a shortcut — a macOS app must be usable
@@ -72,6 +83,7 @@ struct MailCommands: Commands {
     @FocusedValue(\.selectedMessageID) private var selectedMessageID: String?
     @FocusedValue(\.selectedIsUnread) private var selectedIsUnread: Bool?
     @FocusedValue(\.selectedIsStarred) private var selectedIsStarred: Bool?
+    @FocusedValue(\.selectionFolder) private var selectionFolder: ConversationFolder?
 
     var body: some Commands {
         // App menu → "Check for Updates…" directly under "About Herald" (Sparkle, t-8a1c0026).
@@ -105,14 +117,17 @@ struct MailCommands: Commands {
 
             Divider()
 
-            Button("Archive") { perform(.archive) }
+            // In the Trash, ⌘⇧A is a per-message archive — the only way out of
+            // the trash the v1 API offers — and says so (issue #8).
+            Button(isTrashScope ? "Move to Archive" : "Archive") { perform(.archive) }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
                 .disabled(!hasSelection)
             // ⌘⌫, as in Mail. A bare ⌫ would trash the selected thread while the
-            // user was backspacing in the search field.
+            // user was backspacing in the search field. Disabled in the Trash,
+            // where the server would do nothing.
             Button("Move to Trash") { perform(.trash) }
                 .keyboardShortcut(.delete, modifiers: .command)
-                .disabled(!hasSelection)
+                .disabled(!hasSelection || isTrashScope)
 
             Divider()
 
@@ -132,6 +147,7 @@ struct MailCommands: Commands {
     }
 
     private var hasSelection: Bool { selectedThreadID != nil }
+    private var isTrashScope: Bool { selectionFolder == .trash }
     private var hasMessage: Bool { selectedMessageID != nil }
 
     private var markReadTitle: String {

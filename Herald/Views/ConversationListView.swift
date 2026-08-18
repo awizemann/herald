@@ -47,8 +47,13 @@ struct ConversationListView: View {
                     ? model.mailboxTint(for: row.latest.mailboxID)
                     : nil,
                 toggleStar: { Task { await model.toggleStar(row) } },
+                archiveTitle: model.archiveActionTitle,
                 archive: { Task { await model.perform(.archive, onThread: row.id) } },
-                trash: { Task { await model.perform(.trash, onThread: row.id) } },
+                // In the Trash there is nothing to trash: the rotor action goes
+                // away rather than offering a no-op.
+                trash: model.offersTrashAction
+                    ? { Task { await model.perform(.trash, onThread: row.id) } }
+                    : nil,
                 openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
             )
             .tag(row.id)
@@ -96,9 +101,15 @@ struct ConversationListView: View {
                 }
                 Button(row.isStarred ? "Unstar" : "Star") { Task { await model.toggleStar(row) } }
                 Divider()
-                Button("Archive") { Task { await model.perform(.archive, onThread: id) } }
-                Button("Move to Trash", role: .destructive) {
-                    Task { await model.perform(.trash, onThread: id) }
+                // "Move to Archive" in the Trash: it is a per-message archive,
+                // the only way back out the v1 API has (issue #8).
+                Button(model.archiveActionTitle) {
+                    Task { await model.perform(.archive, onThread: id) }
+                }
+                if model.offersTrashAction {
+                    Button("Move to Trash", role: .destructive) {
+                        Task { await model.perform(.trash, onThread: id) }
+                    }
                 }
             }
         }
@@ -325,8 +336,12 @@ struct ConversationRow: View {
     /// The mailbox's resolved palette tint, resolved by the view-model.
     let mailboxTint: MailboxTint?
     let toggleStar: () -> Void
+    /// "Archive", or "Move to Archive" in the Trash — the same verb the context
+    /// menu shows, so VoiceOver and the menu cannot drift apart.
+    let archiveTitle: String
     let archive: () -> Void
-    let trash: () -> Void
+    /// `nil` in the Trash, where trashing is a no-op.
+    let trash: (() -> Void)?
     /// Non-nil when the conversation has more than one message.
     let openThread: (() -> Void)?
 
@@ -435,8 +450,12 @@ struct ConversationRow: View {
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
-        .accessibilityAction(named: "Archive", archive)
-        .accessibilityAction(named: "Move to Trash", trash)
+        .accessibilityAction(named: archiveTitle, archive)
+        // A container, so the Trash scope offers no trash action at all rather
+        // than a rotor entry that does nothing.
+        .accessibilityActions {
+            if let trash { Button("Move to Trash", action: trash) }
+        }
     }
 
     private var participants: String { Self.participants(for: row) }

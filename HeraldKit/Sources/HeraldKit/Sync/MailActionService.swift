@@ -60,14 +60,28 @@ public nonisolated struct MailActionService: Sendable {
             throw MailAPIError.notFound
         }
         let undo = try await store.applyLocalAction(action, threadID: threadID, accountID: accountID)
+        let result: ConversationActionResult
         do {
-            _ = try await api.perform(action, onConversation: representative.id, in: folder)
+            result = try await api.perform(action, onConversation: representative.id, in: folder)
         } catch {
             logger.warning(
                 "Conversation action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
             )
             try? await revert(undo)
             throw error
+        }
+        // A 200 with `affected: 0` is the server saying the action matched no
+        // message — a conversation-level `archive` only moves inbox/catchall
+        // messages, so from Trash it is a no-op (upstream
+        // conversation-queries.ts:190-192). The optimistic move has to come back
+        // NOW: waiting for sync to heal it means the thread is missing from both
+        // folders in the meantime, and forever if sync is unhealthy.
+        guard result.affected > 0 else {
+            logger.warning(
+                "Conversation action \(action.rawValue, privacy: .public) affected no messages in \(folder.rawValue, privacy: .public); reverting the optimistic change"
+            )
+            try? await revert(undo)
+            return
         }
         // `POST /conversations/{id}/{action}` reports only a thread id and a
         // count, so there is no authoritative summary to write back — the fence
@@ -78,6 +92,35 @@ public nonisolated struct MailActionService: Sendable {
             logger.error("Confirmed action could not be recorded: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+    }
+
+    /// Applies a MESSAGE action to every message of a thread, one POST each.
+    ///
+    /// This is the only way to move a thread out of Trash: the v1 API has no
+    /// restore/untrash action, and the CONVERSATION-level `archive` ignores
+    /// messages that are not in inbox/catchall. The message route sets
+    /// `folder = archived` from any folder, so "Move to Archive" in the Trash
+    /// scope is N message calls rather than one conversation call.
+    ///
+    /// Each message goes through the single-message path, so each gets its own
+    /// pending fence and its own revert; the first failure is what the caller
+    /// sees, after every message has been attempted.
+    public func perform(
+        _ action: MessageAction,
+        onMessagesOfThread threadID: String,
+        accountID: String
+    ) async throws {
+        let messages = try await store.messages(accountID: accountID, threadID: threadID)
+        guard !messages.isEmpty else { throw MailAPIError.notFound }
+        var firstFailure: (any Error)?
+        for message in messages {
+            do {
+                try await perform(action, on: message.id, accountID: accountID)
+            } catch {
+                if firstFailure == nil { firstFailure = error }
+            }
+        }
+        if let firstFailure { throw firstFailure }
     }
 
     /// The revert is best-effort by design: the original API error is what the

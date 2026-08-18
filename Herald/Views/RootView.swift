@@ -106,6 +106,9 @@ struct MailWindow: View {
         // Star/Mark-as-Read titles have to change when the selection does, and a
         // focused reference type never reports that it changed. See MailCommands.
         .focusedSceneValue(\.selectedThreadID, model.selectedThreadID)
+        // The Message menu's Archive title and its Trash enablement depend on the
+        // scope, and a focused reference type never reports that it changed.
+        .focusedSceneValue(\.selectionFolder, model.selection.folder)
         .focusedSceneValue(\.selectedMessageID, model.selectedMessageID)
         .focusedSceneValue(\.selectedIsUnread, model.selectedConversation?.isUnread)
         .focusedSceneValue(\.selectedIsStarred, model.selectedConversation?.isStarred)
@@ -123,18 +126,22 @@ struct MailWindow: View {
 
             Button { Task { await model.performOnSelection(.archive) } } label: {
                 Image(systemName: "archivebox")
-                    .iconButtonStyle("Archive")
+                    .iconButtonStyle(model.archiveActionTitle)
             }
             // Mail's muscle-memory `e` lives on the conversation list, where it
             // is scoped to that list's focus: as a toolbar shortcut it was
             // window-global and typing "e" into the search field archived a thread.
             .disabled(model.selectedThreadID == nil)
 
-            Button { Task { await model.performOnSelection(.trash) } } label: {
-                Image(systemName: "trash")
-                    .iconButtonStyle("Move to Trash")
+            // Nothing to trash in the Trash — the button goes, rather than
+            // sitting there doing nothing (issue #8).
+            if model.offersTrashAction {
+                Button { Task { await model.performOnSelection(.trash) } } label: {
+                    Image(systemName: "trash")
+                        .iconButtonStyle("Move to Trash")
+                }
+                .disabled(model.selectedThreadID == nil)
             }
-            .disabled(model.selectedThreadID == nil)
         }
     }
 

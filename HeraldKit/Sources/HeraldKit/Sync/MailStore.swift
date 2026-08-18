@@ -36,17 +36,24 @@ public nonisolated struct LocalActionUndo: Sendable, Hashable {
     public var token: UUID
     public var messages: [MessageStateSnapshot]
     public var conversations: [ConversationStateSnapshot]
+    /// Listing-scope rows the action CREATED: an archive/trash moves the thread
+    /// into a scope the server has not listed yet, and the destination folder
+    /// must show it now rather than after the next poll. They are the action's
+    /// own invention, so a revert deletes them instead of restoring anything.
+    public var insertedConversations: [ConversationStateSnapshot]
 
     public init(
         accountID: String,
         token: UUID = UUID(),
         messages: [MessageStateSnapshot] = [],
-        conversations: [ConversationStateSnapshot] = []
+        conversations: [ConversationStateSnapshot] = [],
+        insertedConversations: [ConversationStateSnapshot] = []
     ) {
         self.accountID = accountID
         self.token = token
         self.messages = messages
         self.conversations = conversations
+        self.insertedConversations = insertedConversations
     }
 
     public var isEmpty: Bool { messages.isEmpty && conversations.isEmpty }
@@ -153,6 +160,36 @@ public actor MailStore {
             return try modelContext.fetch(descriptor).map(Self.conversation(from:))
         } catch {
             logger.error("Conversation fetch failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// Whether one thread has a row in exactly this listing scope.
+    ///
+    /// The change feed reports bare ids: a thread id that resolves to no cached
+    /// message is only worth a list reload if the row it names landed in the
+    /// scope on screen. `fetchCount`, so nothing is materialised to answer it.
+    public func hasConversation(
+        threadID: String,
+        accountID: String,
+        mailboxID: String?,
+        folder: ConversationFolder
+    ) throws -> Bool {
+        let listFolder = folder.rawValue
+        let anyMailbox = mailboxID == nil
+        let mailboxKey = mailboxID ?? ""
+        let descriptor = FetchDescriptor<CachedConversation>(
+            predicate: #Predicate {
+                $0.accountID == accountID
+                    && $0.threadID == threadID
+                    && $0.listFolder == listFolder
+                    && (anyMailbox || $0.mailboxKey == mailboxKey)
+            }
+        )
+        do {
+            return try modelContext.fetchCount(descriptor) > 0
+        } catch {
+            logger.error("Conversation scope check failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
@@ -654,7 +691,7 @@ public actor MailStore {
             }
             let threadID = row.threadID
             let conversationRows = try fetchConversationRows(accountID: accountID, threadID: threadID)
-            let undo = LocalActionUndo(
+            var undo = LocalActionUndo(
                 accountID: accountID,
                 messages: [Self.snapshot(row)],
                 conversations: conversationRows.map(Self.snapshot)
@@ -662,6 +699,9 @@ public actor MailStore {
             Self.mutate(row, with: action)
             markPending(row, token: undo.token)
             try refreshConversationRows(conversationRows, accountID: accountID, threadID: threadID)
+            undo.insertedConversations = try materializeMovedScope(
+                accountID: accountID, threadID: threadID, from: conversationRows
+            )
             try save()
             return undo
         } catch {
@@ -683,7 +723,7 @@ public actor MailStore {
                 logger.warning("Local action \(action.rawValue, privacy: .public) on uncached thread")
                 return LocalActionUndo(accountID: accountID)
             }
-            let undo = LocalActionUndo(
+            var undo = LocalActionUndo(
                 accountID: accountID,
                 messages: messageRows.map(Self.snapshot),
                 conversations: conversationRows.map(Self.snapshot)
@@ -694,6 +734,9 @@ public actor MailStore {
                 markPending(row, token: undo.token)
             }
             try refreshConversationRows(conversationRows, accountID: accountID, threadID: threadID)
+            undo.insertedConversations = try materializeMovedScope(
+                accountID: accountID, threadID: threadID, from: conversationRows
+            )
             try save()
             return undo
         } catch {
@@ -729,6 +772,12 @@ public actor MailStore {
         clearPending(undo)
         guard !undo.isEmpty else { return }
         do {
+            // The destination-scope rows this action invented never existed on
+            // the server; nothing else can own them, so they go first.
+            for snapshot in undo.insertedConversations {
+                guard let row = try fetchConversationRow(snapshot, accountID: undo.accountID) else { continue }
+                modelContext.delete(row)
+            }
             let byID = try fetchMessages(accountID: undo.accountID, ids: undo.messages.map(\.messageID))
             var revertedThreads: Set<String> = []
             for snapshot in undo.messages {
@@ -929,6 +978,72 @@ public actor MailStore {
             if row.starredAt != latest.starredAt { row.starredAt = latest.starredAt }
             if row.folderRaw != latest.folderRaw { row.folderRaw = latest.folderRaw }
         }
+    }
+
+    /// Mirrors an optimistic folder move into the listing scope it moved INTO.
+    ///
+    /// `applyLocalAction` changes each message's folder and re-derives the rows
+    /// the thread was already listed under — but a thread trashed out of the
+    /// inbox has no `trash`-scope row at all until the server lists it, so the
+    /// Trash folder showed nothing until a poll happened to create one (and a
+    /// Refresh that produced no ChangeSet never did). The row is created here,
+    /// from the same denormalized source the listing renders.
+    ///
+    /// Returns the scopes it created, so a revert can delete exactly those.
+    private func materializeMovedScope(
+        accountID: String,
+        threadID: String,
+        from sources: [CachedConversation]
+    ) throws -> [ConversationStateSnapshot] {
+        guard let source = sources.first else { return [] }
+        let messages = try fetchThreadMessages(accountID: accountID, threadID: threadID)
+        guard let latest = messages.max(by: { $0.sortDate < $1.sortDate }),
+              let destination = ConversationFolder(rawValue: latest.folderRaw),
+              !sources.contains(where: { $0.listFolder == destination.rawValue })
+        else { return [] }
+        let listFolder = destination.rawValue
+        var created: [ConversationStateSnapshot] = []
+        // One row per mailbox scope the thread was listed in — that is exactly
+        // the set of listings the user can be looking at.
+        for mailboxKey in Set(sources.map(\.mailboxKey)) {
+            let row = CachedConversation(
+                threadID: threadID,
+                accountID: accountID,
+                listFolder: listFolder,
+                mailboxKey: mailboxKey
+            )
+            Self.copyPresentation(from: source, to: row)
+            modelContext.insert(row)
+            try refreshConversationRows([row], accountID: accountID, threadID: threadID)
+            created.append(Self.snapshot(row))
+        }
+        return created
+    }
+
+    /// Everything the list renders that is not re-derived from the messages.
+    private nonisolated static func copyPresentation(
+        from source: CachedConversation,
+        to row: CachedConversation
+    ) {
+        row.latestMessageID = source.latestMessageID
+        row.latestThreadID = source.latestThreadID
+        row.latestMailboxKey = source.latestMailboxKey
+        row.directionRaw = source.directionRaw
+        row.folderRaw = source.folderRaw
+        row.fromAddress = source.fromAddress
+        row.toAddresses = source.toAddresses
+        row.subject = source.subject
+        row.snippet = source.snippet
+        row.receivedAt = source.receivedAt
+        row.sentAt = source.sentAt
+        row.readAt = source.readAt
+        row.starredAt = source.starredAt
+        row.hasAttachments = source.hasAttachments
+        row.createdAt = source.createdAt
+        row.isStarred = source.isStarred
+        row.messageCount = source.messageCount
+        row.unreadCount = source.unreadCount
+        row.sortDate = source.sortDate
     }
 
     private nonisolated static func messageScopePredicate(

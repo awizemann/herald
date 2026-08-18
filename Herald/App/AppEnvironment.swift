@@ -18,12 +18,22 @@ final class AccountGraph {
     let sync: SyncEngine
     let mail: MailViewModel
     let outbox: OutboxService
+    /// Per-account: its "already announced" history dies with the graph, so a
+    /// sign-out and a fresh sign-in cannot silence the new account's first mail.
+    let notifier: NewMailNotifier
 
-    init(account: Account, sync: SyncEngine, mail: MailViewModel, outbox: OutboxService) {
+    init(
+        account: Account,
+        sync: SyncEngine,
+        mail: MailViewModel,
+        outbox: OutboxService,
+        notifier: NewMailNotifier
+    ) {
         self.account = account
         self.sync = sync
         self.mail = mail
         self.outbox = outbox
+        self.notifier = notifier
     }
 
     /// `stopAndWait`, not `stop`: sign-out purges this account's rows immediately
@@ -106,9 +116,27 @@ final class AppEnvironment {
     private var container: ModelContainer?
     private var store: MailStore?
 
-    init(auth: AuthCoordinator = AuthCoordinator(), defaults: UserDefaults = .standard) {
+    /// The notification centre behind ``NewMailNotificationPosting``. ONE for the
+    /// whole app (the system centre is a singleton), shared by every account's
+    /// notifier. Injected so tests never touch `UNUserNotificationCenter`, which
+    /// needs a real bundle and prompts a human.
+    private let notificationPoster: any NewMailNotificationPosting
+    /// Kept alive here: `UNUserNotificationCenter.delegate` is a weak reference,
+    /// so a router that only lived in `start()` would be gone before the first
+    /// click.
+    private var notificationRouter: NewMailNotificationRouter?
+    /// A banner clicked before its account's graph existed (the click that
+    /// launched Herald), replayed once that account installs.
+    private var pendingRoute: NewMailRoute?
+
+    init(
+        auth: AuthCoordinator = AuthCoordinator(),
+        defaults: UserDefaults = .standard,
+        notificationPoster: any NewMailNotificationPosting = UserNotificationCenterAdapter()
+    ) {
         self.auth = auth
         self.defaults = defaults
+        self.notificationPoster = notificationPoster
     }
 
     // MARK: - Derived state
@@ -153,6 +181,7 @@ final class AppEnvironment {
 
     func start() async {
         observeActivation()
+        installNotificationRouter()
         phase = .openingCache
         let url = MailStoreContainer.defaultStoreURL
         do {
@@ -261,6 +290,7 @@ final class AppEnvironment {
         // what lets sign-out purge THIS account's rows out of it.
         self.store = store
         let engine = SyncEngine(api: api, store: store)
+        let notifier = NewMailNotifier(center: notificationPoster, lookup: store)
         let viewModel = MailViewModel(
             accountID: account.id,
             accountLabel: account.label,
@@ -268,13 +298,21 @@ final class AppEnvironment {
             store: store,
             actions: MailActionService(api: api, store: store),
             sync: engine,
-            events: engine.events
+            events: engine.events,
+            defaults: defaults,
+            notifier: notifier
         )
+        // The badge is the SUM across accounts, so any account's count changing
+        // re-reads all of them rather than trusting the number it was handed.
+        viewModel.unreadCountDidChange = { [weak self] _ in
+            self?.applyDockBadge()
+        }
         let graph = AccountGraph(
             account: account,
             sync: engine,
             mail: viewModel,
-            outbox: OutboxService(api: api)
+            outbox: OutboxService(api: api),
+            notifier: notifier
         )
         // Published synchronously, so no second install can slip in and be
         // forgotten.
@@ -299,6 +337,12 @@ final class AppEnvironment {
         // is exactly how an unowned polling loop is born.
         guard isCurrent(graph) else { return await graph.stop() }
         await engine.start(accountID: account.id)
+        // A banner clicked before THIS account was up (the click that launched
+        // Herald) is replayed now that its graph can answer.
+        if let route = pendingRoute, route.accountID == account.id {
+            pendingRoute = nil
+            await open(route)
+        }
     }
 
     /// Whether this graph is still the one ``graphs`` holds for its account.
@@ -313,6 +357,70 @@ final class AppEnvironment {
         guard let graph = graphs.removeValue(forKey: accountID) else { return }
         closeComposeSessions(accountID: accountID)
         await graph.stop()
+        // That account's unread is no longer part of the total; a badge that
+        // still counts a signed-out account is a lie.
+        applyDockBadge()
+    }
+
+    // MARK: - Notifications and the Dock badge
+
+    private func installNotificationRouter() {
+        guard notificationRouter == nil else { return }
+        let router = NewMailNotificationRouter { [weak self] route in
+            await self?.open(route)
+        }
+        notificationRouter = router
+        router.install()
+    }
+
+    /// Where a clicked banner lands: the account it names becomes the selected
+    /// one, then THAT account's view-model shows the conversation.
+    ///
+    /// Switching the window is right here, unlike a background action doing it:
+    /// the banner said which account the mail is in, so the switcher following
+    /// the click is what the user asked for.
+    func open(_ route: NewMailRoute) async {
+        // Clicking a banner can LAUNCH Herald — or name an account still coming
+        // up behind the first one, since a restore activates the rest in the
+        // background. Held until that account installs rather than dropped.
+        guard let graph = graphs[route.accountID] else {
+            pendingRoute = route
+            return
+        }
+        selectedAccountID = route.accountID
+        guard let threadID = route.threadID else { return }
+        await graph.mail.revealConversation(threadID: threadID)
+    }
+
+    /// Re-applies the badge from the live counts. Called by Settings so flipping
+    /// the switch shows (or clears) the badge at once.
+    ///
+    /// The number is ``totalUnreadCount``: the Dock shows ONE badge for Herald,
+    /// so an account syncing behind the window still counts toward it.
+    func applyDockBadge() {
+        DockBadge.apply(
+            count: totalUnreadCount,
+            enabled: NotificationSettings.dockBadgeEnabled(in: defaults)
+        )
+    }
+
+    /// Asks for permission the moment the user turns notifications on, so the
+    /// system prompt is tied to the action that needs it rather than to whichever
+    /// message happens to arrive first.
+    func notificationsSettingChanged(enabled: Bool) async {
+        guard enabled else { return }
+        guard !graphs.isEmpty else {
+            // Opted in before signing in: still ask, so the prompt belongs to the
+            // switch the user just flipped rather than to the first mail to land.
+            _ = await notificationPoster.requestAuthorization()
+            return
+        }
+        // Each account's notifier caches the answer; the system prompts once and
+        // hands the rest the stored result.
+        for id in accountIDs {
+            guard let notifier = graphs[id]?.notifier else { continue }
+            await notifier.ensureAuthorized()
+        }
     }
 
     // MARK: - Onboarding

@@ -1,18 +1,53 @@
 import HeraldKit
 import SwiftUI
 
-/// ⌘, — the app's only preferences window. One pane for now (Mailboxes), kept as
-/// a `Form`/`.formStyle(.grouped)` so it is a stock macOS settings window rather
-/// than a hand-drawn one.
+/// ⌘, — the app's only preferences window, kept as a `Form`/`.formStyle(.grouped)`
+/// so it is a stock macOS settings window rather than a hand-drawn one.
 struct SettingsView: View {
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
         TabView {
+            NotificationSettingsPane(environment: environment)
+                .tabItem { Label("Notifications", systemImage: "bell") }
             MailboxSettingsPane(model: environment.mail)
                 .tabItem { Label("Mailboxes", systemImage: "tray.2") }
         }
         .frame(width: 640, height: 320)
+    }
+}
+
+/// The two alert switches. Both write straight to `UserDefaults` under the keys
+/// ``NotificationSettings`` owns, which is what the sync path and the Dock badge
+/// read — no copy of the value lives anywhere else.
+struct NotificationSettingsPane: View {
+    let environment: AppEnvironment
+
+    @AppStorage(NotificationSettings.newMailKey) private var newMailEnabled = true
+    @AppStorage(NotificationSettings.dockBadgeKey) private var dockBadgeEnabled = true
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Notify me about new mail", isOn: $newMailEnabled)
+                    .onChange(of: newMailEnabled) { _, enabled in
+                        // Permission is asked for HERE, when the user opts in —
+                        // not at launch, and not at the first arrival.
+                        Task { await environment.notificationsSettingChanged(enabled: enabled) }
+                    }
+                Text("Banners appear only while Herald is in the background. macOS decides whether they are shown at all — allow them in System Settings › Notifications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Show unread count on the Dock icon", isOn: $dockBadgeEnabled)
+                    .onChange(of: dockBadgeEnabled) { _, _ in
+                        environment.applyDockBadge()
+                    }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, MailTheme.Spacing.xxs)
     }
 }
 

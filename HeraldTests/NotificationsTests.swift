@@ -137,6 +137,11 @@ struct NewMailWiringTests {
     /// Fails if a clicked banner only sets the selection: the thread it names may
     /// be outside the scope on screen (another folder picked, a search typed), and
     /// selecting an id the list does not hold shows nothing at all.
+    ///
+    /// The Drafts folder is in here because it shares the middle column with the
+    /// conversation list: leaving `isShowingDrafts` up selects the thread behind a
+    /// drafts list that never goes away, so the click appears to do nothing but
+    /// change the reading pane.
     @Test func aClickedNotificationResetsTheScopeAndSelectsTheThread() async throws {
         let store = try MailStore.inMemory()
         try await Self.seedInbox(store)
@@ -152,11 +157,13 @@ struct NewMailWiringTests {
         // folder, and a search that matches nothing.
         model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .archived)
         model.searchQuery = "zzz"
+        model.showDrafts(true)
 
         await model.revealConversation(threadID: "t1")
 
         #expect(model.selection == MailViewModel.FolderSelection(mailboxID: nil, folder: .inbox))
         #expect(model.searchQuery.isEmpty)
+        #expect(!model.isShowingDrafts)
         #expect(model.selectedThreadID == "t1")
         model.stop()
     }

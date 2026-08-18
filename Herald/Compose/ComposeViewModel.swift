@@ -97,7 +97,10 @@ final class ComposeViewModel {
 
     var attachments: [DraftAttachment] { draft.uploadedAttachments }
 
-    var isBusy: Bool { status == .saving || status == .sending }
+    /// Busy includes queued uploads: a batch that finishes its first file resets
+    /// `status` to idle, and a Send button that re-enables there would send the
+    /// message without the files still on their way up.
+    var isBusy: Bool { status == .saving || status == .sending || !pendingUploads.isEmpty }
 
     /// Whether closing would lose work the server has not seen.
     var hasUnsavedChanges: Bool {
@@ -111,6 +114,7 @@ final class ComposeViewModel {
             || draft.subject != initialDraft.subject
             || draft.body != initialDraft.body
             || !draft.pendingAttachments.isEmpty
+            || !pendingUploads.isEmpty
     }
 
     func invalid(_ field: Field) -> [String] { invalidAddresses[field] ?? [] }
@@ -214,6 +218,9 @@ final class ComposeViewModel {
     @discardableResult
     func send() async -> Bool {
         autosaveTask?.cancel()
+        // ⌘⇧D can beat a queued upload to the punch; the attachment ids only exist
+        // once the uploads have landed.
+        await waitForUploads()
         commitRecipients()
         guard !hasInvalidAddresses else {
             status = .failed(hint(for: .to) ?? hint(for: .cc) ?? hint(for: .bcc) ?? "Check the recipients.")
@@ -238,6 +245,7 @@ final class ComposeViewModel {
 
     func discard() async {
         autosaveTask?.cancel()
+        cancelAllUploads()
         isClosed = true
         do {
             try await outbox.discard(draft)
@@ -258,6 +266,7 @@ final class ComposeViewModel {
     /// Closes without deleting the server draft — "Save" in the close sheet.
     func saveAndClose() async {
         autosaveTask?.cancel()
+        await waitForUploads()
         await saveNow()
         guard status.message == nil else { return } // Save failed: keep the window.
         isClosed = true
@@ -268,12 +277,34 @@ final class ComposeViewModel {
         isClosed = true
     }
 
-    /// Called from the window when it actually goes away, so no timer outlives it.
+    /// Called from the window when it actually goes away, so no timer — and no
+    /// upload waiting on a window that no longer exists — outlives it.
     func stop() {
         autosaveTask?.cancel()
+        cancelAllUploads()
     }
 
     // MARK: - Attachments
+
+    /// One upload the user can see and cancel while it is happening.
+    struct PendingUpload: Identifiable, Equatable {
+        let id = UUID()
+        let filename: String
+        /// `nil` when the file could not be stat'd; the chip then shows no size.
+        let byteCount: Int?
+    }
+
+    /// Uploads in flight, oldest first. Rendered as spinner chips beside the
+    /// finished ones — an upload that shows nothing until it lands reads as a
+    /// no-op on a slow link, and the user picks the file again.
+    private(set) var pendingUploads: [PendingUpload] = []
+    @ObservationIgnored private var uploadTasks: [PendingUpload.ID: Task<Void, Never>] = [:]
+    /// The tail of the upload queue. Uploads MUST run one at a time: the limits
+    /// are per draft, and two concurrent uploads each measure the total against
+    /// the same pre-upload draft, so a pair that only fits individually would both
+    /// pass the check and the server would 413 the second.
+    @ObservationIgnored private var uploadChain: Task<Void, Never>?
+    @ObservationIgnored private var enqueuedCount = 0
 
     /// Runs the open panel and uploads whatever the user picked.
     ///
@@ -286,22 +317,167 @@ final class ComposeViewModel {
         panel.canChooseFiles = true
         panel.prompt = "Attach"
         guard await panel.begin() == .OK else { return }
-        for url in panel.urls {
-            await attach(url)
-        }
+        await attach(panel.urls)
     }
 
-    func attach(_ url: URL) async {
+    /// Attaches a batch — a multi-file open panel, drop or paste.
+    ///
+    /// Every file gets its chip at once and the uploads then run one after
+    /// another: the user sees what they dropped immediately, and the per-draft
+    /// limit is still measured against a draft that includes the file before it.
+    func attach(_ urls: [URL], staged: Set<URL> = []) async {
+        // ONE filter for every entry point (panel, drop, paste): a directory
+        // reaches the outbox as an unreadable file, and a promise-backed or
+        // remote URL as nothing at all.
+        let files = urls.filter(Self.isAttachableFile)
+        if files.isEmpty {
+            if !urls.isEmpty { status = .failed("Herald can attach files, not folders.") }
+            return
+        }
+        for url in staged.subtracting(files) { AttachmentScratchpad.discard(url) }
+        let tasks = files.map { enqueue($0, isStaged: staged.contains($0)) }
+        for task in tasks { await task.value }
+    }
+
+    /// Whether a URL names a real, readable file.
+    ///
+    /// The scope is claimed FIRST: a URL that only becomes reachable inside its
+    /// security scope would otherwise stat as missing and be filtered away, and
+    /// the drop would silently do nothing.
+    private static func isAttachableFile(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return exists && !isDirectory.boolValue
+    }
+
+    /// - Parameter isStaged: true for a file Herald itself wrote to the scratchpad
+    ///   (a pasted image), which is deleted once the upload is over. A file the
+    ///   USER chose is never deleted.
+    func attach(_ url: URL, isStaged: Bool = false) async {
+        await attach([url], staged: isStaged ? [url] : [])
+    }
+
+    /// Puts the chip up now and the upload at the end of the queue.
+    private func enqueue(_ url: URL, isStaged: Bool) -> Task<Void, Never> {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        let pending = PendingUpload(filename: url.lastPathComponent, byteCount: size)
+        pendingUploads.append(pending)
+        let previous = uploadChain
+        enqueuedCount += 1
+        let position = enqueuedCount
+        let task = Task {
+            await previous?.value
+            await self.upload(url, as: pending, isStaged: isStaged)
+            // Release the chain once the LAST enqueued upload is done, so a
+            // composer left open for a day does not hold every finished Task.
+            if position == self.enqueuedCount { self.uploadChain = nil }
+        }
+        uploadChain = task
+        uploadTasks[pending.id] = task
+        return task
+    }
+
+    private func upload(_ url: URL, as pending: PendingUpload, isStaged: Bool) async {
+        // Cancelled while queued behind another upload: nothing has been read or
+        // sent, so this is a clean no-op — minus the staged file, which is ours.
+        guard !Task.isCancelled else {
+            if isStaged { AttachmentScratchpad.discard(url) }
+            return
+        }
+        // A dropped or panel-picked URL arrives with a sandbox extension already
+        // consumed, but a bookmark-derived one would not; claiming access is
+        // correct for both and a no-op for the first.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            if isStaged { AttachmentScratchpad.discard(url) }
+            pendingUploads.removeAll { $0.id == pending.id }
+            uploadTasks[pending.id] = nil
+        }
+
         status = .saving
         let sent = draft
         do {
             let saved = try await outbox.attach(url, to: sent)
+            // Adopted even when this upload was CANCELLED: the bytes reached the
+            // server, so the local attachment list has to include them or every
+            // later per-draft total is measured short and the server 413s the
+            // next upload. Cancellation only suppresses the status change.
             draft.adoptServerState(from: saved, sent: sent)
-            if status == .saving { status = .idle }
+            if status == .saving, !Task.isCancelled { status = .idle }
         } catch {
             logger.warning("Attachment failed: \(error.logCode, privacy: .public)")
+            guard !Task.isCancelled else { return }
             status = .failed(error.localizedDescription)
         }
+    }
+
+    /// Stops waiting on an upload and takes its chip away.
+    ///
+    /// The request itself may still land — the server has no cancel — so the
+    /// attachment can still appear as a finished chip a moment later. That is
+    /// honest: the file IS on the draft, and the same remove button takes it off.
+    func cancelUpload(_ id: PendingUpload.ID) {
+        uploadTasks[id]?.cancel()
+        uploadTasks[id] = nil
+        pendingUploads.removeAll { $0.id == id }
+        if status == .saving, pendingUploads.isEmpty { status = .idle }
+    }
+
+    private func cancelAllUploads() {
+        for id in Array(uploadTasks.keys) { cancelUpload(id) }
+    }
+
+    /// Waits for every queued upload. Called before sending, so a message can
+    /// never leave without the file the user just dropped on it.
+    func waitForUploads() async {
+        await uploadChain?.value
+    }
+
+    /// Files dropped on the window. Directories are ignored rather than walked:
+    /// dropping a folder on a mail composer means "the files in it" to almost
+    /// nobody, and a deep tree is a very expensive misunderstanding.
+    func drop(_ urls: [URL]) async {
+        await attach(urls)
+    }
+
+    /// ⌘V: attaches file URLs, or writes a pasted image to scratch and attaches that.
+    ///
+    /// - Returns: whether the paste was consumed. `false` means the pasteboard held
+    ///   nothing attachable and the caller must forward ⌘V to the text view — a
+    ///   composer that eats plain-text paste is worse than one that never attaches.
+    @discardableResult
+    func paste(_ contents: PasteboardContents) async -> Bool {
+        let pasted = AttachmentPasteboard.attachments(from: contents)
+        guard !pasted.isEmpty else { return false }
+
+        var urls: [URL] = []
+        var staged: Set<URL> = []
+        for item in pasted {
+            switch item {
+            case .file(let url):
+                urls.append(url)
+            case .image(let image, let filename):
+                do {
+                    // Off-main: a full-screen bitmap off the pasteboard is tens of
+                    // MiB, and writing it here would freeze the window mid-⌘V.
+                    let url = try await Task.detached(priority: .userInitiated) { @Sendable in
+                        try AttachmentScratchpad.stage(image.data, filename: filename)
+                    }.value
+                    urls.append(url)
+                    staged.insert(url)
+                } catch {
+                    logger.warning("Could not stage a pasted image: \(error.localizedDescription, privacy: .private)")
+                    status = .failed("Herald could not read the pasted image.")
+                }
+            }
+        }
+        guard !urls.isEmpty else { return true }
+        await attach(urls, staged: staged)
+        return true
     }
 
     func removeAttachment(_ attachment: DraftAttachment) async {

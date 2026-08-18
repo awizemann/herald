@@ -174,7 +174,7 @@ import Testing
     @Test("An oversized attachment is rejected before any network call")
     func oversizedAttachmentMakesNoRequest() async throws {
         let api = FakeMailAPIClient()
-        let outbox = OutboxService(api: api, attachmentByteLimit: 1_024)
+        let outbox = OutboxService(api: api, limits: Self.limits(perFileBytes: 1_024))
         let url = try Self.temporaryFile(named: "big.bin", bytes: 4_096)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
@@ -182,6 +182,84 @@ import Testing
             try await outbox.attach(url, to: Self.draft())
         }
         #expect(await api.calls.isEmpty)
+    }
+
+    static func limits(
+        perFileBytes: Int = 25 * 1_024 * 1_024,
+        perDraftBytes: Int = 25 * 1_024 * 1_024,
+        maxCount: Int = 20
+    ) -> AttachmentLimits {
+        AttachmentLimits(perFileBytes: perFileBytes, perDraftBytes: perDraftBytes, maxCount: maxCount)
+    }
+
+    /// The client used to cap only the SINGLE file, so twenty 1 MiB files sailed
+    /// past it and the server 413'd `ATTACHMENTS_TOO_LARGE` after the last upload
+    /// had already gone up the wire. Fails on any build without the running total:
+    /// each file here is legal on its own.
+    @Test("A file that fits alone but overflows the draft total is rejected, and nothing is uploaded")
+    func perDraftTotalIsEnforced() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api, limits: Self.limits(perFileBytes: 1_000, perDraftBytes: 1_500))
+        let first = try Self.temporaryFile(named: "a.bin", bytes: 900)
+        let second = try Self.temporaryFile(named: "b.bin", bytes: 900)
+        defer {
+            try? FileManager.default.removeItem(at: first.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: second.deletingLastPathComponent())
+        }
+
+        let draft = try await outbox.attach(first, to: Self.draft())
+        let uploadsAfterFirst = await api.callCount { if case .addAttachment = $0 { true } else { false } }
+
+        await #expect(throws: OutboxError.draftTooLarge(bytes: 1_800, limit: 1_500)) {
+            try await outbox.attach(second, to: draft)
+        }
+        // The rejection must cost nothing: no second upload, no extra draft save.
+        #expect(await api.callCount { if case .addAttachment = $0 { true } else { false } } == uploadsAfterFirst)
+    }
+
+    /// Fails on a build that enforces bytes but not COUNT — the server caps a
+    /// draft at 20 attachments regardless of how small they are.
+    @Test("The attachment count cap is enforced before any network call")
+    func attachmentCountIsCapped() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api, limits: Self.limits(maxCount: 2))
+        let url = try Self.temporaryFile(named: "note.txt", bytes: 8)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        var draft = try await outbox.attach(url, to: Self.draft())
+        draft = try await outbox.attach(url, to: draft)
+        #expect(draft.uploadedAttachments.count == 2)
+
+        let before = await api.calls.count
+        await #expect(throws: OutboxError.tooManyAttachments(limit: 2)) {
+            try await outbox.attach(url, to: draft)
+        }
+        #expect(await api.calls.count == before)
+    }
+
+    /// The three limits have to be checked in the order the user's file meets
+    /// them: a full draft is "too many", not "too large", whatever the file weighs.
+    @Test("Limits are reported as the reason that actually applies")
+    func limitRejectionIsSpecific() {
+        let limits = Self.limits(perFileBytes: 100, perDraftBytes: 150, maxCount: 2)
+        let small = DraftAttachment(id: "a", filename: "a", contentType: "text/plain", sizeBytes: 10)
+        #expect(limits.rejection(forAdding: 10, to: []) == nil)
+        #expect(limits.rejection(forAdding: 101, to: []) == .attachmentTooLarge(bytes: 101, limit: 100))
+        #expect(limits.rejection(forAdding: 100, to: [small, small]) == .tooManyAttachments(limit: 2))
+        #expect(limits.rejection(forAdding: 100, to: [small]) == nil)
+        // 90 + 61 > 150, though 61 is under the per-file cap.
+        let big = DraftAttachment(id: "b", filename: "b", contentType: "text/plain", sizeBytes: 90)
+        #expect(limits.rejection(forAdding: 61, to: [big]) == .draftTooLarge(bytes: 151, limit: 150))
+    }
+
+    /// Herald used to cap attachments at 10 MiB — stricter than the server, so it
+    /// refused mail the account could legally send. Fails if the default drifts
+    /// from the server's own numbers (worker/features/drafts/queries.ts).
+    @Test("The default limits mirror the server's")
+    func defaultsMirrorServer() {
+        #expect(AttachmentLimits.server.perFileBytes == 26_214_400)
+        #expect(AttachmentLimits.server.perDraftBytes == 26_214_400)
+        #expect(AttachmentLimits.server.maxCount == 20)
     }
 
     /// Fails if the upload is attempted without a draft id (the route needs one):

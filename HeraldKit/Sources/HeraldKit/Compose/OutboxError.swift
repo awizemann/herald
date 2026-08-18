@@ -9,6 +9,10 @@ public nonisolated enum OutboxError: Error, Sendable, Hashable {
     case noRecipients
     /// The file exceeds the per-attachment cap; nothing was uploaded.
     case attachmentTooLarge(bytes: Int, limit: Int)
+    /// The file fits on its own, but pushes the draft's total over the cap.
+    case draftTooLarge(bytes: Int, limit: Int)
+    /// The draft already carries as many attachments as the server accepts.
+    case tooManyAttachments(limit: Int)
     /// The draft changed on the server and re-applying our edit conflicted again.
     case draftConflict
     case api(MailAPIError)
@@ -24,6 +28,8 @@ nonisolated extension OutboxError {
         case .invalidRecipient: "invalid_recipient"
         case .noRecipients: "no_recipients"
         case .attachmentTooLarge(_, let limit): "attachment_too_large(limit:\(limit))"
+        case .draftTooLarge(_, let limit): "draft_too_large(limit:\(limit))"
+        case .tooManyAttachments(let limit): "too_many_attachments(limit:\(limit))"
         case .draftConflict: "draft_conflict"
         case .api(let error): "api(\(error.logCode))"
         case .fileUnreadable: "file_unreadable"
@@ -40,6 +46,11 @@ nonisolated extension OutboxError: LocalizedError {
             "Add at least one recipient before sending."
         case .attachmentTooLarge(let bytes, let limit):
             "That file is \(Self.megabytes(bytes)) — attachments are limited to \(Self.megabytes(limit))."
+        case .draftTooLarge(let bytes, let limit):
+            "That would put this message at \(Self.megabytes(bytes)) of attachments — "
+                + "one message is limited to \(Self.megabytes(limit))."
+        case .tooManyAttachments(let limit):
+            "One message can carry \(limit) attachments. Remove one to add another."
         case .draftConflict:
             "This draft was changed somewhere else. Reopen it to see the latest version."
         case .api(let error):

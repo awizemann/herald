@@ -26,13 +26,10 @@ extension OutboxService: Outboxing {}
 /// and because a compose window must not race itself: two autosaves of the same
 /// draft would otherwise both create a server draft.
 public actor OutboxService {
-    /// Per-attachment cap. The v1 spec declares no limit; the server rejects
-    /// anything over 25 MiB (per file and per draft in total), so this is the
-    /// client-side policy limit and is deliberately the smaller number.
-    public static let defaultAttachmentByteLimit = 10 * 1024 * 1024
-
     private let api: any MailAPIClient
-    private let attachmentByteLimit: Int
+    /// Mirrors the server's caps (see ``AttachmentLimits/server``); injectable so
+    /// tests can prove a boundary without writing 25 MiB to disk.
+    private let limits: AttachmentLimits
 
     /// Server-draft creations in flight, keyed by the compose window's local draft
     /// id. `POST /drafts` is the one non-idempotent call here: an autosave racing
@@ -45,9 +42,9 @@ public actor OutboxService {
     /// instead of hoped-for — `async let` alone guarantees no interleaving.
     var joinedCreateCount = 0
 
-    public init(api: any MailAPIClient, attachmentByteLimit: Int = OutboxService.defaultAttachmentByteLimit) {
+    public init(api: any MailAPIClient, limits: AttachmentLimits = .server) {
         self.api = api
-        self.attachmentByteLimit = attachmentByteLimit
+        self.limits = limits
     }
 
     // MARK: - Saving
@@ -134,13 +131,13 @@ public actor OutboxService {
     /// Uploads a local file to the draft, autosaving first when there is no
     /// server draft to attach to (`POST /drafts/{id}/attachments` needs an id).
     ///
-    /// The size check happens before any read or request, so an oversized file
-    /// costs neither memory nor a round trip.
+    /// Every limit is checked before any read or request, so a file the server
+    /// would 413 costs neither memory nor a round trip.
     public func attach(_ fileURL: URL, to draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft {
         let size = try Self.fileSize(of: fileURL)
-        guard size <= attachmentByteLimit else {
-            logger.warning("Rejected attachment of \(size) bytes (limit \(self.attachmentByteLimit))")
-            throw OutboxError.attachmentTooLarge(bytes: size, limit: attachmentByteLimit)
+        if let rejection = limits.rejection(forAdding: size, to: draft.uploadedAttachments) {
+            logger.warning("Rejected attachment: \(rejection.logCode, privacy: .public)")
+            throw rejection
         }
 
         var draft = draft
@@ -157,8 +154,12 @@ public actor OutboxService {
             logger.error("Attachment unreadable: \(error.localizedDescription, privacy: .private)")
             throw OutboxError.fileUnreadable(fileURL)
         }
-        guard data.count <= attachmentByteLimit else {
-            throw OutboxError.attachmentTooLarge(bytes: data.count, limit: attachmentByteLimit)
+        // Re-checked against what we actually read and against the attachment
+        // list the autosave above may have refreshed from the server: the first
+        // check used a stat and a possibly stale draft, and neither is a promise.
+        if let rejection = limits.rejection(forAdding: data.count, to: draft.uploadedAttachments) {
+            logger.warning("Rejected attachment after read: \(rejection.logCode, privacy: .public)")
+            throw rejection
         }
 
         let filename = Self.sanitizedFilename(fileURL.lastPathComponent)

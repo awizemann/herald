@@ -1,3 +1,4 @@
+import AppKit
 import HeraldKit
 import SwiftUI
 
@@ -66,6 +67,7 @@ private struct ComposeWindowRoot: View {
 struct ComposeView: View {
     @Bindable var model: ComposeViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var isDropTarget = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,11 +81,27 @@ struct ComposeView: View {
                 .padding(MailTheme.Spacing.sm)
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
-            if !model.attachments.isEmpty { attachmentBar }
+            if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
             if let message = model.status.message { errorBar(message) }
+        }
+        // The WHOLE window is the drop target, not just the attachment bar: a bar
+        // that only exists once there is an attachment cannot receive the first one.
+        .dropDestination(for: URL.self) { urls, _ in
+            Task { await model.drop(urls) }
+            return true
+        } isTargeted: { isDropTarget = $0 }
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+                    .strokeBorder(Color.accentColor, lineWidth: MailTheme.selectionBorderWidth * 2)
+                    .padding(MailTheme.Spacing.xs)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
+        .background(pasteShortcut)
         .background(WindowCloseInterceptor(shouldClose: closeRequested))
         .onChange(of: model.isClosed) { _, closed in
             if closed { dismiss() }
@@ -193,10 +211,23 @@ struct ComposeView: View {
         ScrollView(.horizontal) {
             HStack(spacing: MailTheme.Spacing.sm) {
                 ForEach(model.attachments) { attachment in
-                    AttachmentChip(filename: attachment.filename) {
+                    AttachmentChip(filename: attachment.filename, sizeBytes: attachment.sizeBytes) {
                         Button { Task { await model.removeAttachment(attachment) } } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .iconButtonStyle("Remove \(attachment.filename)")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                ForEach(model.pendingUploads) { pending in
+                    AttachmentChip(
+                        filename: pending.filename,
+                        sizeBytes: pending.byteCount,
+                        isInFlight: true
+                    ) {
+                        Button { model.cancelUpload(pending.id) } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .iconButtonStyle("Cancel uploading \(pending.filename)")
                         }
                         .buttonStyle(.borderless)
                     }
@@ -227,6 +258,24 @@ struct ComposeView: View {
             .keyboardShortcut("w", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)
+    }
+
+    /// ⌘V attaches files and images from the pasteboard — and, when there are
+    /// none, hands the paste straight back to whatever text view has focus.
+    /// Binding the shortcut takes it away from the responder chain, so forwarding
+    /// is not a nicety: without it, pasting text into the body would stop working.
+    private var pasteShortcut: some View {
+        Button("Paste") {
+            let contents = PasteboardReader.contents()
+            Task {
+                if await model.paste(contents) == false {
+                    NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+                }
+            }
+        }
+        .keyboardShortcut("v", modifiers: .command)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 }
 

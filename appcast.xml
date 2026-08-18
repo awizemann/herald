@@ -3,19 +3,31 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.1.3</title>
-            <pubDate>Mon, 17 Aug 2026 15:34:26 -0400</pubDate>
-            <sparkle:version>4</sparkle:version>
-            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <title>0.2.0</title>
+            <pubDate>Tue, 18 Aug 2026 09:07:45 -0400</pubDate>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h3>Fixed</h3>
+            <description><![CDATA[<h3>Added</h3>
 <ul>
-<li>Sign-ins no longer expire after about an hour. HQBase&#x27;s protected-resource metadata lists only the API permissions (<code>mail:read</code>, <code>mail:write</code>, <code>mail:send</code>) and Herald requested exactly that set, so it never asked for <code>offline_access</code> and never received a refresh token; when the first access token expired, the only recovery was signing in again. Herald now always requests <code>offline_access</code> in addition to the advertised scopes. Existing accounts need one more sign-in to obtain a refresh token — after that, sessions persist. (#1)</li>
-<li>New mail could appear as a clipped, one-line row until the list re-measured it; rows now have a stable minimum height.</li>
+<li>Delta sync. On HQBase servers that publish the new changes feed (<code>GET /api/v1/changes</code>, shipped upstream on 2026-08-18), Herald takes a checkpoint, lists each mailbox once using the new paginated <code>GET /api/v1/messages</code>, and from then on applies only what changed — including deletions and moves made by other clients — instead of re-listing every folder every 15 seconds. The sync cursor is saved after every applied page, so an interrupted sync resumes where it stopped. Older servers keep the previous behaviour automatically.</li>
+<li>Mailbox access changes are honoured each sync: mail from a mailbox you can no longer read is removed from the local cache; a newly readable mailbox is fully listed before its changes are applied.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Triage actions can no longer be undone by a stale update arriving from the server while the action is still being sent; the server&#x27;s confirmed state is applied once it answers.</li>
+<li>On servers with pagination, folders with more than 100 messages are now listed completely.</li>
+</ul>
+<h3>Fixed (continued)</h3>
+<ul>
+<li>Signing in no longer expires after a few hours when two copies of Herald share one account (for example a released build and a development build): Herald now treats the Keychain as the source of truth — it re-checks stored tokens before refreshing or retrying, adopts tokens another process already rotated, and only signs you out when the server has genuinely rejected the refresh token. Refresh timing is jittered so shared tokens don&#x27;t collide. (Herald #1 follow-up; upstream HQBase/hqbase#41 asks for a server-side reuse window.)</li>
+<li>Deleting a message no longer opens the thread below it; the selection just moves on. (#5)</li>
+<li>A just-deleted (or archived) message appears in Trash/Archived immediately, and the toolbar Refresh reloads the view you&#x27;re looking at. (#6)</li>
+<li>In Trash, &quot;Move to Archive&quot; now works per message (the only way out of Trash the API offers) and Herald no longer sends the conversation-level archive/trash actions the server ignores there; if the server reports an action affected nothing, the optimistic change is reverted at once. A proper &quot;Put back&quot; needs a server action — upstream HQBase/hqbase#42. (#7, #8)</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.1.3/Herald-0.1.3.zip" length="2741871" type="application/octet-stream" sparkle:edSignature="PrL5x/1xBqj3RnXOd206k1/oZXYdxjtzmZCmbpe/dCOl2e5ElpMpdSkcyCIxSvgL7nNCaUzK3bYByvObBY6zBw=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.2.0/Herald-0.2.0.zip" length="2845930" type="application/octet-stream" sparkle:edSignature="DuAU3PBi6zR4L4e3zgJJPmpQGv1aYjZtCZYrxrHEGHNLUvB7o/FTkJajhRNBCoIMI2OWhagW9SW8Ne/06bYOBA=="/>
         </item>
     </channel>
 </rss>

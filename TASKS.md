@@ -12,6 +12,9 @@
 
 ## Todo
 
+- [ ] UI: re-auth banner should stack above the account header, not replace it (id: t-8a1c0052) (added: 2026-08-18) (priority: low)
+- [ ] Verify journal-mode sync live once an HQBase release includes #35/#37; retire the 100-cap guard note (id: t-8a1c0051) (added: 2026-08-18) (priority: high)
+- [ ] Wire "Put back" from Trash once upstream ships a restore action (HQBase/hqbase#42; Herald #7) (id: t-8a1c0050) (added: 2026-08-18) (priority: medium)
 - [ ] Reading pane polish: collapse quoted history, system font for text/plain bodies (id: t-8a1c0017) (added: 2026-08-15) (priority: medium)
 - [ ] Enforce per-draft 25 MiB attachment total client-side (id: t-8a1c0014) (added: 2026-08-15) (priority: low)
 - [ ] Keychain I/O off the main actor at boot (id: t-8a1c0012) (added: 2026-08-15) (priority: low)
@@ -23,6 +26,13 @@
 
 ## Done
 
+- [x] Split MailStore.swift (1254) and MailViewModel.swift (1183) under the 1000-line limit (id: t-9f94365e) (added: 2026-08-18)
+- [x] Replace KeychainAccountStore NSLock with os_unfair_lock (not actor — sync nonisolated protocol) (id: t-e2af8452) (added: 2026-08-18)
+- [x] Add MailTheme token scales (spacing/radius/typography/animation) and migrate literals (id: t-2144407d) (added: 2026-08-18) (priority: high)
+- [x] Low-risk audit hygiene: comment try? decodes, fix TOCTOU, log revert failures, drop constant force-unwrap (id: t-47993e16) (added: 2026-08-18) (priority: low)
+- [x] Herald: checkpoint + /changes sync; drop 100-cap guard (after PR-B ships) (id: t-8a1c0042) (added: 2026-08-17) (priority: high)
+- [x] Upstream PR-B (built by bermanto as HQBase/hqbase#37 — moot): GET /api/v1/changes journal endpoint (triggers, sequence cursor, envelope) + spec PR (id: t-8a1c0041) (added: 2026-08-17) (priority: high)
+- [x] Upstream PR-A: GET /api/v1/messages pagination (limit, versioned cursor, Link header) + hqbase-site spec PR (id: t-8a1c0040) (added: 2026-08-17) (priority: high)
 - [x] Verify Sparkle self-update: cut 0.1.1 and confirm running 0.1.0 offers + installs it (id: t-8a1c0028) (added: 2026-08-16) (priority: high)
 - [x] UI: humanized row date in fixed trailing slot with full-date tooltip + a11y value (id: t-8a1c0031) (added: 2026-08-16) (priority: high)
 - [x] UI: mailbox chip primary in rows, per-mailbox color (deterministic default, Settings override), sender secondary (id: t-8a1c0030) (added: 2026-08-16) (priority: high)
@@ -42,3 +52,4 @@
 - [x] P0.1 Scaffold: project.yml, HeraldKit package, generated Mail API client, DTOs, KeychainStore (id: t-8a1c0001) (added: 2026-08-15) (priority: high)
 
 ## Archived
+

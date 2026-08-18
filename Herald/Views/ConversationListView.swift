@@ -104,6 +104,15 @@ struct ConversationListView: View {
         .onSubmit(of: .search) { model.submitSearch() }
         .task(id: searchText) {
             guard searchText != model.searchQuery else { return }
+            // Clearing is not typing: it needs no debounce, and waiting to apply
+            // it leaves the old needle's rows on screen under an empty field.
+            // That window is also what an ACCOUNT SWITCH walks into — the column
+            // is `.id(accountID)`-reset, so the field comes back empty while the
+            // incoming account's view-model still holds its previous query.
+            guard !searchText.isEmpty else {
+                model.searchQuery = ""
+                return
+            }
             do {
                 try await Task.sleep(for: .milliseconds(250))
             } catch {

@@ -66,6 +66,42 @@ struct JournalSyncTests {
 
     // MARK: - Bootstrap
 
+    /// Fails if a bootstrap pass looks like ordinary arrivals: the first listing
+    /// of an account reports its whole inbox as `inserted`, and the new-mail
+    /// notifier keys entirely off this flag to stay silent for it. The second
+    /// pass proves the flag is not simply always on.
+    @Test("The first listing is flagged as a bootstrap; a later arrival is not")
+    func bootstrapChangeSetsAreFlagged() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessagePages([[SyncFixtures.message("m1", threadID: "t1")]], folder: .inbox, mailboxID: "mbx_a")
+        await api.setChangePages([
+            ChangePage(changes: [], nextCursor: "c1", hasMore: false),
+            ChangePage(changes: [.upsert(SyncFixtures.message("m2", threadID: "t2"))], nextCursor: "c2", hasMore: false),
+        ])
+
+        let store = try MailStore.inMemory()
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+
+        var flags: [Bool] = []
+        var finished = 0
+        for await event in engine.events {
+            switch event {
+            case .changed(let changes): flags.append(changes.isBootstrap)
+            case .finished, .failed:
+                finished += 1
+                if finished == 2 { await engine.stop() } else { await engine.refreshNow() }
+            default: continue
+            }
+            if finished == 2 { break }
+        }
+
+        #expect(flags.first == true, "the bootstrap pass must be flagged, got \(flags)")
+        #expect(flags.last == false, "a steady-state arrival must NOT be flagged, got \(flags)")
+    }
+
     /// Fails on an off-by-one in the message page-walk: stopping at page 1 (the
     /// pre-pagination behaviour) loses everything past the first 100 rows, and
     /// asking for a fourth page after `nextCursor` went nil re-lists forever.

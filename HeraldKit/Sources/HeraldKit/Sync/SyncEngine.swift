@@ -378,7 +378,11 @@ public actor SyncEngine {
 
     /// Exactly the pre-journal behaviour: re-list every mailbox × folder and diff.
     private func legacySync(accountID: String) async throws -> ChangeSet {
-        var changes = ChangeSet()
+        // A legacy server has no checkpoint to ask, so "first pass" is read off
+        // the cache itself: an account with no cached mailbox has never been
+        // listed, and this pass will report its whole inbox as inserted.
+        let isBootstrap = try await store.mailboxes(accountID: accountID).isEmpty
+        var changes = ChangeSet(isBootstrap: isBootstrap)
         let mailboxes = try await api.listMailboxes()
         try checkPassIsCurrent()
         changes.formUnion(try await store.upsertMailboxes(mailboxes, accountID: accountID))
@@ -429,7 +433,9 @@ public actor SyncEngine {
     /// drop every change made during the listing.
     private func bootstrap(accountID: String) async throws -> ChangeSet {
         let checkpoint = try await fetchChanges(cursor: nil)
-        var changes = ChangeSet()
+        // Every row this pass writes is "new" only to the cache — the flag keeps
+        // new-mail notifications silent for it (see ``ChangeSet/isBootstrap``).
+        var changes = ChangeSet(isBootstrap: true)
         let mailboxes = try await api.listMailboxes()
         let cached = Set(try await store.mailboxes(accountID: accountID).map(\.id))
         changes.formUnion(
@@ -503,7 +509,12 @@ public actor SyncEngine {
         for mailbox in mailboxes.sorted(by: { $0.id < $1.id }) {
             let isNew = !cached.contains(mailbox.id)
             guard isNew || listKnown else { continue }
-            changes.formUnion(try await syncMailbox(accountID: accountID, mailboxID: mailbox.id))
+            var listed = try await syncMailbox(accountID: accountID, mailboxID: mailbox.id)
+            // A mailbox the cache has never seen is being bootstrapped even in a
+            // steady-state pass: its entire inbox arrives as inserted rows, and
+            // notifying for all of it is exactly the burst this flag prevents.
+            if isNew { listed.isBootstrap = true }
+            changes.formUnion(listed)
             guard isNew else { continue }
             try checkPassIsCurrent()
             changes.formUnion(try await store.upsertMailboxes([mailbox], accountID: accountID))

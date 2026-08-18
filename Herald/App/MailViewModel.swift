@@ -69,9 +69,17 @@ final class MailViewModel {
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
     private let markReadDelay: Duration
-    /// Where per-mailbox colour overrides live. Injected so a test drives a
-    /// throwaway suite instead of the user's real preferences.
+    /// Where per-mailbox colour overrides and the alert switches live. Injected
+    /// so a test drives a throwaway suite instead of the user's real preferences.
     private let defaults: UserDefaults
+    /// Posts new-mail banners for this account. `nil` in tests that are not about
+    /// notifications, and in any build where the user turned them off.
+    private let notifier: NewMailNotifier?
+    /// Called with the all-mailboxes inbox unread count whenever it is recomputed
+    /// — the Dock badge's only input. A closure rather than an observation loop
+    /// so the badge updates exactly when the count does. Observation-ignored: no
+    /// view reads it, and assigning it would otherwise invalidate every observer.
+    @ObservationIgnored var unreadCountDidChange: (@MainActor (Int) -> Void)?
 
     // MARK: Published state
 
@@ -246,9 +254,11 @@ final class MailViewModel {
         sync: (any MailSyncing)? = nil,
         events: AsyncStream<SyncEvent>,
         markReadDelay: Duration = .seconds(1),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        notifier: NewMailNotifier? = nil
     ) {
         self.defaults = defaults
+        self.notifier = notifier
         self.accountID = accountID
         self.accountLabel = accountLabel
         self.api = api
@@ -497,6 +507,9 @@ final class MailViewModel {
                     await reloadConversations()
                 }
             case .changed(let changes):
+                // Before the reloads: the banner is about what ARRIVED, and the
+                // reload path can take several store round trips.
+                await notifyNewMail(changes)
                 await apply(changes)
             case .failed(let error):
                 if Self.requiresReauthentication(error) {
@@ -523,6 +536,42 @@ final class MailViewModel {
             }
         }
         return false
+    }
+
+    /// Hands the pass to the notifier, unless the user switched banners off.
+    ///
+    /// The switch is read HERE, per pass, rather than captured at build time:
+    /// toggling it in Settings must take effect on the very next poll without
+    /// rebuilding the account graph.
+    private func notifyNewMail(_ changes: ChangeSet) async {
+        guard let notifier, NotificationSettings.newMailEnabled(in: defaults) else { return }
+        await notifier.handle(changes, accountID: accountID, accountLabel: accountLabel)
+    }
+
+    /// Shows the conversation a clicked notification names.
+    ///
+    /// The banner may be minutes old and about a thread the current scope does
+    /// not show (another mailbox picked, a search typed, archived since), so this
+    /// resets to the all-mailboxes inbox and clears the search before selecting.
+    /// A thread that is genuinely gone leaves the UI on the inbox rather than
+    /// selecting nothing in a mystery scope.
+    func revealConversation(threadID: String) async {
+        searchQuery = ""
+        let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
+        if selection != inbox {
+            selection = inbox
+            // The `didSet` starts the reload; awaiting it is what makes the row
+            // available to select below.
+            await reloadTask?.value
+        }
+        if !allConversations.contains(where: { $0.id == threadID }) {
+            await reloadConversations()
+        }
+        guard allConversations.contains(where: { $0.id == threadID }) else {
+            logger.info("Notification named a conversation that is no longer in the inbox")
+            return
+        }
+        select(threadID, drill: true)
     }
 
     /// Reloads only the slices a change actually touched.
@@ -694,6 +743,9 @@ final class MailViewModel {
             }
         }
         unreadCounts = counts
+        // The all-mailboxes inbox count — the same number the account picker
+        // shows, so the Dock badge and the switcher can never disagree.
+        unreadCountDidChange?(pickerUnread(forMailbox: nil))
     }
 
     /// The scopes a badge is actually drawn for:

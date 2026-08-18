@@ -53,22 +53,30 @@ public nonisolated struct MailActionService: Sendable {
         _ action: ConversationAction,
         onConversation threadID: String,
         in folder: ConversationFolder,
-        accountID: String
+        accountID: String,
+        representativeMessageID: String? = nil
     ) async throws {
         // REAL-SERVER FACT: `POST /conversations/{id}/{action}` takes a MESSAGE id
         // (the server looks up the message's mailbox for the access check and
         // derives the thread from it). Sending the thread id resolved to no
         // mailbox → 403 "You do not have access to this mailbox" for star/archive.
         // Any message in the thread works; the newest is the natural pick.
-        guard let representative = try await store.messages(accountID: accountID, threadID: threadID)
+        //
+        // `representativeMessageID` is the caller's fallback for a thread the
+        // CACHE does not hold — a server-search hit sync has not listed yet.
+        // Without it every action on such a row failed here with `.notFound`,
+        // before the request was ever made. The cache still wins when it has the
+        // thread: it knows the newest member, the caller only knows one.
+        let cached = try await store.messages(accountID: accountID, threadID: threadID)
             .max(by: { ($0.receivedAt ?? $0.sentAt ?? .distantPast) < ($1.receivedAt ?? $1.sentAt ?? .distantPast) })
-        else {
+            .map(\.id)
+        guard let representative = cached ?? representativeMessageID else {
             throw MailAPIError.notFound
         }
         let undo = try await store.applyLocalAction(action, threadID: threadID, accountID: accountID)
         let result: ConversationActionResult
         do {
-            result = try await api.perform(action, onConversation: representative.id, in: folder)
+            result = try await api.perform(action, onConversation: representative, in: folder)
         } catch {
             logger.warning(
                 "Conversation action \(action.rawValue, privacy: .public) rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"

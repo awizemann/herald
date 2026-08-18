@@ -102,6 +102,9 @@ final class MailViewModel {
         didSet {
             guard selection != oldValue else { return }
             selectedThreadID = nil
+            // Server search is scoped to (mailbox, folder): its rows answer the
+            // OLD scope's question and would leak into the new folder's list.
+            cancelServerSearch()
             // The folder is half of the presentation rule, so the visible list is
             // wrong until it is recomputed — don't wait for the store round trip.
             refilter()
@@ -126,7 +129,12 @@ final class MailViewModel {
     var searchQuery: String = "" {
         didSet {
             guard searchQuery != oldValue else { return }
+            // A new needle invalidates the previous server pass completely: its
+            // rows matched a different string. Cancel BEFORE refiltering so the
+            // list never shows the old query's server hits under the new one.
+            cancelServerSearch()
             refilter()
+            autoRunServerSearchIfSparse()
         }
     }
 
@@ -142,9 +150,44 @@ final class MailViewModel {
     /// typing in the search field cannot tear down the reading pane.
     private(set) var presentedConversations: [ConversationSummary] = []
 
-    /// Row id → the lowercased text search matches against, built once per load
-    /// instead of once per row per keystroke.
+    /// Thread id → the lowercased header text search matches against, built once
+    /// per load instead of once per row per keystroke.
     @ObservationIgnored private var searchIndex: [String: String] = [:]
+
+    /// MESSAGE id → the lowercased, truncated body text of a row's latest
+    /// message, for the rows whose body the cache already holds.
+    ///
+    /// Keyed by message id (not thread id) because that is what the body sidecar
+    /// is keyed by, and loaded separately from ``searchIndex`` because it costs a
+    /// store round trip — the header index must be ready synchronously, the
+    /// moment the rows land.
+    @ObservationIgnored private var bodySearchIndex: [String: String] = [:]
+
+    /// The id set a body-index pass is currently loading, or `nil` when none is
+    /// in flight. Guards against restarting an identical pass on every sync tick.
+    @ObservationIgnored private var loadingBodyIndexIDs: Set<String>?
+
+    /// What the SERVER half of search is doing. The local half is always
+    /// instant; this is the only part with a state worth showing.
+    enum ServerSearchState: Equatable {
+        case idle
+        case searching
+        /// How many threads the server matched (before dedupe against the cache).
+        case completed(Int)
+        /// User-facing reason; the list still shows its local results.
+        case failed(String)
+    }
+
+    private(set) var serverSearchState: ServerSearchState = .idle
+
+    /// Rows the server matched that the local pass did not. NOT observed and NOT
+    /// written to the cache — see ``runServerSearch()`` for why. Every writer
+    /// calls ``refilter()`` itself.
+    @ObservationIgnored private var serverResults: [ConversationSummary] = []
+
+    /// Instrumentation: how many server searches were actually dispatched, so
+    /// "a keystroke did NOT hit the network" is assertable.
+    @ObservationIgnored private(set) var serverSearchCount = 0
 
     /// Instrumentation: how many times the presented list has actually been
     /// recomputed. Observation-ignored — it exists so "an unrelated change did
@@ -278,6 +321,8 @@ final class MailViewModel {
         threadTask?.cancel()
         detailTask?.cancel()
         markReadTask?.cancel()
+        bodyIndexTask?.cancel()
+        cancelServerSearch()
     }
 
     // MARK: - Derived state
@@ -288,30 +333,285 @@ final class MailViewModel {
         filterCount += 1
         let folder = selection.folder
         let inScope = allConversations.filter { Self.belongs($0, to: folder) }
-        guard !searchQuery.isEmpty else {
+        // Trimmed, and trimmed HERE as well as on the wire: the local tier and
+        // the server tier must agree on what the needle is, or a trailing space
+        // silently empties the list while the server still finds rows.
+        let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else {
             presentedConversations = inScope
             return
         }
-        let needle = searchQuery.lowercased()
-        presentedConversations = inScope.filter { searchIndex[$0.id]?.contains(needle) ?? false }
+        var rows = inScope.filter { matchesLocally($0, needle) }
+        // Union with whatever the server matched that the cache does not hold.
+        // Local rows win on identity: they carry any optimistic action the user
+        // just took, where the server's copy predates it.
+        if !serverResults.isEmpty {
+            var seen = Set(rows.map(\.id))
+            for row in serverResults where Self.belongs(row, to: folder) && seen.insert(row.id).inserted {
+                rows.append(row)
+            }
+            rows.sort { $0.latest.displayDate > $1.latest.displayDate }
+        }
+        presentedConversations = rows
     }
 
-    /// The searchable text of each row, lowercased once at load time.
+    /// Whether a cached row matches the needle: headers first (always indexed),
+    /// then the body of its latest message if the cache happens to hold one.
+    private func matchesLocally(_ row: ConversationSummary, _ needle: String) -> Bool {
+        if searchIndex[row.id]?.contains(needle) == true { return true }
+        return bodySearchIndex[row.latest.id]?.contains(needle) == true
+    }
+
+    /// The searchable header text of each row, lowercased once at load time.
+    ///
+    /// Recipients are in it as well as sender and subject: "who did I send this
+    /// to" is half of what search is for, and `to` is already on the row DTO. `cc`
+    /// is not — it only exists on ``MessageDetail`` — so a cc-only match is left
+    /// to the server tier.
     private nonisolated static func makeSearchIndex(
         _ rows: [ConversationSummary]
     ) -> [String: String] {
         var index: [String: String] = [:]
         index.reserveCapacity(rows.count)
         for row in rows {
-            index[row.id] = "\(row.latest.subject)\n\(row.latest.fromAddress)\n\(row.latest.snippet)"
+            let recipients = row.latest.to.joined(separator: " ")
+            index[row.id] = """
+                \(row.latest.subject)
+                \(row.latest.fromAddress)
+                \(recipients)
+                \(row.latest.snippet)
+                """
                 .lowercased()
         }
         return index
     }
 
+    // MARK: - Search: the body half of the local index
+
+    /// How much of one cached body is indexed. The index is resident for every
+    /// row on screen, so an unbounded one is a mailbox's worth of newsletter HTML
+    /// held in memory to answer a substring test.
+    static let bodySearchPrefixLength = 4096
+
+    /// Loads cached body text for the rows now on screen.
+    ///
+    /// Deliberately NOT part of `allConversations.didSet`: it is a store round
+    /// trip, and the header index — which is what the first keystroke filters on
+    /// — must be ready synchronously. Nothing is FETCHED for search; only bodies
+    /// the reading pane already cached participate.
+    private func refreshBodySearchIndex() {
+        let ids = allConversations.map(\.latest.id)
+        guard !ids.isEmpty else {
+            bodyIndexTask?.cancel()
+            loadingBodyIndexIDs = nil
+            guard !bodySearchIndex.isEmpty else { return }
+            bodySearchIndex = [:]
+            // The rows that matched on body text are gone with the index.
+            if !searchQuery.isEmpty { refilter() }
+            return
+        }
+        let wanted = Set(ids)
+        // A sync burst calls this on every ChangeSet. Restarting a pass that is
+        // already loading EXACTLY these ids means each store round trip is
+        // cancelled before it lands and the body index never populates at all —
+        // body search would silently degrade to headers-only, with no signal.
+        guard loadingBodyIndexIDs != wanted else { return }
+        bodyIndexTask?.cancel()
+        loadingBodyIndexIDs = wanted
+        let store = self.store
+        let accountID = self.accountID
+        bodyIndexTask = Task { [weak self] in
+            defer { if self?.loadingBodyIndexIDs == wanted { self?.loadingBodyIndexIDs = nil } }
+            let texts = (try? await store.cachedBodyTexts(
+                messageIDs: ids, accountID: accountID, maxLength: Self.bodySearchPrefixLength
+            )) ?? [:]
+            guard !Task.isCancelled else { return }
+            // Lowercasing up to a hundred 4 KB bodies is real work and the main
+            // actor is drawing the list it belongs to.
+            let lowered = await Task.detached(priority: .utility) { @Sendable in
+                texts.mapValues { $0.lowercased() }
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            // The rows may have moved on while this was in flight; keeping only
+            // the ids still on screen is what stops the index growing without
+            // bound across folder switches.
+            self.bodySearchIndex = lowered.filter { wanted.contains($0.key) }
+            if !self.searchQuery.isEmpty { self.refilter() }
+        }
+    }
+
+    // MARK: - Search: the server tier
+
+    /// Below this many local hits, the debounced query reaches for the server on
+    /// its own — the case the two-tier design exists for is "the answer is older
+    /// than the cache", and that looks exactly like an empty local result.
+    static let serverSearchAutoThreshold = 3
+
+    /// Shorter needles are a `LIKE %x%` full scan upstream that matches most of
+    /// the mailbox; never worth a round trip, submitted or not.
+    static let minimumServerSearchLength = 2
+
+    /// Cap on pages walked per server search. The server pages at ~50, so this is
+    /// 250 threads — past that the needle is too broad to be an answer.
+    static let maxServerSearchPages = 5
+
+    /// Exposed so tests can await (and assert the cancellation of) the pass.
+    @ObservationIgnored private(set) var serverSearchTask: Task<Void, Never>?
+    @ObservationIgnored private var bodyIndexTask: Task<Void, Never>?
+
+    /// The Return key in the search field: search the server for what is on
+    /// screen now, whether or not the local pass found anything.
+    func submitSearch() {
+        runServerSearch()
+    }
+
+    private func autoRunServerSearchIfSparse() {
+        guard presentedConversations.count < Self.serverSearchAutoThreshold else { return }
+        runServerSearch()
+    }
+
+    /// Runs `GET /conversations?search=` for the CURRENT scope, paging through
+    /// with the cursor, and unions the answer into the presented list.
+    ///
+    /// The rows are held as DTOs rather than upserted into the cache. The cache's
+    /// conversation table is the sync engine's: a listing scope is authoritative
+    /// there (`deleteMissing` tombstones anything a listing omits), and a search
+    /// result is a FILTERED view of the same scope — injecting it would make the
+    /// next pass's "these rows are all that is in the inbox" claim fight with a
+    /// row set that was never a listing. Presenting from DTOs keeps the union
+    /// exactly as long as the query lives and costs nothing to undo.
+    func runServerSearch() {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= Self.minimumServerSearchLength else { return }
+        let scope = selection
+        serverSearchTask?.cancel()
+        serverSearchCount += 1
+        serverSearchState = .searching
+        serverSearchTask = Task { [weak self] in
+            await self?.performServerSearch(query, scope: scope)
+        }
+    }
+
+    /// Forgets one server-search row.
+    ///
+    /// A server result is a DTO snapshot with no cache row behind it, so nothing
+    /// re-derives it: archiving or trashing such a row would otherwise see it
+    /// re-unioned — still claiming its old folder — on the very next refilter,
+    /// and the row would spring back as though the action had failed.
+    func dropServerResult(_ threadID: String) {
+        guard serverResults.contains(where: { $0.id == threadID }) else { return }
+        serverResults.removeAll { $0.id == threadID }
+        if case .completed = serverSearchState {
+            serverSearchState = .completed(serverResults.count)
+        }
+        refilter()
+    }
+
+    /// Drops any in-flight server pass and its rows. Called whenever the question
+    /// changes (new needle, new scope) and by ``stop()``.
+    func cancelServerSearch() {
+        serverSearchTask?.cancel()
+        serverSearchTask = nil
+        guard !serverResults.isEmpty || serverSearchState != .idle else { return }
+        serverResults = []
+        serverSearchState = .idle
+    }
+
+    private func performServerSearch(_ query: String, scope: FolderSelection) async {
+        var collected: [ConversationSummary] = []
+        var seen: Set<String> = []
+        var cursor: String?
+        var page = 0
+
+        while page < Self.maxServerSearchPages {
+            let result: ConversationPage
+            do {
+                result = try await api.listConversations(
+                    folder: scope.folder,
+                    mailboxID: scope.mailboxID,
+                    search: query,
+                    cursor: cursor
+                )
+            } catch {
+                // A cancelled pass answers a question nobody is asking; its
+                // failure is not a failure the user should be told about.
+                guard !Task.isCancelled, !Self.isCancellation(error), isCurrentSearch(query, scope) else { return }
+                logger.warning("Server search failed: \(error.localizedDescription, privacy: .private)")
+                serverResults = collected
+                serverSearchState = .failed(Self.serverSearchMessage(for: error))
+                refilter()
+                return
+            }
+            // The needle or the folder moved while the page was in flight.
+            guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
+            for row in result.conversations where seen.insert(row.id).inserted {
+                collected.append(row)
+            }
+            page += 1
+            guard let next = result.nextCursor else { break }
+            cursor = next
+        }
+
+        guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
+        serverResults = collected
+        serverSearchState = .completed(collected.count)
+        refilter()
+    }
+
+    /// Whether the pass that is finishing still answers what is on screen. The
+    /// scope AND the needle both have to still hold: `searchQuery` is compared
+    /// trimmed because that is the form the request was built from.
+    private func isCurrentSearch(_ query: String, _ scope: FolderSelection) -> Bool {
+        selection == scope
+            && searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query
+    }
+
+    /// URLSession reports a cancelled request as an error like any other, and the
+    /// API layer wraps it into `.transport`; treating that as a real failure would
+    /// flash "search failed" on every keystroke.
+    nonisolated static func isCancellation(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let api = error as? MailAPIError, case .transport(let failure) = api else { return false }
+        return failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled
+    }
+
+    /// What the status line says when a server pass fails. Offline is called out
+    /// by name: it is the one failure where "you are seeing local results only"
+    /// is the whole explanation and retrying is pointless.
+    nonisolated static func serverSearchMessage(for error: any Error) -> String {
+        if let api = error as? MailAPIError, case .transport = api {
+            return "Offline — showing local results only"
+        }
+        return (error as? any LocalizedError)?.errorDescription ?? "Server search failed"
+    }
+
+    /// The status line under the list. `nil` when there is nothing to say.
+    var serverSearchDescription: String? {
+        guard !searchQuery.isEmpty else { return nil }
+        switch serverSearchState {
+        case .idle: return nil
+        case .searching: return "Searching server…"
+        case .completed(let count):
+            return count == 1 ? "1 result from server" : "\(count) results from server"
+        case .failed(let message): return message
+        }
+    }
+
     var selectedConversation: ConversationSummary? {
         guard let selectedThreadID else { return nil }
-        return allConversations.first { $0.id == selectedThreadID }
+        return conversation(withID: selectedThreadID)
+    }
+
+    /// A presented row by thread id, from the cache FIRST and the server search
+    /// second.
+    ///
+    /// Server-only rows have to be resolvable here or selecting one is a dead
+    /// end: the thread header, the drill-in test and the reading-pane load all
+    /// resolve the selection through this, and a cache-only lookup answers `nil`
+    /// for exactly the rows the second tier exists to surface.
+    func conversation(withID threadID: String) -> ConversationSummary? {
+        allConversations.first { $0.id == threadID }
+            ?? serverResults.first { $0.id == threadID }
     }
 
     var selectedMessage: MessageSummary? {
@@ -323,7 +623,7 @@ final class MailViewModel {
     /// ``allConversations`` (the unfiltered source), never the presented list: a
     /// search that hides the row must not change what selecting it does.
     private func isMultiMessage(_ threadID: String) -> Bool {
-        (allConversations.first { $0.id == threadID }?.messageCount ?? 1) > 1
+        (conversation(withID: threadID)?.messageCount ?? 1) > 1
     }
 
     /// The back chevron / ⎋ / ⌘[: leave the thread, keep the row selected.
@@ -716,9 +1016,14 @@ final class MailViewModel {
             guard scope == selection, !Task.isCancelled else { return }
             allConversations = []
         }
-        if let selectedThreadID, !allConversations.contains(where: { $0.id == selectedThreadID }) {
+        // A server-search hit is by construction NOT in `allConversations`; the
+        // union is what the user selected from, so it is the union that decides
+        // whether the selection still exists. Checking the cache alone tore down
+        // the reading pane on the next sync tick.
+        if let selectedThreadID, conversation(withID: selectedThreadID) == nil {
             self.selectedThreadID = nil
         }
+        refreshBodySearchIndex()
         await reloadUnreadCounts()
     }
 
@@ -781,8 +1086,12 @@ final class MailViewModel {
     func loadThread(_ threadID: String) async {
         threadReloadCount += 1
         do {
-            let messages = try await store.messages(accountID: accountID, threadID: threadID)
+            var messages = try await store.messages(accountID: accountID, threadID: threadID)
             guard !Task.isCancelled, selectedThreadID == threadID else { return }
+            if messages.isEmpty, let row = serverResults.first(where: { $0.id == threadID }) {
+                messages = await serverThreadMessages(for: row)
+                guard !Task.isCancelled, selectedThreadID == threadID else { return }
+            }
             threadMessages = messages
             if selectedMessageID == nil || !messages.contains(where: { $0.id == selectedMessageID }) {
                 // Newest first, so the newest is the head of the list.
@@ -790,6 +1099,24 @@ final class MailViewModel {
             }
         } catch {
             logger.error("Thread load failed: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+
+    /// The messages of a thread the CACHE does not hold — a row the server search
+    /// found that sync has not listed yet.
+    ///
+    /// The row already carries its newest message, so the fallback is never
+    /// empty: a failed (or offline) thread fetch still opens on the message the
+    /// search matched rather than on a blank pane.
+    private func serverThreadMessages(for row: ConversationSummary) async -> [MessageSummary] {
+        guard row.messageCount > 1 else { return [row.latest] }
+        do {
+            let details = try await api.thread(messageID: row.latest.id)
+            let messages = details.map(\.summary)
+            return messages.isEmpty ? [row.latest] : messages.sorted { $0.displayDate > $1.displayDate }
+        } catch {
+            logger.warning("Server-search thread load failed: \(error.localizedDescription, privacy: .private)")
+            return [row.latest]
         }
     }
 

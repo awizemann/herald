@@ -305,6 +305,39 @@ public actor MailStore {
         }
     }
 
+    /// Cached body text for a set of messages, for the local search index.
+    ///
+    /// Only the rows that HAVE a cached body come back — search never fetches a
+    /// body it does not already hold (a full mailbox of bodies is a download the
+    /// user did not ask for, and the sidecar is populated as a side effect of
+    /// reading). Each body is truncated to `maxLength` characters: the index is
+    /// held in memory by the view-model for every row on screen, and a handful of
+    /// newsletter-sized bodies would otherwise dominate the app's footprint.
+    public func cachedBodyTexts(
+        messageIDs: [String],
+        accountID: String,
+        maxLength: Int = 4096
+    ) throws -> [String: String] {
+        guard !messageIDs.isEmpty else { return [:] }
+        let wanted = Set(messageIDs)
+        do {
+            let rows = try modelContext.fetch(
+                FetchDescriptor<CachedMessageBody>(
+                    predicate: #Predicate { $0.accountID == accountID && wanted.contains($0.messageID) }
+                )
+            )
+            var texts: [String: String] = [:]
+            texts.reserveCapacity(rows.count)
+            for row in rows where !row.textBody.isEmpty {
+                texts[row.messageID] = String(row.textBody.prefix(maxLength))
+            }
+            return texts
+        } catch {
+            logger.error("Body index fetch failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
     @discardableResult
     public func storeBody(
         messageID: String,

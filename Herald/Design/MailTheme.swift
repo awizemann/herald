@@ -74,6 +74,18 @@ enum MailTheme {
     /// with the chip background so the chip is never colour-only.
     static let attributionForeground: Color = .secondary
 
+    // MARK: Search
+
+    /// Fill behind a run of a row's text that matches the search query. The
+    /// system yellow (not `.yellow`) so it shifts under dark mode and Increase
+    /// Contrast, at a strength that stays readable under `.secondary` text.
+    nonisolated static let searchMatchBackground = Color(nsColor: .systemYellow).opacity(0.35)
+
+    /// Foreground of a matched run. Lifted to `.primary` because the snippet it
+    /// most often sits in is drawn `.secondary`; paired with the bold weight the
+    /// highlighter also applies, so the mark is never colour alone.
+    nonisolated static let searchMatchForeground: Color = .primary
+
     // MARK: Mailbox tints
 
     /// The fixed mailbox palette, in assignment order. `NSColor.system*` rather

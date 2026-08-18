@@ -10,6 +10,22 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-18
+
+### Fixed
+- Some newly arrived messages could still show as a clipped, one-line row until the list was
+  scrolled or re-measured — a stubborn case the earlier row-height fix missed. Freshly inserted
+  rows now reserve their full height immediately, so new mail always lands at the right size.
+
+### Changed
+- A development build now runs side by side with the released app without the two signing each
+  other out: debug builds use their own Keychain namespace and local cache. Only relevant if you
+  run a build from source alongside a released copy.
+- Internal quality work with no change to how Herald behaves: spacing, corner radii, and the two
+  display glyphs are now design tokens instead of scattered literals; the two largest source
+  files were split under the project's size limit; the account store's index lock moved from
+  NSLock to os_unfair_lock; and a handful of ignorable error paths are now documented or logged.
+
 ## [0.2.0] - 2026-08-18
 
 ### Added

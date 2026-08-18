@@ -28,6 +28,21 @@ first, then cut the release.
   action is still being sent; the server's confirmed state is applied once it answers.
 - On servers with pagination, folders with more than 100 messages are now listed completely.
 
+### Fixed (continued)
+- Signing in no longer expires after a few hours when two copies of Herald share one account
+  (for example a released build and a development build): Herald now treats the Keychain as the
+  source of truth — it re-checks stored tokens before refreshing or retrying, adopts tokens another
+  process already rotated, and only signs you out when the server has genuinely rejected the
+  refresh token. Refresh timing is jittered so shared tokens don't collide. (Herald #1 follow-up;
+  upstream HQBase/hqbase#41 asks for a server-side reuse window.)
+- Deleting a message no longer opens the thread below it; the selection just moves on. (#5)
+- A just-deleted (or archived) message appears in Trash/Archived immediately, and the toolbar
+  Refresh reloads the view you're looking at. (#6)
+- In Trash, "Move to Archive" now works per message (the only way out of Trash the API offers)
+  and Herald no longer sends the conversation-level archive/trash actions the server ignores
+  there; if the server reports an action affected nothing, the optimistic change is reverted at
+  once. A proper "Put back" needs a server action — upstream HQBase/hqbase#42. (#7, #8)
+
 ## [0.1.3] - 2026-08-17
 
 ### Fixed

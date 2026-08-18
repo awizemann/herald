@@ -63,31 +63,30 @@ struct DraftPollTests {
         let store = try MailStore.inMemory()
         let engine = engine(api: api, store: store, draftPollInterval: .zero)
 
-        var sawDraftsChanged = 0
-        var sawChanged = 0
+        let recorder = EventRecorder()
         let events = engine.events
-        let collector = Task {
-            for await event in events {
-                if case .draftsChanged(let changes) = event {
-                    sawDraftsChanged += 1
-                    #expect(changes.inserted == ["dft_1"])
-                }
-                if case .changed = event { sawChanged += 1 }
-            }
-        }
+        let collector = Task { await recorder.consume(events) }
 
         await engine.start(accountID: Self.account)
         try await waitUntil("the drafts landed") { (try? await store.draftCount(accountID: Self.account)) == 1 }
         // A second pass over an unchanged list must say nothing at all.
         await engine.refreshNow()
-        try await waitUntil("a second drafts poll ran") {
-            await api.callCount { $0 == .listDrafts } >= 2
-        }
+        // The COLLECTOR, not the engine, is what the counts below are read from,
+        // and the event stream is buffered — so the drain has to be waited for.
+        // `.finished` is the last event of a pass: seeing two of them means
+        // everything both passes emitted is already counted. Cancelling the
+        // collector and asserting (which is what this did) reads whatever it
+        // happened to have drained, and a negative assertion passes vacuously.
+        //
+        // And it is waited for BEFORE the stop: `stopAndWait` cancels the pass in
+        // flight, so a `.finished` that has not been emitted yet never will be.
+        try await waitUntil("the collector drained both passes") { await recorder.finished >= 2 }
         await engine.stopAndWait()
         collector.cancel()
 
-        #expect(sawDraftsChanged == 1, "an unchanged drafts listing must emit nothing")
-        #expect(sawChanged == 0, "drafts must never be reported as message changes")
+        #expect(await recorder.draftsChanged == 1, "an unchanged drafts listing must emit nothing")
+        #expect(await recorder.draftsInserted == ["dft_1"])
+        #expect(await recorder.changed == 0, "drafts must never be reported as message changes")
     }
 
     /// Fails if a drafts failure is folded into the pass result. `GET /drafts`
@@ -102,11 +101,9 @@ struct DraftPollTests {
         let store = try MailStore.inMemory()
         let engine = engine(api: api, store: store, draftPollInterval: .zero)
 
-        var failures = 0
+        let recorder = EventRecorder()
         let events = engine.events
-        let collector = Task {
-            for await event in events where isFailure(event) { failures += 1 }
-        }
+        let collector = Task { await recorder.consume(events) }
 
         await engine.start(accountID: Self.account)
         try await waitUntil("two passes ran") {
@@ -116,18 +113,46 @@ struct DraftPollTests {
         try await waitUntil("a second pass ran") {
             await api.callCount { if case .listMailboxes = $0 { return true } else { return false } } >= 2
         }
+        // Same reason as above, and it matters more here: the payoff assertion is
+        // NEGATIVE, so an undrained collector reports zero failures and the test
+        // goes green with the bug present.
+        try await waitUntil("the collector drained both passes") { await recorder.finished >= 2 }
         await engine.stopAndWait()
         collector.cancel()
 
-        #expect(failures == 0, "a drafts refusal is not a sync failure")
+        #expect(await recorder.failures == 0, "a drafts refusal is not a sync failure")
         #expect(
             await api.callCount { $0 == .listDrafts } == 1,
             "an account that cannot read drafts must not be asked again every pass"
         )
     }
 
-    private func isFailure(_ event: SyncEvent) -> Bool {
-        if case .failed = event { return true }
-        return false
+}
+
+/// Counts what the engine emitted, off the test's own isolation.
+///
+/// An actor rather than local `var`s mutated inside the collector task: those
+/// were read from the test body with no synchronisation at all, which is a data
+/// race on top of the ordering one.
+private actor EventRecorder {
+    private(set) var draftsChanged = 0
+    private(set) var draftsInserted: Set<String> = []
+    private(set) var changed = 0
+    private(set) var failures = 0
+    /// The pass boundary the assertions synchronise on.
+    private(set) var finished = 0
+
+    func consume(_ events: AsyncStream<SyncEvent>) async {
+        for await event in events {
+            switch event {
+            case .draftsChanged(let changes):
+                draftsChanged += 1
+                draftsInserted.formUnion(changes.inserted)
+            case .changed: changed += 1
+            case .failed: failures += 1
+            case .finished: finished += 1
+            case .began: break
+            }
+        }
     }
 }

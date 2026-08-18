@@ -38,6 +38,7 @@ struct SidebarView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 accountHeader
+                AccountSwitcher()
                 mailboxPicker
                 Divider()
             }
@@ -127,7 +128,10 @@ struct SidebarView: View {
             // button and Voice Control with nothing to say.
             Menu {
                 Button("Add Account…") { environment.presentsAddAccount = true }
-                Button("Sign Out", role: .destructive) { Task { await environment.signOut() } }
+                Button("Sign Out", role: .destructive) {
+                    // This account only — the others keep syncing.
+                    Task { await environment.signOut(accountID: model.accountID) }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
@@ -141,6 +145,56 @@ struct SidebarView: View {
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Picks which account the window shows.
+///
+/// Its OWN view, not a computed property of the sidebar: it reads every signed-in
+/// account's unread count, and inlined it made a poll on a background account
+/// invalidate the whole folder list of the account being read.
+private struct AccountSwitcher: View {
+    @Environment(AppEnvironment.self) private var environment
+
+    var body: some View {
+        // Only worth the row when there is somewhere to switch TO — the header
+        // already names the one account otherwise.
+        if environment.accountIDs.count > 1 {
+            Picker(selection: pickedAccountID) {
+                ForEach(environment.accounts) { account in
+                    Text(
+                        AppEnvironment.accountPickerLabel(
+                            for: account,
+                            unread: environment.unreadCount(forAccount: account.id)
+                        )
+                    )
+                    .tag(account.id)
+                }
+            } label: {
+                Text("Account")
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            // Same reason as the mailbox picker: `labelsHidden()` leaves the
+            // pop-up button with nothing to announce.
+            .help("Choose which account this window shows")
+            .accessibilityLabel("Account")
+            .padding(.horizontal, MailTheme.Spacing.md)
+            .padding(.bottom, MailTheme.Spacing.sm)
+        }
+    }
+
+    /// Non-optional for the `Picker`'s sake. It falls back to the first account
+    /// rather than an empty sentinel: a selection with no matching tag logs
+    /// "the selection is invalid" and draws a blank pop-up.
+    private var pickedAccountID: Binding<Account.ID> {
+        Binding(
+            get: { environment.selectedAccountID ?? environment.accountIDs.first ?? "" },
+            set: { newValue in
+                guard !newValue.isEmpty else { return }
+                environment.selectedAccountID = newValue
+            }
+        )
     }
 }
 

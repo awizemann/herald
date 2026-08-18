@@ -14,9 +14,11 @@ system, they don't BE it.
 
 **Default to the `memophant` MCP tools for every read and write** — search, read, write,
 edit, move, context — and read their descriptions: they document their arguments and
-behavior. The tools own slug generation, structure validation, and the write-time secret
-scan; the engine reconciles direct file edits automatically, but tool writes carry the
-guards. Server down → grep the tiers directly (`grep -rn "<query>" .memory/ wiki/`).
+behavior. The engine is the gate: every durable write goes through the tool (or app)
+entry points, which carry the guards — slug generation, structure validation, and the
+write-time secret scan. Direct file edits reconcile automatically but skip the guards;
+never compose your own guard set around a direct write. Server down → grep the tiers
+directly (`grep -rn "<query>" .memory/ wiki/`).
 
 **1. Memory (`.memory/`) — atomic facts.**
 - `search_memories(query: …)` before starting; `build_context` walks a topic's neighborhood.
@@ -89,6 +91,15 @@ files and would carry a prior session's changes forward). Find one staged in you
 **Memophant (the app)** is the management surface — browse, search, and edit every tier,
 run the kanban, migrate docs, and commit/publish through the secret scan.
 <!-- memophant:end -->
+
+## Standards
+This project follows the centralized standards at `/Users/awizemann/Developer/_standards/` (read `INDEX.md` first). Where Herald deliberately diverges — do NOT "fix" these, they are load-bearing:
+- **SwiftData store is a rebuildable cache** (server is system of record): bare `Schema([...])`, NO `VersionedSchema`/`SchemaMigrationPlan`, no backup/restore parity, no `NSFileCoordinator` (non-iCloud app). Recovery = delete + re-sync. See "Herald Sync Model".
+- **Loggers** are file-scope `private nonisolated let logger` (not the standard's in-type decl) under Swift 6.2 default-MainActor; subsystem is the bundle id `com.wizemann.herald` (Apple-idiomatic, not `com.<app>.app`). See "Herald Concurrency Rules".
+- **Design tokens** are `MailTheme` — status colors, mailbox palette, chip/selection surfaces, and the spacing/radius/typography/animation scales (`MailTheme.Spacing/Radius/Typography/Animation`, `unreadDotDiameter`). New UI reads from the tokens; no raw spacing/padding/radius/font-size literals where one fits. See "Herald Design System and Accessibility".
+- Standards 06 (tabbed editor), 07 (AI), 11 (multiplatform) are N/A — Herald is a macOS-only mail-triage client with no AI.
+
+Full audit record (2026-08-18): report `documents/reports/standards-audit-2026-08-18.md`, memory note `operations/Standards Audit 2026-08-18`. All four remediation tasks landed 2026-08-18 (commits 5526423 hygiene, 8282ffb design tokens, 9df695d os_unfair_lock, f7ef9a5 file split) — see the memory note for the closing summary.
 
 # Herald — native macOS client for HQBase
 

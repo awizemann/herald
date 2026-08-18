@@ -61,9 +61,9 @@ final class MailViewModel {
 
     let accountID: String
     let accountLabel: String
-    private let api: any MailAPIClient
+    let api: any MailAPIClient
     private let store: MailStore
-    private let actions: MailActionService
+    let actions: MailActionService
     private let sync: (any MailSyncing)?
     private let events: AsyncStream<SyncEvent>
     /// How long a message must stay selected before it is marked read. Injected
@@ -171,7 +171,7 @@ final class MailViewModel {
     /// Assigns the selection, optionally without drilling into a multi-message
     /// thread. The `didSet` runs synchronously, so the flag is back up before
     /// this returns and no other write can see it down.
-    private func select(_ threadID: String?, drill: Bool) {
+    func select(_ threadID: String?, drill: Bool) {
         drillsOnSelection = drill
         defer { drillsOnSelection = true }
         selectedThreadID = threadID
@@ -882,145 +882,6 @@ final class MailViewModel {
         await loadBody(for: detail, allowRemote: true)
     }
 
-    // MARK: - Actions
-
-    func perform(_ action: MessageAction, on messageID: String) async {
-        do {
-            try await actions.perform(action, on: messageID, accountID: accountID)
-        } catch {
-            actionError = error.localizedDescription
-        }
-        await reloadAfterAction(threadID: threadMessages.first(where: { $0.id == messageID })?.threadID)
-    }
-
-    func perform(_ action: ConversationAction, onThread threadID: String) async {
-        // Trash has no "put back": the v1 API offers no restore action, and the
-        // CONVERSATION-level `archive` only moves inbox/catchall messages, so
-        // from Trash it is a server no-op that Herald used to mirror as a local
-        // move — the thread then vanished from every folder until sync healed it
-        // (issue #8). Trashing what is already trashed is a no-op too.
-        if isTrashScope {
-            switch action {
-            case .archive: return await moveToArchiveFromTrash(threadID)
-            case .trash: return
-            default: break
-            }
-        }
-        await performConversationAction(action, onThread: threadID)
-    }
-
-    /// Whether the list the user is looking at is the Trash.
-    var isTrashScope: Bool { selection.folder == .trash }
-
-    /// What the Archive affordance is called here. In the Trash it moves the
-    /// thread OUT of the trash, which "Archive" understates.
-    var archiveActionTitle: String { isTrashScope ? "Move to Archive" : "Archive" }
-
-    /// Whether "Move to Trash" is worth offering at all: in the Trash it is a
-    /// no-op, so the row/menu/toolbar simply do not show it.
-    var offersTrashAction: Bool { !isTrashScope }
-
-    private func performConversationAction(
-        _ action: ConversationAction,
-        onThread threadID: String
-    ) async {
-        // Where the row sits in the list the user is looking at, captured BEFORE
-        // it disappears: archiving the message you are reading has to move to the
-        // next one, the way every mail client does, not empty the reading pane.
-        let removedIndex = Self.removesRow(action) && threadID == selectedThreadID
-            ? presentedConversations.firstIndex { $0.id == threadID }
-            : nil
-        do {
-            try await actions.perform(
-                action,
-                onConversation: threadID,
-                in: selection.folder,
-                accountID: accountID
-            )
-        } catch {
-            actionError = error.localizedDescription
-        }
-        await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
-    }
-
-    /// The only "put back" the v1 API has: a MESSAGE-level archive per message
-    /// of the thread. `POST /messages/{id}/archive` sets `folder = archived`
-    /// from any folder, including trash.
-    private func moveToArchiveFromTrash(_ threadID: String) async {
-        let removedIndex = threadID == selectedThreadID
-            ? presentedConversations.firstIndex { $0.id == threadID }
-            : nil
-        do {
-            try await actions.perform(.archive, onMessagesOfThread: threadID, accountID: accountID)
-        } catch {
-            actionError = error.localizedDescription
-        }
-        await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
-    }
-
-    /// Actions that take the row out of the scope it was acted on in.
-    private nonisolated static func removesRow(_ action: ConversationAction) -> Bool {
-        switch action {
-        case .archive, .trash: true
-        case .read, .unread, .star, .unstar: false
-        }
-    }
-
-    /// The optimistic write already landed in the cache (and was reverted there if
-    /// the server said no), so the slice reload is what makes either outcome visible.
-    private func reloadAfterAction(threadID: String?, removedIndex: Int? = nil) async {
-        await reloadConversations()
-        if let removedIndex { advanceSelection(pastRowAt: removedIndex) }
-        if let threadID, threadID == selectedThreadID { await loadThread(threadID) }
-        await refresh()
-    }
-
-    /// Moves the selection to the row that took the removed row's place, or to
-    /// the last row when the removed one was at the end. Does nothing if the row
-    /// is still presented — a failed action reverts, and the user should be left
-    /// on the message that did not move.
-    /// The advance is PROGRAMMATIC, so it never drills: the user deleted a row,
-    /// they did not ask to open whatever took its place (issue #5 — deleting the
-    /// row above a thread dropped the user inside that thread).
-    private func advanceSelection(pastRowAt index: Int) {
-        guard !presentedConversations.contains(where: { $0.id == selectedThreadID }) else { return }
-        guard !presentedConversations.isEmpty else {
-            select(nil, drill: false)
-            return
-        }
-        select(presentedConversations[min(index, presentedConversations.count - 1)].id, drill: false)
-    }
-
-    /// Convenience for the commands: act on the current selection.
-    func performOnSelection(_ action: ConversationAction) async {
-        guard let threadID = selectedThreadID else { return }
-        await perform(action, onThread: threadID)
-    }
-
-    func toggleStar(_ row: ConversationSummary) async {
-        await perform(row.isStarred ? .unstar : .star, onThread: row.id)
-    }
-
-    func toggleRead(_ row: ConversationSummary) async {
-        await perform(row.isUnread ? .read : .unread, onThread: row.id)
-    }
-
-    /// Runs the save panel and writes the attachment. The API client stays private
-    /// to the view-model; views ask for the action, not the bytes.
-    func saveAttachment(_ attachment: Attachment) async {
-        if let message = await AttachmentSaver.save(attachment, using: api) {
-            actionError = message
-        }
-    }
-
-    func requestCompose(_ kind: ComposeRequest.Kind) {
-        composeRequest = ComposeRequest(
-            kind: kind,
-            messageID: selectedMessageID,
-            mailboxID: selection.mailboxID ?? selectedMessage?.mailboxID
-        )
-    }
-
     // MARK: - Compose
 
     /// Every address this account owns, across all its mailboxes. Reply-all
@@ -1090,94 +951,4 @@ final class MailViewModel {
         await reloadConversations()
         if let threadID = selectedThreadID { await loadThread(threadID) }
     }
-
-    // MARK: - HTML assembly
-
-    /// Only media types a mail body may legitimately inline. Anything else
-    /// (`text/html`, `application/*`, an empty type) is skipped rather than turned
-    /// into a `data:` URL.
-    nonisolated static func isRenderableInlineMedia(_ mimeType: String) -> Bool {
-        let type = mimeType
-            .prefix { $0 != ";" }
-            .trimmingCharacters(in: .whitespaces)
-            .lowercased()
-        return ["image/", "video/", "audio/"].contains { type.hasPrefix($0) && type.count > $0.count }
-    }
-
-    nonisolated static func normalizedContentID(_ raw: String) -> String {
-        raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
-    }
-
-    /// Replaces `cid:` references with the data URLs we already fetched.
-    nonisolated static func substituteInlineImages(in html: String, with images: [String: String]) -> String {
-        guard !images.isEmpty else { return html }
-        var output = html
-        for (contentID, dataURL) in images {
-            output = output.replacingOccurrences(of: "cid:\(contentID)", with: dataURL)
-            output = output.replacingOccurrences(of: "cid:<\(contentID)>", with: dataURL)
-        }
-        return output
-    }
-
-    /// Defence in depth behind the rule list and the navigation delegate: even a
-    /// render where the blocker is somehow absent cannot fetch, frame, submit or
-    /// rebase anything. `allowsRemote` is only ever true once the user has
-    /// explicitly trusted the sender's remote media.
-    nonisolated static func contentSecurityPolicy(allowsRemote: Bool) -> String {
-        let img = allowsRemote ? "data: cid: https: http:" : "data: cid:"
-        return [
-            "default-src 'none'",
-            "img-src \(img)",
-            "style-src 'unsafe-inline'",
-            "font-src data:",
-            "media-src data:",
-            "form-action 'none'",
-            "frame-src 'none'",
-            "base-uri 'none'",
-        ].joined(separator: "; ")
-    }
-
-    /// The document title VoiceOver announces when it enters the web area, with a
-    /// fallback for an untitled message. Escaped: it is the sender's text.
-    nonisolated static func documentTitle(_ subject: String) -> String {
-        let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
-        return escapingHTML(trimmed.isEmpty ? "Message" : trimmed)
-    }
-
-    nonisolated static func escapingHTML(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-    }
-
-    /// `lang` and `<title>` are not decoration: without them VoiceOver announces
-    /// the web area as untitled HTML content and reads the body with the wrong
-    /// language's pronunciation rules.
-    nonisolated static func document(
-        wrapping bodyHTML: String,
-        title: String = "",
-        allowsRemote: Bool = false
-    ) -> String {
-        """
-        <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)"><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy(allowsRemote: allowsRemote))">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>\(documentTitle(title))</title>
-        <style>\(styleSheet)</style></head><body>\(bodyHTML)</body></html>
-        """
-    }
-
-    nonisolated static func document(wrappingPlainText text: String, title: String = "") -> String {
-        document(wrapping: "<pre class=\"plain\">\(escapingHTML(text))</pre>", title: title)
-    }
-
-    private nonisolated static let styleSheet = """
-        :root { color-scheme: light dark; }
-        body { font: -apple-system-body; font-family: -apple-system, system-ui, sans-serif;
-               margin: 16px; word-break: break-word; }
-        img, video, table { max-width: 100%; height: auto; }
-        pre.plain { font-family: ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; }
-        blockquote { border-left: 3px solid rgba(127,127,127,.4); margin-left: 0; padding-left: 12px; }
-        """
 }

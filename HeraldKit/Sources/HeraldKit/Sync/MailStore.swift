@@ -461,138 +461,6 @@ public actor MailStore {
         }
     }
 
-    // MARK: - Tombstoning
-
-    /// Removes cached messages in exactly this (account, mailbox, folder) scope
-    /// that the server no longer returns. Siblings in other folders/mailboxes
-    /// are untouched — the predicate, not a post-filter, enforces that.
-    @discardableResult
-    public func deleteMissingMessages(
-        accountID: String,
-        mailboxID: String?,
-        folder: MailFolder,
-        keeping ids: Set<String>
-    ) throws -> ChangeSet {
-        let descriptor = FetchDescriptor<CachedMessage>(
-            predicate: Self.messageScopePredicate(accountID: accountID, mailboxID: mailboxID, folder: folder)
-        )
-        do {
-            var changes = ChangeSet()
-            for row in try modelContext.fetch(descriptor) where !ids.contains(row.id) {
-                changes.deleted.insert(row.id)
-                modelContext.delete(row)
-            }
-            if !changes.isEmpty { try save() }
-            return changes
-        } catch {
-            logger.error("Message tombstoning failed: \(error.localizedDescription, privacy: .private)")
-            throw error
-        }
-    }
-
-    /// Same, for one conversation listing scope. Ids are thread ids.
-    @discardableResult
-    public func deleteMissingConversations(
-        accountID: String,
-        mailboxID: String?,
-        folder: ConversationFolder,
-        keeping threadIDs: Set<String>
-    ) throws -> ChangeSet {
-        let listFolder = folder.rawValue
-        let mailboxKey = mailboxID ?? ""
-        let descriptor = FetchDescriptor<CachedConversation>(
-            predicate: #Predicate {
-                $0.accountID == accountID && $0.listFolder == listFolder && $0.mailboxKey == mailboxKey
-            }
-        )
-        do {
-            var changes = ChangeSet()
-            for row in try modelContext.fetch(descriptor) where !threadIDs.contains(row.threadID) {
-                changes.deleted.insert(row.threadID)
-                modelContext.delete(row)
-            }
-            if !changes.isEmpty { try save() }
-            return changes
-        } catch {
-            logger.error("Conversation tombstoning failed: \(error.localizedDescription, privacy: .private)")
-            throw error
-        }
-    }
-
-    /// Removes ONE cached message and its body sidecar, and reports the listing
-    /// scope it was in.
-    ///
-    /// Used for journal tombstones. Conversation rows are deliberately NOT
-    /// touched here: a thread's row is re-derived from whatever messages remain,
-    /// which the engine does by re-listing the affected (mailbox, folder) scope.
-    @discardableResult
-    public func deleteMessage(id: String, accountID: String) throws -> MessageDeletion {
-        do {
-            guard let row = try fetchMessage(id: id, accountID: accountID) else {
-                return MessageDeletion(changes: ChangeSet(), mailboxID: nil, folder: nil)
-            }
-            let mailboxID = row.mailboxKey.isEmpty ? nil : row.mailboxKey
-            let folder = MailFolder(rawValue: row.folderRaw)
-            // The row is gone; a fence left behind would outlive everything it
-            // could ever protect.
-            pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
-            modelContext.delete(row)
-            try modelContext.delete(
-                model: CachedMessageBody.self,
-                where: #Predicate { $0.accountID == accountID && $0.messageID == id }
-            )
-            try save()
-            return MessageDeletion(changes: ChangeSet(deleted: [id]), mailboxID: mailboxID, folder: folder)
-        } catch {
-            logger.error("Message delete failed: \(error.localizedDescription, privacy: .private)")
-            throw error
-        }
-    }
-
-    /// Drops everything cached for one mailbox — used when the server stops
-    /// returning it (access revoked, mailbox deleted). Bodies go with the
-    /// messages; other mailboxes are untouched.
-    @discardableResult
-    public func purgeMailbox(mailboxID: String, accountID: String) throws -> ChangeSet {
-        do {
-            var changes = ChangeSet()
-            let messages = try modelContext.fetch(
-                FetchDescriptor<CachedMessage>(
-                    predicate: #Predicate { $0.accountID == accountID && $0.mailboxKey == mailboxID }
-                )
-            )
-            for row in messages {
-                let id = row.id
-                changes.deleted.insert(id)
-                pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
-                try modelContext.delete(
-                    model: CachedMessageBody.self,
-                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
-                )
-                modelContext.delete(row)
-            }
-            let conversations = try modelContext.fetch(
-                FetchDescriptor<CachedConversation>(
-                    predicate: #Predicate { $0.accountID == accountID && $0.mailboxKey == mailboxID }
-                )
-            )
-            for row in conversations {
-                changes.deleted.insert(row.threadID)
-                modelContext.delete(row)
-            }
-            try modelContext.delete(
-                model: CachedMailbox.self,
-                where: #Predicate { $0.accountID == accountID && $0.id == mailboxID }
-            )
-            changes.deleted.insert(mailboxID)
-            try save()
-            return changes
-        } catch {
-            logger.error("Mailbox purge failed: \(error.localizedDescription, privacy: .private)")
-            throw error
-        }
-    }
-
     // MARK: - Sync checkpoint
 
     /// Where the account's change-journal sync got to, or `nil` if it never started.
@@ -669,7 +537,7 @@ public actor MailStore {
 
     /// Messages whose optimistic state is not yet confirmed by the server,
     /// keyed by message id. See ``applyMessageUpserts(_:accountID:)``.
-    private var pendingMutations: [PendingKey: PendingMutation] = [:]
+    var pendingMutations: [PendingKey: PendingMutation] = [:]
 
     /// Test seam: whether a message is currently fenced against journal upserts.
     /// A leak here is a message the journal can never correct again.
@@ -886,12 +754,12 @@ public actor MailStore {
 
     // MARK: - Private fetch helpers
 
-    private func save() throws {
+    func save() throws {
         guard modelContext.hasChanges else { return }
         try modelContext.save()
     }
 
-    private func fetchMessage(id: String, accountID: String) throws -> CachedMessage? {
+    func fetchMessage(id: String, accountID: String) throws -> CachedMessage? {
         var descriptor = FetchDescriptor<CachedMessage>(
             predicate: #Predicate { $0.accountID == accountID && $0.id == id }
         )
@@ -1046,7 +914,7 @@ public actor MailStore {
         row.sortDate = source.sortDate
     }
 
-    private nonisolated static func messageScopePredicate(
+    nonisolated static func messageScopePredicate(
         accountID: String,
         mailboxID: String?,
         folder: MailFolder
@@ -1058,197 +926,5 @@ public actor MailStore {
         return #Predicate {
             $0.accountID == accountID && $0.folderRaw == folderRaw && $0.mailboxKey == mailboxID
         }
-    }
-
-    // MARK: - Mutation
-
-    private nonisolated static func mutate(_ row: CachedMessage, with action: MessageAction) {
-        let now = Date()
-        switch action {
-        case .read:
-            if row.readAt == nil { row.readAt = now }
-        case .unread:
-            row.readAt = nil
-        case .star:
-            if row.starredAt == nil { row.starredAt = now }
-        case .unstar:
-            row.starredAt = nil
-        case .archive:
-            row.folderRaw = MailFolder.archived.rawValue
-        case .trash:
-            row.folderRaw = MailFolder.trash.rawValue
-        }
-    }
-
-    private nonisolated static func snapshot(_ row: CachedMessage) -> MessageStateSnapshot {
-        MessageStateSnapshot(
-            messageID: row.id,
-            readAt: row.readAt,
-            starredAt: row.starredAt,
-            folderRaw: row.folderRaw
-        )
-    }
-
-    private nonisolated static func snapshot(_ row: CachedConversation) -> ConversationStateSnapshot {
-        ConversationStateSnapshot(
-            threadID: row.threadID,
-            listFolder: row.listFolder,
-            mailboxKey: row.mailboxKey,
-            readAt: row.readAt,
-            starredAt: row.starredAt,
-            folderRaw: row.folderRaw,
-            isStarred: row.isStarred,
-            unreadCount: row.unreadCount
-        )
-    }
-
-    // MARK: - DTO <-> row
-
-    private nonisolated static func makeMailbox(_ dto: Mailbox, accountID: String) -> CachedMailbox {
-        CachedMailbox(
-            id: dto.id,
-            accountID: accountID,
-            address: dto.address,
-            addresses: dto.addresses,
-            displayName: dto.displayName,
-            isActive: dto.isActive,
-            accessLevelRaw: dto.accessLevel?.rawValue,
-            createdAt: dto.createdAt,
-            updatedAt: dto.updatedAt
-        )
-    }
-
-    /// Assigns only the fields that differ; returns whether anything changed.
-    /// Blind reassignment would mark every row dirty on every poll and make the
-    /// ``ChangeSet`` meaningless.
-    private nonisolated static func apply(_ dto: Mailbox, to row: CachedMailbox) -> Bool {
-        var changed = false
-        if row.address != dto.address { row.address = dto.address; changed = true }
-        if row.addresses != dto.addresses { row.addresses = dto.addresses; changed = true }
-        if row.displayName != dto.displayName { row.displayName = dto.displayName; changed = true }
-        if row.isActive != dto.isActive { row.isActive = dto.isActive; changed = true }
-        let accessLevel = dto.accessLevel?.rawValue
-        if row.accessLevelRaw != accessLevel { row.accessLevelRaw = accessLevel; changed = true }
-        if row.createdAt != dto.createdAt { row.createdAt = dto.createdAt; changed = true }
-        if row.updatedAt != dto.updatedAt { row.updatedAt = dto.updatedAt; changed = true }
-        return changed
-    }
-
-    /// `pending` fences the three fields an optimistic local action owns while
-    /// its POST is in flight: they keep the optimistic value, everything else in
-    /// the summary is accepted as usual.
-    private nonisolated static func apply(
-        _ dto: MessageSummary,
-        to row: CachedMessage,
-        pending: PendingMutation?
-    ) -> Bool {
-        var changed = false
-        if row.threadID != dto.threadID { row.threadID = dto.threadID; changed = true }
-        let mailboxKey = dto.mailboxID ?? ""
-        if row.mailboxKey != mailboxKey { row.mailboxKey = mailboxKey; changed = true }
-        if row.directionRaw != dto.direction.rawValue { row.directionRaw = dto.direction.rawValue; changed = true }
-        let folderRaw = pending?.folderRaw ?? dto.folder.rawValue
-        if row.folderRaw != folderRaw { row.folderRaw = folderRaw; changed = true }
-        if row.fromAddress != dto.fromAddress { row.fromAddress = dto.fromAddress; changed = true }
-        if row.toAddresses != dto.to { row.toAddresses = dto.to; changed = true }
-        if row.subject != dto.subject { row.subject = dto.subject; changed = true }
-        if row.snippet != dto.snippet { row.snippet = dto.snippet; changed = true }
-        if row.receivedAt != dto.receivedAt { row.receivedAt = dto.receivedAt; changed = true }
-        if row.sentAt != dto.sentAt { row.sentAt = dto.sentAt; changed = true }
-        let readAt = pending.map(\.readAt) ?? dto.readAt
-        if row.readAt != readAt { row.readAt = readAt; changed = true }
-        let starredAt = pending.map(\.starredAt) ?? dto.starredAt
-        if row.starredAt != starredAt { row.starredAt = starredAt; changed = true }
-        if row.hasAttachments != dto.hasAttachments { row.hasAttachments = dto.hasAttachments; changed = true }
-        if row.createdAt != dto.createdAt { row.createdAt = dto.createdAt; changed = true }
-        if row.sortDate != dto.displayDate { row.sortDate = dto.displayDate; changed = true }
-        return changed
-    }
-
-    private nonisolated static func apply(_ dto: ConversationSummary, to row: CachedConversation) -> Bool {
-        let latest = dto.latest
-        var changed = false
-        if row.latestMessageID != latest.id { row.latestMessageID = latest.id; changed = true }
-        if row.latestThreadID != latest.threadID { row.latestThreadID = latest.threadID; changed = true }
-        let latestMailboxKey = latest.mailboxID ?? ""
-        if row.latestMailboxKey != latestMailboxKey { row.latestMailboxKey = latestMailboxKey; changed = true }
-        if row.directionRaw != latest.direction.rawValue {
-            row.directionRaw = latest.direction.rawValue
-            changed = true
-        }
-        if row.folderRaw != latest.folder.rawValue { row.folderRaw = latest.folder.rawValue; changed = true }
-        if row.fromAddress != latest.fromAddress { row.fromAddress = latest.fromAddress; changed = true }
-        if row.toAddresses != latest.to { row.toAddresses = latest.to; changed = true }
-        if row.subject != latest.subject { row.subject = latest.subject; changed = true }
-        if row.snippet != latest.snippet { row.snippet = latest.snippet; changed = true }
-        if row.receivedAt != latest.receivedAt { row.receivedAt = latest.receivedAt; changed = true }
-        if row.sentAt != latest.sentAt { row.sentAt = latest.sentAt; changed = true }
-        if row.readAt != latest.readAt { row.readAt = latest.readAt; changed = true }
-        if row.starredAt != latest.starredAt { row.starredAt = latest.starredAt; changed = true }
-        if row.hasAttachments != latest.hasAttachments { row.hasAttachments = latest.hasAttachments; changed = true }
-        if row.createdAt != latest.createdAt { row.createdAt = latest.createdAt; changed = true }
-        if row.sortDate != latest.displayDate { row.sortDate = latest.displayDate; changed = true }
-        if row.isStarred != dto.isStarred { row.isStarred = dto.isStarred; changed = true }
-        if row.messageCount != dto.messageCount { row.messageCount = dto.messageCount; changed = true }
-        if row.unreadCount != dto.unreadCount { row.unreadCount = dto.unreadCount; changed = true }
-        return changed
-    }
-
-    private nonisolated static func mailbox(from row: CachedMailbox) -> Mailbox {
-        Mailbox(
-            id: row.id,
-            address: row.address,
-            addresses: row.addresses,
-            displayName: row.displayName,
-            isActive: row.isActive,
-            accessLevel: row.accessLevelRaw.flatMap(MailboxAccessLevel.init(rawValue:)),
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt
-        )
-    }
-
-    private nonisolated static func message(from row: CachedMessage) -> MessageSummary {
-        MessageSummary(
-            id: row.id,
-            threadID: row.threadID,
-            mailboxID: row.mailboxKey.isEmpty ? nil : row.mailboxKey,
-            direction: MessageDirection(rawValue: row.directionRaw) ?? .inbound,
-            folder: MailFolder(rawValue: row.folderRaw) ?? .inbox,
-            fromAddress: row.fromAddress,
-            to: row.toAddresses,
-            subject: row.subject,
-            snippet: row.snippet,
-            receivedAt: row.receivedAt,
-            sentAt: row.sentAt,
-            readAt: row.readAt,
-            starredAt: row.starredAt,
-            hasAttachments: row.hasAttachments,
-            createdAt: row.createdAt
-        )
-    }
-
-    private nonisolated static func conversation(from row: CachedConversation) -> ConversationSummary {
-        ConversationSummary(
-            latest: MessageSummary(
-                id: row.latestMessageID,
-                threadID: row.latestThreadID.isEmpty ? row.threadID : row.latestThreadID,
-                mailboxID: row.latestMailboxKey.isEmpty ? nil : row.latestMailboxKey,
-                direction: MessageDirection(rawValue: row.directionRaw) ?? .inbound,
-                folder: MailFolder(rawValue: row.folderRaw) ?? .inbox,
-                fromAddress: row.fromAddress,
-                to: row.toAddresses,
-                subject: row.subject,
-                snippet: row.snippet,
-                receivedAt: row.receivedAt,
-                sentAt: row.sentAt,
-                readAt: row.readAt,
-                starredAt: row.starredAt,
-                hasAttachments: row.hasAttachments,
-                createdAt: row.createdAt
-            ),
-            isStarred: row.isStarred,
-            messageCount: row.messageCount,
-            unreadCount: row.unreadCount
-        )
     }
 }

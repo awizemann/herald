@@ -94,7 +94,7 @@ struct MailWindow: View {
             ReadingPaneView(model: model)
         }
         .navigationTitle(model.accountLabel)
-        .navigationSubtitle(MailTheme.title(for: model.selection.folder))
+        .navigationSubtitle(model.scopeTitle)
         .toolbar { toolbar }
         .safeAreaInset(edge: .top, spacing: 0) { statusBanner }
         .alert(

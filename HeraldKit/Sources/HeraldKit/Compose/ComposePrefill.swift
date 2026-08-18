@@ -121,6 +121,48 @@ public nonisolated enum ComposePrefill {
         )
     }
 
+    /// A composer reopened on an EXISTING server draft.
+    ///
+    /// Everything comes from `draft.editableContent` — including the `version`
+    /// stamp, which rides along inside `serverDraft` and is what lets the very
+    /// first autosave `PATCH` instead of creating a second draft.
+    ///
+    /// The result is deliberately NOT dirty: reopening a draft and closing it
+    /// again must not save it, must not bump its version, and must not raise the
+    /// "unsaved changes" sheet.
+    public static func draft(_ draft: Draft) -> ComposeDraft {
+        let content = draft.editableContent
+        return ComposeDraft(
+            mode: mode(for: content),
+            mailboxID: content.mailboxID,
+            fromAddress: content.from,
+            to: content.to,
+            cc: content.cc,
+            bcc: content.bcc,
+            subject: content.subject,
+            body: content.text,
+            uploadedAttachments: draft.attachments,
+            serverDraft: draft,
+            isDirty: false
+        )
+    }
+
+    /// A stored draft remembers what it was: the server keeps `replyToMessageId`
+    /// and `forwardOfMessageId` on the row, and losing them on reopen would send
+    /// a reply as a fresh message with no threading.
+    private static func mode(for content: DraftInput) -> ComposeMode {
+        if let replyTo = content.replyToMessageID {
+            // `replyAll` is not stored server-side and only ever shaped the
+            // PREFILL, which already happened — the recipients in hand are the
+            // truth now.
+            return .reply(toMessageID: replyTo, replyAll: false)
+        }
+        if let forwarded = content.forwardOfMessageID {
+            return .forward(messageID: forwarded)
+        }
+        return .new(mailboxID: content.mailboxID)
+    }
+
     /// A forward prefilled from `message`; recipients are the user's to fill in.
     public static func forward(
         _ message: MessageDetail,

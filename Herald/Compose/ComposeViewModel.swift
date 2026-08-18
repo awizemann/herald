@@ -72,20 +72,40 @@ final class ComposeViewModel {
     private let autosaveDelay: Duration
     /// The draft as opened: what "the user has typed something" is measured against.
     private let initialDraft: ComposeDraft
+    /// Where this window reports what it did to its server draft, so the Drafts
+    /// folder reflects an autosave immediately instead of at the next poll.
+    /// `@MainActor` because the view-model that consumes it is.
+    private let draftCache: @MainActor @Sendable (DraftCacheEvent) -> Void
     /// Exposed so tests can await the debounce instead of sleeping on a wall clock.
     @ObservationIgnored private(set) var autosaveTask: Task<Void, Never>?
 
-    init(context: ComposeContext, outbox: any Outboxing, autosaveDelay: Duration = .seconds(2)) {
+    init(
+        context: ComposeContext,
+        outbox: any Outboxing,
+        autosaveDelay: Duration = .seconds(2),
+        draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in }
+    ) {
         let draft = context.makeDraft()
         self.draft = draft
         self.initialDraft = draft
         self.outbox = outbox
         self.autosaveDelay = autosaveDelay
+        self.draftCache = draftCache
         self.toText = draft.to.joined(separator: ", ")
         self.ccText = draft.cc.joined(separator: ", ")
         self.bccText = draft.bcc.joined(separator: ", ")
         self.subject = draft.subject
         self.bodyText = draft.body
+        // Reopening an existing draft takes ownership of it straight away: the
+        // fence this raises is what stops a poll that is already in flight from
+        // writing a pre-edit listing over the row under the user.
+        if let existing = draft.serverDraft { draftCache(.saved(existing)) }
+    }
+
+    /// Reports the server's latest word on this draft to the Drafts folder.
+    private func publishDraftState() {
+        guard let saved = draft.serverDraft else { return }
+        draftCache(.saved(saved))
     }
 
     // MARK: - Presentation
@@ -186,6 +206,9 @@ final class ComposeViewModel {
         do {
             let saved = try await outbox.saveDraft(sent)
             draft.adoptServerState(from: saved, sent: sent)
+            // The cache learns about the draft the moment the server does, so the
+            // Drafts folder shows what is being typed without waiting for a poll.
+            publishDraftState()
             if status == .saving { status = .idle }
         } catch {
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
@@ -202,6 +225,9 @@ final class ComposeViewModel {
     func flushAndStop() async {
         autosaveTask?.cancel()
         autosaveTask = nil
+        // Whatever else happens, the window is going away: the poll must get its
+        // draft back or it could never tombstone that row again.
+        defer { if let id = draft.serverDraft?.id { draftCache(.closed(id)) } }
         guard !isClosed, draft.isDirty else { return }
         await saveNow()
     }
@@ -231,9 +257,15 @@ final class ComposeViewModel {
             return false
         }
         status = .sending
+        // Captured BEFORE the send: sending CONSUMES the server draft (the
+        // outbox deletes it afterwards), so this is the last moment its id is
+        // knowable — and the Drafts folder has to drop the row now rather than
+        // show a draft that no longer exists until the next poll.
+        let serverDraftID = draft.serverDraft?.id
         do {
             _ = try await outbox.send(draft)
             isClosed = true
+            if let serverDraftID { draftCache(.removed(serverDraftID)) }
             return true
         } catch {
             // Nothing is discarded: the window stays open with everything in it.
@@ -247,11 +279,16 @@ final class ComposeViewModel {
         autosaveTask?.cancel()
         cancelAllUploads()
         isClosed = true
+        let serverDraftID = draft.serverDraft?.id
         do {
             try await outbox.discard(draft)
         } catch {
             logger.warning("Discarding the draft failed: \(error.logCode, privacy: .public)")
         }
+        // Unconditional: `discard` is 404-tolerant, so "the delete threw" does not
+        // mean the draft survived — and a row left behind for a draft the user
+        // explicitly threw away is worse than one extra poll's correction.
+        if let serverDraftID { draftCache(.removed(serverDraftID)) }
     }
 
     /// ⌘W: close outright, or ask first when there is unsaved work.
@@ -407,6 +444,10 @@ final class ComposeViewModel {
             // later per-draft total is measured short and the server 413s the
             // next upload. Cancellation only suppresses the status change.
             draft.adoptServerState(from: saved, sent: sent)
+            // Published for the same reason it is adopted above, cancellation
+            // included: the bytes are on the server draft, so the Drafts folder's
+            // copy has to say so too.
+            publishDraftState()
             if status == .saving, !Task.isCancelled { status = .idle }
         } catch {
             logger.warning("Attachment failed: \(error.logCode, privacy: .public)")
@@ -485,6 +526,7 @@ final class ComposeViewModel {
         do {
             let saved = try await outbox.removeAttachment(attachment.id, from: sent)
             draft.adoptServerState(from: saved, sent: sent)
+            publishDraftState()
         } catch {
             logger.warning("Removing an attachment failed: \(error.logCode, privacy: .public)")
             status = .failed(error.localizedDescription)

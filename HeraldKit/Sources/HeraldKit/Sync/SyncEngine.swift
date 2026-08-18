@@ -8,6 +8,11 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 public nonisolated enum SyncEvent: Sendable {
     case began
     case changed(ChangeSet)
+    /// The DRAFTS table changed. Its own case, not folded into `.changed`,
+    /// because drafts are not messages: the ids in a ``ChangeSet`` are resolved
+    /// against the message cache by the view-model, and a draft id would resolve
+    /// to nothing and be mistaken for a brand-new mailbox.
+    case draftsChanged(ChangeSet)
     case finished
     case failed(any Error)
 }
@@ -82,11 +87,25 @@ public actor SyncEngine {
     /// than any cache needs and bounds a server that keeps handing back cursors.
     public static let defaultMaxMessagePages = 50
 
+    /// How rarely the drafts list is re-polled. Drafts are the one surface with
+    /// no delta at all — `GET /drafts` is a whole-list read with no pagination
+    /// and no journal entry — so it is deliberately NOT on the 15s message
+    /// cadence: a folder the user visits occasionally does not justify a third
+    /// request on every active-cadence tick. Local edits write straight through
+    /// to the cache (`MailStore.storeLocalDraft`), so the user's OWN drafts are
+    /// never waiting on this; it only catches drafts written elsewhere.
+    public static let defaultDraftPollInterval: Duration = .seconds(60)
+
     private let api: any MailAPIClient
     private let store: MailStore
     private let scope: SyncScope
     private let maxConversationPages: Int
     private let maxMessagePages: Int
+    private let draftPollInterval: Duration
+
+    /// When the drafts list was last read. `nil` means "never", which is what
+    /// makes the first pass of a session always poll them.
+    private var lastDraftPoll: ContinuousClock.Instant?
 
     private let eventStream: AsyncStream<SyncEvent>
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
@@ -124,13 +143,15 @@ public actor SyncEngine {
         store: MailStore,
         scope: SyncScope = .default,
         maxConversationPages: Int = SyncEngine.defaultMaxConversationPages,
-        maxMessagePages: Int = SyncEngine.defaultMaxMessagePages
+        maxMessagePages: Int = SyncEngine.defaultMaxMessagePages,
+        draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval
     ) {
         self.api = api
         self.store = store
         self.scope = scope
         self.maxConversationPages = max(1, maxConversationPages)
         self.maxMessagePages = max(1, maxMessagePages)
+        self.draftPollInterval = draftPollInterval
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
         self.eventContinuation = continuation
@@ -154,6 +175,8 @@ public actor SyncEngine {
         self.accountID = accountID
         consecutiveFailures = 0
         wakeSignalled = false
+        // A different account (or a restarted engine) has never polled ITS drafts.
+        lastDraftPoll = nil
         loopTask = Task { [weak self] in
             await self?.runLoop(accountID: accountID)
         }
@@ -187,6 +210,19 @@ public actor SyncEngine {
         } else {
             signalWake()
         }
+    }
+
+    /// Asks for a pass that also re-reads the drafts list, whatever the draft
+    /// interval says.
+    ///
+    /// Separate from ``refreshNow()`` on purpose: that one also fires after every
+    /// archive and every trash, and putting a whole-list `GET /drafts` behind each
+    /// triage keystroke is exactly the cost the interval exists to avoid. This is
+    /// for the moments the user is actually asking about drafts — opening the
+    /// Drafts folder, or pressing Refresh while looking at it.
+    public func refreshDraftsNow() {
+        lastDraftPoll = nil
+        refreshNow()
     }
 
     /// Switches the poll interval. Takes effect on the next wait, and wakes the
@@ -295,6 +331,10 @@ public actor SyncEngine {
             try checkPassIsCurrent()
             consecutiveFailures = 0
             if !changes.isEmpty { emit(.changed(changes)) }
+            // Deliberately AFTER the mail sync and outside its result: drafts are
+            // a separate surface on a separate cadence, and their own failure
+            // mode must not decide whether the mail pass succeeded.
+            await syncDraftsIfDue(accountID: accountID)
             emit(.finished)
         } catch let error as MailAPIError where error == .unauthorized {
             // Nothing the loop can do: the UI has to re-authenticate. Stop
@@ -325,6 +365,54 @@ public actor SyncEngine {
         guard let apiError = error as? MailAPIError, case .transport(let failure) = apiError else { return false }
         return failure.domain == URLError.errorDomain && failure.code == URLError.cancelled.rawValue
     }
+
+    // MARK: - Drafts
+
+    /// Accounts whose token cannot read `GET /drafts` at all. The route needs the
+    /// `mail:send` scope, so an account consented without it answers 401/403 on
+    /// EVERY pass — and folding that into the pass result would park a perfectly
+    /// healthy mailbox in exponential backoff behind a banner, forever. Recorded
+    /// once and skipped for the engine's lifetime; restarting the engine (a
+    /// re-consent, an app activation) probes again.
+    private var draftlessAccounts: Set<String> = []
+
+    /// Polls and reconciles the drafts list when its own interval has elapsed.
+    ///
+    /// Never throws: a drafts failure is not a sync failure (see above). It also
+    /// never advances `lastDraftPoll` on failure, so a transient error is retried
+    /// on the next pass rather than sat out for the whole interval.
+    private func syncDraftsIfDue(accountID: String) async {
+        guard !draftlessAccounts.contains(accountID), isDraftPollDue else { return }
+        do {
+            let listed = try await api.listDrafts()
+            try checkPassIsCurrent()
+            let changes = try await store.reconcileDrafts(listed, accountID: accountID)
+            lastDraftPoll = .now
+            if !changes.isEmpty { emit(.draftsChanged(changes)) }
+        } catch let error as MailAPIError where error == .unauthorized || Self.isScopeRefusal(error) {
+            logger.warning("Drafts unavailable for this account (\(error.logCode, privacy: .public)); not polling them again this session")
+            draftlessAccounts.insert(accountID)
+        } catch is CancellationError {
+            // Torn down by stop(); nothing to report and nothing to record.
+        } catch {
+            logger.warning("Draft poll failed: \(((error as? MailAPIError)?.logCode ?? "unknown"), privacy: .public)")
+        }
+    }
+
+    private var isDraftPollDue: Bool {
+        guard let lastDraftPoll else { return true }
+        return lastDraftPoll.duration(to: .now) >= draftPollInterval
+    }
+
+    nonisolated static func isScopeRefusal(_ error: MailAPIError) -> Bool {
+        if case .insufficientScope = error { return true }
+        if case .server(let code, _) = error { return code == "http_403" }
+        return false
+    }
+
+    /// Test seam: how many passes actually reached `GET /drafts`. It is what makes
+    /// "the second pass did NOT re-poll drafts" assertable without a clock.
+    var lastDraftPollInstant: ContinuousClock.Instant? { lastDraftPoll }
 
     // MARK: - Mode selection
 

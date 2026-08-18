@@ -16,6 +16,7 @@ actor FakeMailAPIClient: MailAPIClient {
         case performMessage(MessageAction, String)
         case performConversation(ConversationAction, String, ConversationFolder)
         // Compose surface (P0.5). Additive: the sync suite matches its own cases.
+        case listDrafts
         case createDraft(DraftInput)
         case fetchDraft(String)
         case updateDraft(id: String, version: Int?)
@@ -308,7 +309,20 @@ actor FakeMailAPIClient: MailAPIClient {
     }
     func attachmentData(id: String) async throws -> BinaryPayload { throw MailAPIError.notFound }
     func trustRemoteMedia(messageID: String) async throws { throw MailAPIError.notFound }
-    func listDrafts() async throws -> [Draft] { Array(storedDrafts.values) }
+    /// The list `GET /drafts` answers with. `nil` (the default) means "whatever
+    /// the in-memory drafts server holds", which is what the outbox tests want;
+    /// the sync tests script it explicitly so the poll has something to diff.
+    private var draftListing: [Draft]?
+    private var draftListFailure: MailAPIError?
+
+    func setDrafts(_ drafts: [Draft]) { draftListing = drafts }
+    func setDraftListFailure(_ failure: MailAPIError?) { draftListFailure = failure }
+
+    func listDrafts() async throws -> [Draft] {
+        calls.append(.listDrafts)
+        if let draftListFailure { throw draftListFailure }
+        return draftListing ?? Array(storedDrafts.values)
+    }
 
     // MARK: - Compose surface (P0.5)
     //

@@ -23,7 +23,9 @@ struct SidebarView: View {
     static func storageKey(accountID: String) -> String { "sidebar.mailbox.\(accountID)" }
 
     var body: some View {
-        List(selection: $model.selection) {
+        // Selected by `SidebarItem`, not by `FolderSelection`: Drafts is not a
+        // conversation folder and cannot be expressed as one (see MailTheme.sidebarFolders).
+        List(selection: Bindable(model).sidebarItem) {
             ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
                 FolderRow(
                     scope: MailViewModel.FolderSelection(
@@ -33,6 +35,7 @@ struct SidebarView: View {
                     unread: model.unreadCounts
                 )
             }
+            DraftsRow(count: model.draftCount)
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -235,6 +238,21 @@ struct SyncStatusLabel: View {
     }
 }
 
+/// The Drafts item. A sibling of the folder rows on screen and a different thing
+/// underneath: its badge is a TOTAL (drafts are never unread), not an unread count.
+private struct DraftsRow: View {
+    let count: Int
+
+    var body: some View {
+        Label(MailTheme.draftsTitle, systemImage: MailTheme.draftsSymbol)
+            .badge(count)
+            .tag(MailViewModel.SidebarItem.drafts)
+            .accessibilityLabel(
+                count > 0 ? "\(MailTheme.draftsTitle), \(count) drafts" : MailTheme.draftsTitle
+            )
+    }
+}
+
 private struct FolderRow: View {
     let scope: MailViewModel.FolderSelection
     let unread: [MailViewModel.FolderSelection: Int]
@@ -243,7 +261,7 @@ private struct FolderRow: View {
         let count = unread[scope] ?? 0
         Label(MailTheme.title(for: scope.folder), systemImage: MailTheme.symbol(for: scope.folder))
             .badge(count)
-            .tag(scope)
+            .tag(MailViewModel.SidebarItem.folder(scope))
             .accessibilityLabel(
                 count > 0
                     ? "\(MailTheme.title(for: scope.folder)), \(count) unread"

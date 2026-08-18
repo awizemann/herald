@@ -538,7 +538,17 @@ final class AppEnvironment {
             return nil
         }
         guard let outbox = graphs[session.accountID]?.outbox else { return nil }
-        let model = ComposeViewModel(context: session.context, outbox: outbox)
+        let accountID = session.accountID
+        let model = ComposeViewModel(context: session.context, outbox: outbox, draftCache: { [weak self] event in
+            // Routed to the account the composer was OPENED from — the same one
+            // whose `outbox` is saving the draft — never to whichever account the
+            // window happens to be showing: switching accounts with a composer up
+            // would otherwise file the draft in the wrong account's folder.
+            // Looked up fresh each time, because a composer can outlive its graph
+            // (sign-out with a window open), and the event then belongs to nobody.
+            guard let mail = self?.graphs[accountID]?.mail else { return }
+            Task { await mail.applyDraftCacheEvent(event) }
+        })
         session.model = model
         composeSessions[id] = session
         return model

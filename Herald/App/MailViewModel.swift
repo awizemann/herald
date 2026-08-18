@@ -8,6 +8,8 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// (an actor) can conform.
 nonisolated protocol MailSyncing: Sendable {
     func refreshNow() async
+    /// A pass that also re-reads `GET /drafts`, whatever the drafts interval says.
+    func refreshDraftsNow() async
     func setCadence(_ cadence: SyncCadence) async
 }
 
@@ -16,12 +18,18 @@ extension SyncEngine: MailSyncing {}
 /// A request to open the composer. P0.5 owns the composer itself; this is the
 /// hook it plugs into, so ⌘R already has somewhere to land.
 nonisolated struct ComposeRequest: Sendable, Hashable, Identifiable {
-    enum Kind: Sendable, Hashable { case reply, replyAll, forward, new }
+    enum Kind: Sendable, Hashable {
+        case reply, replyAll, forward, new
+        /// Reopen an existing server draft, identified by ``ComposeRequest/draftID``.
+        case draft
+    }
 
     let id = UUID()
     var kind: Kind
     var messageID: String?
     var mailboxID: String?
+    /// Set only for `.draft`.
+    var draftID: String?
 }
 
 /// The body of one message, prepared for ``MessageWebView``.
@@ -57,14 +65,31 @@ final class MailViewModel {
         var folder: ConversationFolder
     }
 
+    /// What the sidebar's list is selecting.
+    ///
+    /// Drafts is NOT a ``ConversationFolder``: the server has no drafts
+    /// conversation folder (the conversation enum swaps `drafts` for `starred`),
+    /// drafts are not messages, and `GET /messages?folder=drafts` is dead. So it
+    /// is a special sidebar item wrapping the folder scope rather than a member
+    /// of it — which also keeps ``selection`` typed as the conversation scope
+    /// everything else already reads.
+    nonisolated enum SidebarItem: Hashable, Sendable {
+        case folder(FolderSelection)
+        case drafts
+    }
+
     // MARK: Dependencies
 
     let accountID: String
     let accountLabel: String
     let api: any MailAPIClient
-    private let store: MailStore
+    /// Internal, like ``api`` and ``actions``, so the view-model's own extension
+    /// files can read it. Still view-model-only: it hands back Sendable DTOs and
+    /// no view ever holds a reference to it.
+    let store: MailStore
     let actions: MailActionService
-    private let sync: (any MailSyncing)?
+    /// Internal for the same reason as ``store``: the drafts extension drives it.
+    let sync: (any MailSyncing)?
     private let events: AsyncStream<SyncEvent>
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
@@ -114,6 +139,29 @@ final class MailViewModel {
             reloadTask = Task { await reloadConversations() }
         }
     }
+
+    // MARK: Drafts
+    //
+    // Storage only. Every write to these lives in `MailViewModel+Drafts.swift`,
+    // which owns the drafts behaviour; they are plain `var`s rather than
+    // `private(set)` because `private` in Swift does not reach an extension in
+    // another file, and the alternative was to inline the whole feature here.
+
+    /// Whether the middle column is showing the Drafts folder instead of a
+    /// conversation list. Written only through ``showDrafts(_:)``.
+    var isShowingDrafts = false
+    /// The drafts list, newest edit first. Sendable DTOs — the list never sees a
+    /// `@Model` and never holds a draft body.
+    var drafts: [DraftSummary] = []
+    /// The sidebar badge. Counted in the store (`fetchCount`), never by loading rows.
+    var draftCount = 0
+    var selectedDraftID: String?
+
+    /// Instrumentation, same contract as the conversation counter: it exists so
+    /// "the drafts list reloaded exactly once" is assertable.
+    @ObservationIgnored var draftReloadCount = 0
+    /// The in-flight drafts load, owned so ``stop()`` can cancel it.
+    @ObservationIgnored var draftTask: Task<Void, Never>?
 
     /// Everything the store holds for the current scope, before search.
     private(set) var allConversations: [ConversationSummary] = [] {
@@ -323,6 +371,7 @@ final class MailViewModel {
         markReadTask?.cancel()
         bodyIndexTask?.cancel()
         cancelServerSearch()
+        draftTask?.cancel()
     }
 
     // MARK: - Derived state
@@ -767,6 +816,7 @@ final class MailViewModel {
         eventTask = Task { [weak self] in await self?.consumeEvents() }
         await reloadMailboxes()
         await reloadConversations()
+        await reloadDrafts()
     }
 
     /// Set by ``refresh()``, consumed by the next `.finished` event.
@@ -811,6 +861,8 @@ final class MailViewModel {
                 // reload path can take several store round trips.
                 await notifyNewMail(changes)
                 await apply(changes)
+            case .draftsChanged(let changes):
+                await applyDraftChanges(changes)
             case .failed(let error):
                 if Self.requiresReauthentication(error) {
                     status = .needsReauth
@@ -1282,6 +1334,33 @@ final class MailViewModel {
     /// selected message (the common case: ⌘R on what you are reading); anything
     /// else costs one message fetch.
     func composeContext(for request: ComposeRequest) async -> ComposeContext? {
+        // Reopening a stored draft: everything the composer needs — recipients,
+        // body, attachments and the version stamp — is already in the cache.
+        if request.kind == .draft {
+            guard let draftID = request.draftID else { return nil }
+            let stored: Draft?
+            do {
+                stored = try await store.draft(id: draftID, accountID: accountID)
+            } catch {
+                logger.error("Draft load for compose failed: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+            guard let stored else {
+                // Deleted (or sent) between the double-click and here.
+                actionError = "That draft is no longer available."
+                return nil
+            }
+            let mailboxID = stored.content.mailboxID
+            return ComposeContext(
+                id: request.id,
+                kind: .draft,
+                mailboxID: mailboxID,
+                fromAddress: stored.content.from.isEmpty ? sendAddress(forMailbox: mailboxID) : stored.content.from,
+                ownAddresses: ownAddresses,
+                storedDraft: stored
+            )
+        }
+
         var message: MessageDetail?
         if request.kind != .new, let messageID = request.messageID {
             if detail?.id == messageID {

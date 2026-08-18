@@ -18,6 +18,9 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
     let ownAddresses: [String]
     /// The message being replied to or forwarded (`nil` for a new message).
     let message: MessageDetail?
+    /// The stored draft being reopened (`.draft` only). Resolved from the CACHE,
+    /// so opening a draft from the folder costs no round trip.
+    let storedDraft: Draft?
 
     init(
         id: UUID = UUID(),
@@ -25,7 +28,8 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
         mailboxID: String? = nil,
         fromAddress: String = "",
         ownAddresses: [String] = [],
-        message: MessageDetail? = nil
+        message: MessageDetail? = nil,
+        storedDraft: Draft? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -33,11 +37,15 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
         self.fromAddress = fromAddress
         self.ownAddresses = ownAddresses
         self.message = message
+        self.storedDraft = storedDraft
     }
 
     /// The draft this context opens with.
     func makeDraft() -> ComposeDraft {
         switch kind {
+        case .draft:
+            guard let storedDraft else { break }
+            return ComposePrefill.draft(storedDraft)
         case .reply, .replyAll:
             guard let message else { break }
             return ComposePrefill.reply(

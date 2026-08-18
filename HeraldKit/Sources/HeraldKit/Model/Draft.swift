@@ -82,3 +82,52 @@ public nonisolated struct Draft: Sendable, Hashable, Codable, Identifiable {
         return input
     }
 }
+
+/// One row of the Drafts folder, as the list renders it.
+///
+/// The list never sees a `@Model` and never needs the body: this is the whole
+/// contract between ``MailStore`` and the drafts list. Opening a draft asks the
+/// store for the full ``Draft`` separately, so the row stays cheap.
+public nonisolated struct DraftSummary: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let mailboxID: String?
+    /// `to`, in the order the user typed them. The row shows these, or a
+    /// placeholder when the draft has no recipients yet.
+    public let recipients: [String]
+    public let subject: String
+    /// First line or so of the body, whitespace-collapsed — the row's preview.
+    public let snippet: String
+    public let updatedAt: Date
+    public let hasAttachments: Bool
+
+    public init(
+        id: String,
+        mailboxID: String?,
+        recipients: [String],
+        subject: String,
+        snippet: String,
+        updatedAt: Date,
+        hasAttachments: Bool
+    ) {
+        self.id = id
+        self.mailboxID = mailboxID
+        self.recipients = recipients
+        self.subject = subject
+        self.snippet = snippet
+        self.updatedAt = updatedAt
+        self.hasAttachments = hasAttachments
+    }
+
+    /// How many characters of the body a row preview keeps. Long enough for two
+    /// rendered lines, short enough that a 100 KB draft body never reaches a view.
+    static let snippetLength = 200
+
+    /// Collapses the body's whitespace into a single-line preview. Done at map
+    /// time, inside the store actor, so a big body is never handed to the main
+    /// actor just to be truncated there.
+    public nonisolated static func snippet(from body: String) -> String {
+        let collapsed = body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard collapsed.count > snippetLength else { return collapsed }
+        return String(collapsed.prefix(snippetLength)) + "…"
+    }
+}

@@ -215,6 +215,11 @@ final class MailViewModel {
     /// in flight. Guards against restarting an identical pass on every sync tick.
     @ObservationIgnored private var loadingBodyIndexIDs: Set<String>?
 
+    /// Set when a re-index was asked for while a pass over the SAME ids was still
+    /// in flight — i.e. the rows are unchanged but a body behind one of them was
+    /// just cached. Consumed by that pass as it finishes.
+    @ObservationIgnored private var bodyIndexNeedsRerun = false
+
     /// What the SERVER half of search is doing. The local half is always
     /// instant; this is the only part with a state worth showing.
     enum ServerSearchState: Equatable {
@@ -453,6 +458,7 @@ final class MailViewModel {
         guard !ids.isEmpty else {
             bodyIndexTask?.cancel()
             loadingBodyIndexIDs = nil
+            bodyIndexNeedsRerun = false
             guard !bodySearchIndex.isEmpty else { return }
             bodySearchIndex = [:]
             // The rows that matched on body text are gone with the index.
@@ -464,29 +470,54 @@ final class MailViewModel {
         // already loading EXACTLY these ids means each store round trip is
         // cancelled before it lands and the body index never populates at all —
         // body search would silently degrade to headers-only, with no signal.
-        guard loadingBodyIndexIDs != wanted else { return }
+        //
+        // But the SAME rows can have different bodies behind them: the reading
+        // pane caches a body as a side effect of opening a message, and that
+        // write lands mid-pass. Dropping the request outright made that body
+        // unsearchable until the row set itself changed. Coalesced into ONE
+        // re-run after the in-flight pass lands instead — which restarts nothing
+        // and still bounds a burst to a single extra pass.
+        guard loadingBodyIndexIDs != wanted else {
+            bodyIndexNeedsRerun = true
+            return
+        }
         bodyIndexTask?.cancel()
         loadingBodyIndexIDs = wanted
+        // This pass reads the store fresh, so it already answers any request that
+        // was coalesced onto the pass it supersedes.
+        bodyIndexNeedsRerun = false
         let store = self.store
         let accountID = self.accountID
         bodyIndexTask = Task { [weak self] in
-            defer { if self?.loadingBodyIndexIDs == wanted { self?.loadingBodyIndexIDs = nil } }
             let texts = (try? await store.cachedBodyTexts(
                 messageIDs: ids, accountID: accountID, maxLength: Self.bodySearchPrefixLength
             )) ?? [:]
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return self?.releaseBodyIndexPass(wanted) ?? () }
             // Lowercasing up to a hundred 4 KB bodies is real work and the main
             // actor is drawing the list it belongs to.
             let lowered = await Task.detached(priority: .utility) { @Sendable in
                 texts.mapValues { $0.lowercased() }
             }.value
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
+            // Released BEFORE the re-run check, or the coalesced request would be
+            // deduped against the very pass that is finishing.
+            self.releaseBodyIndexPass(wanted)
+            guard !Task.isCancelled else { return }
             // The rows may have moved on while this was in flight; keeping only
             // the ids still on screen is what stops the index growing without
             // bound across folder switches.
             self.bodySearchIndex = lowered.filter { wanted.contains($0.key) }
             if !self.searchQuery.isEmpty { self.refilter() }
+            guard self.bodyIndexNeedsRerun else { return }
+            self.bodyIndexNeedsRerun = false
+            self.refreshBodySearchIndex()
         }
+    }
+
+    /// Drops this pass's dedupe marker, if it still owns it.
+    private func releaseBodyIndexPass(_ wanted: Set<String>) {
+        guard loadingBodyIndexIDs == wanted else { return }
+        loadingBodyIndexIDs = nil
     }
 
     // MARK: - Search: the server tier
@@ -506,7 +537,10 @@ final class MailViewModel {
 
     /// Exposed so tests can await (and assert the cancellation of) the pass.
     @ObservationIgnored private(set) var serverSearchTask: Task<Void, Never>?
-    @ObservationIgnored private var bodyIndexTask: Task<Void, Never>?
+    /// Exposed for the same reason as ``serverSearchTask``: the body index is
+    /// loaded on an unstructured task, and a test that asserts on it without
+    /// awaiting it is asserting on a race.
+    @ObservationIgnored private(set) var bodyIndexTask: Task<Void, Never>?
 
     /// The Return key in the search field: search the server for what is on
     /// screen now, whether or not the local pass found anything.
@@ -908,6 +942,11 @@ final class MailViewModel {
     /// A thread that is genuinely gone leaves the UI on the inbox rather than
     /// selecting nothing in a mystery scope.
     func revealConversation(threadID: String) async {
+        // The Drafts folder occupies the SAME middle column as the conversation
+        // list, so a banner clicked while it is open would select the thread
+        // behind a drafts list that never went away — the reading pane would
+        // change and nothing else would, with the sidebar still on Drafts.
+        showDrafts(false)
         searchQuery = ""
         let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
         if selection != inbox {

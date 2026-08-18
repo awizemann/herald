@@ -44,6 +44,18 @@ struct SearchTests {
         func settle() async {
             await model.serverSearchTask?.value
         }
+
+        /// Waits for the body index to be loaded and settled.
+        ///
+        /// Awaited TWICE on purpose: a pass that finishes with a coalesced
+        /// request pending starts exactly one successor (see
+        /// `refreshBodySearchIndex`), and the second await lands on that one.
+        /// Asserting on the index without this is asserting on a race — it is
+        /// what made this suite fail roughly one full-suite run in two.
+        func settleBodyIndex() async {
+            await model.bodyIndexTask?.value
+            await model.bodyIndexTask?.value
+        }
     }
 
     private static func remoteRow(_ id: String, subject: String) -> ConversationSummary {
@@ -71,6 +83,14 @@ struct SearchTests {
     /// Fails if the body sidecar is left out of the index: a mail whose only
     /// occurrence of the needle is in the body the user already read is exactly
     /// the mail they are trying to find again.
+    ///
+    /// ALSO fails if a re-index over an unchanged row set is dropped instead of
+    /// coalesced. The body is cached here AFTER the harness's first index pass
+    /// has been dispatched — exactly what the reading pane does — and the reload
+    /// that follows asks for the same ids. Whenever that first pass is still in
+    /// flight, dedupe-and-drop leaves its stale, body-less answer as the index
+    /// and "platypus" matches nothing. That is what made this suite fail about
+    /// one full-suite run in two; the coalesced re-run is what fixes it.
     @Test("A cached body is searchable, an uncached one is not")
     func localIndexCoversCachedBodies() async throws {
         let harness = try await Harness.make([
@@ -82,6 +102,7 @@ struct SearchTests {
         )
         // The index is loaded off the store, so it lands on the reload.
         await harness.model.reloadConversations()
+        await harness.settleBodyIndex()
 
         harness.model.searchQuery = "platypus"
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])

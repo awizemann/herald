@@ -1,4 +1,6 @@
 import HeraldKit
+// `.quickLookPreview` is a QuickLook-provided SwiftUI modifier, not a SwiftUI one.
+import QuickLook
 import SwiftUI
 
 /// Detail pane: the ONE selected message, full height.
@@ -139,23 +141,67 @@ private struct AttachmentBar: View {
     @Bindable var model: MailViewModel
     let attachments: [Attachment]
 
+    /// The file Quick Look is showing. Set on the way in, cleared by the panel.
+    @State private var previewURL: URL?
+    /// Attachments whose download Quick Look is waiting on, so each chip can say
+    /// so instead of looking like a click that did nothing.
+    @State private var loadingIDs: Set<String> = []
+
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: MailTheme.Spacing.sm) {
                 ForEach(attachments) { attachment in
-                    AttachmentChip(filename: attachment.filename, sizeBytes: attachment.sizeBytes) {
-                        Button {
-                            Task { await model.saveAttachment(attachment) }
-                        } label: {
-                            Image(systemName: "square.and.arrow.down")
-                                .iconButtonStyle("Save \(attachment.filename)…")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    chip(for: attachment)
                 }
             }
             .padding(.horizontal, MailTheme.Spacing.md)
             .padding(.vertical, MailTheme.Spacing.sm)
+        }
+        .quickLookPreview($previewURL)
+    }
+
+    private func chip(for attachment: Attachment) -> some View {
+        AttachmentChip(
+            filename: attachment.filename,
+            sizeBytes: attachment.sizeBytes,
+            isInFlight: loadingIDs.contains(attachment.id)
+        ) {
+            HStack(spacing: MailTheme.Spacing.xxs) {
+                Button { preview(attachment) } label: {
+                    Image(systemName: "eye")
+                        .iconButtonStyle("Quick Look \(attachment.filename)")
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Task { await model.saveAttachment(attachment) }
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                        .iconButtonStyle("Save \(attachment.filename)…")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        // Dragging the chip drags the FILE: the provider downloads only when the
+        // drop target actually asks for the bytes, so a stray drag costs nothing.
+        .onDrag { AttachmentDrag.itemProvider(for: attachment, api: model.api) }
+    }
+
+    /// Downloads (once) and hands the file to Quick Look.
+    private func preview(_ attachment: Attachment) {
+        guard loadingIDs.insert(attachment.id).inserted else { return }
+        Task {
+            defer { loadingIDs.remove(attachment.id) }
+            do {
+                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api)
+                // The user may have moved to another message while this
+                // downloaded; opening Quick Look on the previous message's file
+                // would be a panel they never asked for.
+                guard attachments.contains(where: { $0.id == attachment.id }) else { return }
+                previewURL = url
+            } catch {
+                model.actionError = error.localizedDescription
+            }
         }
     }
 }

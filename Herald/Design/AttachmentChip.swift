@@ -13,7 +13,7 @@ struct AttachmentChip<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Image(systemName: "doc").accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 Text(filename)
@@ -27,9 +27,9 @@ struct AttachmentChip<Trailing: View>: View {
             }
             trailing
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(MailTheme.chipBackground, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, MailTheme.Spacing.sm)
+        .padding(.vertical, MailTheme.Spacing.xs)
+        .background(MailTheme.chipBackground, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
         // One element per attachment: VoiceOver reads "invoice.pdf, 88 KB" and
         // then offers the button, instead of three unrelated stops.
         .accessibilityElement(children: .contain)

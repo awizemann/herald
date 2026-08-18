@@ -76,7 +76,7 @@ struct ComposeView: View {
             TextEditor(text: $model.bodyText)
                 .font(.body)
                 .scrollContentBackground(.hidden)
-                .padding(8)
+                .padding(MailTheme.Spacing.sm)
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
             if !model.attachments.isEmpty { attachmentBar }
@@ -117,7 +117,7 @@ struct ComposeView: View {
     // MARK: Pieces
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Button { Task { await model.send() } } label: {
                 Label("Send", systemImage: "paperplane.fill")
             }
@@ -144,8 +144,8 @@ struct ComposeView: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
     }
 
     private var fields: some View {
@@ -171,7 +171,7 @@ struct ComposeView: View {
     ) -> some View {
         let hint = model.hint(for: field)
         return LabeledField(label: label) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                 TextField(label, text: text)
                     .textFieldStyle(.plain)
                     .accessibilityLabel(label)
@@ -191,7 +191,7 @@ struct ComposeView: View {
 
     private var attachmentBar: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            HStack(spacing: MailTheme.Spacing.sm) {
                 ForEach(model.attachments) { attachment in
                     AttachmentChip(filename: attachment.filename) {
                         Button { Task { await model.removeAttachment(attachment) } } label: {
@@ -202,20 +202,20 @@ struct ComposeView: View {
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, MailTheme.Spacing.md)
+            .padding(.vertical, MailTheme.Spacing.sm)
         }
         .accessibilityLabel("Attachments")
     }
 
     private func errorBar(_ message: String) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MailTheme.failure)
             Text(message).font(.callout)
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
         .background(.bar)
         .accessibilityElement(children: .combine)
     }
@@ -236,14 +236,14 @@ private struct LabeledField<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.sm) {
             Text(label)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(width: 56, alignment: .trailing)
             content
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
     }
 }

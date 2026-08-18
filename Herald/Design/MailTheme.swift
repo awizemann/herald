@@ -131,7 +131,71 @@ enum MailTheme {
     /// and back on every poll.
     static let statusSlotHeight: CGFloat = 16
 
+    /// Diameter of the unread dot. ONE value for both the conversation row and the
+    /// reading-pane message header — they drew 8pt and 7pt for the same indicator
+    /// before, a drift no one chose. The rounder 8pt wins; both sites adopt it.
+    static let unreadDotDiameter: CGFloat = 8
+
     static let minWindow = CGSize(width: 900, height: 560)
+
+    // MARK: Spacing scale
+
+    /// The 4pt spacing grid every stack `spacing:` and `.padding` reads from, so
+    /// the whole app breathes on one rhythm instead of each call site guessing.
+    /// Off-grid literals from before the grid are AUTO-SNAPPED to the nearest step
+    /// (ties round up); `spacing: 0` stays a bare literal because it is structural,
+    /// not rhythm. `xxs` is the lone half-step, kept only because 1–2pt insets exist.
+    enum Spacing {
+        /// 2pt — the half-step. Tight vertical insets and hairline stack gaps.
+        static let xxs: CGFloat = 2
+        /// 4pt — the base grid unit. Snug pairs (dot inset, chip vertical padding).
+        static let xs: CGFloat = 4
+        /// 8pt — the workhorse. Icon-to-label gaps and standard row padding.
+        static let sm: CGFloat = 8
+        /// 12pt — section padding and the horizontal gutter of most bars.
+        static let md: CGFloat = 12
+        /// 16pt — pane edges and the onboarding column's breathing room.
+        static let lg: CGFloat = 16
+        /// 20pt — reserved next step; no literal needs it yet.
+        static let xl: CGFloat = 20
+        /// 24pt — reserved next step; no literal needs it yet.
+        static let xxl: CGFloat = 24
+        /// 32pt — the largest inset (the onboarding card's outer padding).
+        static let xxxl: CGFloat = 32
+    }
+
+    // MARK: Radius scale
+
+    /// Corner radii for the app's rounded fills. Radii are NOT held to the spacing
+    /// grid — a 6pt corner reads right on a small chip where an 8pt one would look
+    /// soft — so this is its own short scale.
+    enum Radius {
+        /// 6pt — chips (attachment, message count) and other small pill fills.
+        static let sm: CGFloat = 6
+    }
+
+    // MARK: Typography
+
+    /// The two hero glyphs — the onboarding mark and the empty-root mark — are the
+    /// only places that reach past Apple's semantic text styles for a display-size
+    /// SF Symbol. Named here so weight and size travel together; everything else
+    /// stays on `.headline`/`.caption`/`.body` and needs no token.
+    enum Typography {
+        /// 44pt light — the onboarding welcome glyph.
+        static let heroGlyph = Font.system(size: 44, weight: .light)
+        /// 40pt light — the empty-state glyph on the root pane.
+        static let largeGlyph = Font.system(size: 40, weight: .light)
+    }
+
+    // MARK: Animation
+
+    /// Motion tokens. The token is ONLY the `Animation` value — the reduce-motion
+    /// gate stays at the call site (`reduceMotion ? nil : MailTheme.Animation.quick`)
+    /// so each view keeps deciding whether it animates at all.
+    enum Animation {
+        /// The show/hide of the thread pane and its kin: a short, symmetric ease.
+        static let quick = SwiftUI.Animation.easeInOut(duration: 0.18)
+    }
 }
 
 extension View {

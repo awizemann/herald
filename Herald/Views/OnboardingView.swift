@@ -12,9 +12,9 @@ struct OnboardingView: View {
     private var origin: URL? { AppEnvironment.normalizedOrigin(from: originText) }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: MailTheme.Spacing.lg) {
             Image(systemName: "envelope.badge.shield.half.filled")
-                .font(.system(size: 44, weight: .light))
+                .font(MailTheme.Typography.heroGlyph)
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             Text("Connect to HQBase")
@@ -57,7 +57,7 @@ struct OnboardingView: View {
                 .disabled(origin == nil || environment.isSigningIn)
             }
         }
-        .padding(32)
+        .padding(MailTheme.Spacing.xxxl)
         .frame(minWidth: 460, minHeight: 340)
         .onAppear { originFocused = true }
     }

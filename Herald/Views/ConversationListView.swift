@@ -23,7 +23,7 @@ struct MiddleColumnView: View {
             }
         }
         // A cross-fade, and none at all when the user asked for less motion.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.isShowingThread)
+        .animation(reduceMotion ? nil : MailTheme.Animation.quick, value: model.isShowingThread)
     }
 }
 
@@ -171,7 +171,7 @@ struct ThreadMessageListView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Button { model.exitThread() } label: {
                 Image(systemName: "chevron.left")
                     .iconButtonStyle("Back to \(folderTitle)")
@@ -190,8 +190,8 @@ struct ThreadMessageListView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.trailing, 12)
-        .padding(.vertical, 4)
+        .padding(.trailing, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.xs)
     }
 
     private var subject: String {
@@ -217,18 +217,18 @@ struct ThreadMessageRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
             // Unread is bold text AND a dot: never color alone.
             Circle()
                 .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
+                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+                .padding(.top, MailTheme.Spacing.xs)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                 // Same rule as a conversation row: mailbox leads and holds its
                 // width, sender gives way first, date keeps its own slot.
-                HStack(spacing: 6) {
+                HStack(spacing: MailTheme.Spacing.sm) {
                     if let mailboxName {
                         MailboxChip(name: mailboxName, tint: mailboxTint)
                             .layoutPriority(2)
@@ -265,7 +265,7 @@ struct ThreadMessageRow: View {
         }
         .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, 2)
+        .padding(.vertical, MailTheme.Spacing.xxs)
         .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
     }
 
@@ -305,8 +305,8 @@ struct MailboxChip: View {
             .fontWeight(.medium)
             .foregroundStyle(tint?.color ?? MailTheme.attributionForeground)
             .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
+            .padding(.horizontal, MailTheme.Spacing.xs)
+            .padding(.vertical, MailTheme.Spacing.xxs)
             .background(background, in: Capsule())
             .accessibilityHidden(true)
     }
@@ -354,16 +354,16 @@ struct ConversationRow: View {
     let openThread: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
             // Unread is bold text AND a dot: never color alone.
             Circle()
                 .fill(row.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
+                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+                .padding(.top, MailTheme.Spacing.xs)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                HStack(spacing: MailTheme.Spacing.sm) {
                     // Mailbox first and with the higher layout priority: it is
                     // WHICH INBOX this landed in, which the owner reads before the
                     // sender. It never truncates before the sender does.
@@ -382,7 +382,7 @@ struct ConversationRow: View {
                     .font(.body)
                     .fontWeight(row.isUnread ? .semibold : .regular)
                     .lineLimit(1)
-                HStack(spacing: 4) {
+                HStack(spacing: MailTheme.Spacing.xs) {
                     if row.latest.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(.caption)
@@ -414,13 +414,13 @@ struct ConversationRow: View {
                 // Line 2: [count][chevron] — the count sits LEFT of the arrow, and
                 // a single-message row keeps an equal-sized blank so every row's
                 // text column has the same width.
-                HStack(spacing: 2) {
+                HStack(spacing: MailTheme.Spacing.xxs) {
                     if row.messageCount > 1 {
                         Text("\(row.messageCount)")
                             .font(.caption2)
                             .monospacedDigit()
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
+                            .padding(.horizontal, MailTheme.Spacing.xs)
+                            .padding(.vertical, MailTheme.Spacing.xxs)
                             .background(MailTheme.chipBackground, in: Capsule())
                             .accessibilityHidden(true) // spoken in the row summary
                     }
@@ -454,7 +454,7 @@ struct ConversationRow: View {
         // Stable minimum height + no vertical compression: see MailTheme.rowMinHeight.
         .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, 2)
+        .padding(.vertical, MailTheme.Spacing.xxs)
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)

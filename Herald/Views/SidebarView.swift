@@ -88,8 +88,8 @@ struct SidebarView: View {
         // Voice Control nothing to say.
         .help("Choose which mailbox the folder list shows")
         .accessibilityLabel("Mailbox")
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.bottom, MailTheme.Spacing.sm)
     }
 
     private func restorePickedMailbox() {
@@ -110,7 +110,7 @@ struct SidebarView: View {
     // MARK: Header
 
     private var accountHeader: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Image(systemName: "person.crop.circle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
@@ -138,8 +138,8 @@ struct SidebarView: View {
             .help("Account options")
             .accessibilityLabel("Account options")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityElement(children: .contain)
     }
 }
@@ -154,7 +154,7 @@ struct SyncStatusLabel: View {
     let lastSyncedAt: Date?
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: MailTheme.Spacing.xs) {
             if status == .syncing {
                 ProgressView()
                     .controlSize(.mini)

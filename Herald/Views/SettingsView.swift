@@ -48,8 +48,8 @@ private struct MailboxColorRow: View {
         // right. An explicit HStack rather than LabeledContent — in a grouped Form
         // LabeledContent stacks its label over its content once the row is tight,
         // which is exactly the wrap the owner asked to remove.
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                 Text(name)
                 Text(mailbox.address)
                     .font(.caption)
@@ -58,7 +58,7 @@ private struct MailboxColorRow: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 8) {
+            HStack(spacing: MailTheme.Spacing.sm) {
                 Picker("Color", selection: selectedToken) {
                     ForEach(MailTheme.mailboxPalette) { tint in
                         // The swatch is decorative; the row's name is what
@@ -82,7 +82,7 @@ private struct MailboxColorRow: View {
             }
             .fixedSize()
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, MailTheme.Spacing.xxs)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(name), \(mailbox.address)")
     }

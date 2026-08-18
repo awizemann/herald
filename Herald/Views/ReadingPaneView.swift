@@ -64,8 +64,8 @@ private struct ThreadHeader: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, MailTheme.Spacing.lg)
+        .padding(.vertical, MailTheme.Spacing.md)
     }
 }
 
@@ -78,14 +78,14 @@ private struct SelectedMessageHeader: View {
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
             // Unread is a dot AND the bold weight below: never colour alone.
             Circle()
                 .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: 7, height: 7)
-                .padding(.top, 5)
+                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+                .padding(.top, MailTheme.Spacing.xs)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                 Text(message.fromAddress)
                     .font(.subheadline)
                     .fontWeight(message.isUnread ? .bold : .semibold)
@@ -99,8 +99,8 @@ private struct SelectedMessageHeader: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, MailTheme.Spacing.lg)
+        .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityElement(children: .combine)
         .accessibilityValue(message.isUnread ? "Unread" : "")
     }
@@ -141,7 +141,7 @@ private struct AttachmentBar: View {
 
     var body: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            HStack(spacing: MailTheme.Spacing.sm) {
                 ForEach(attachments) { attachment in
                     AttachmentChip(filename: attachment.filename, sizeBytes: attachment.sizeBytes) {
                         Button {
@@ -154,8 +154,8 @@ private struct AttachmentBar: View {
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, MailTheme.Spacing.md)
+            .padding(.vertical, MailTheme.Spacing.sm)
         }
     }
 }

@@ -37,9 +37,9 @@ struct LaunchPlaceholder: View {
     let milestone: String
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: MailTheme.Spacing.md) {
             Image(systemName: "envelope")
-                .font(.system(size: 40, weight: .light))
+                .font(MailTheme.Typography.largeGlyph)
                 .foregroundStyle(.secondary)
             ProgressView()
                 .controlSize(.small)
@@ -185,14 +185,14 @@ struct BannerView<Actions: View>: View {
     @ViewBuilder var actions: Actions
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: MailTheme.Spacing.sm) {
             Image(systemName: systemImage).foregroundStyle(tint)
             Text(text).font(.callout)
             Spacer()
             actions
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)

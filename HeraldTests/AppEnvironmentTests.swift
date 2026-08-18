@@ -9,38 +9,164 @@ import Testing
         Account(origin: URL(string: "https://\(host)")!, clientID: "cid", scopes: [])
     }
 
-    /// Adding an account (or re-authenticating) built a new object graph on top of
-    /// the old one: the previous `SyncEngine` kept polling the previous server
-    /// forever and the previous `MailViewModel` kept consuming its events. Fails
-    /// if the superseded engine still answers a refresh — the leak is invisible
-    /// otherwise, because the new graph works fine either way.
-    @Test func activatingASecondAccountStopsTheFirstGraph() async throws {
-        let environment = AppEnvironment()
+    /// Re-authenticating rebuilds the SAME account's graph, and the old code
+    /// built the new one on top of the old: the previous `SyncEngine` kept
+    /// polling forever and the previous `MailViewModel` kept consuming its
+    /// events. Fails if the superseded engine still answers a refresh — the leak
+    /// is invisible otherwise, because the new graph works fine either way.
+    @Test func reinstallingTheSameAccountStopsTheSupersededGraph() async throws {
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
         let store = try MailStore.inMemory()
+        let account = Self.account("a.example.com")
         let first = FakeMailAPIClient()
         let second = FakeMailAPIClient()
 
-        await environment.install(account: Self.account("a.example.com"), api: first, store: store)
+        await environment.install(account: account, api: first, store: store)
         let superseded = try #require(environment.mail)
-        try await wait("the first account to poll once") { await first.mailboxRequestCount >= 1 }
+        try await wait("the first client to poll once") { await first.mailboxRequestCount >= 1 }
 
-        await environment.install(account: Self.account("b.example.com"), api: second, store: store)
+        await environment.install(account: account, api: second, store: store)
         let leakedBaseline = await first.mailboxRequestCount
 
-        // The superseded view-model still holds the superseded engine. Asking it to
-        // refresh must do nothing, because that engine was stopped.
+        // The superseded view-model still holds the superseded engine. Asking it
+        // to refresh must do nothing, because that engine was stopped.
         await superseded.refresh()
 
-        // Positive control on the live graph: it DOES poll again, which also gives
-        // the superseded engine the same window in which to misbehave.
+        // Positive control on the live graph: it DOES poll again, which also
+        // gives the superseded engine the same window in which to misbehave.
         let liveBaseline = await second.mailboxRequestCount
         await environment.mail?.refresh()
-        try await wait("the live account to poll again") { await second.mailboxRequestCount > liveBaseline }
+        try await wait("the live graph to poll again") { await second.mailboxRequestCount > liveBaseline }
 
         #expect(
             await first.mailboxRequestCount == leakedBaseline,
-            "The previous SyncEngine kept polling the previous server"
+            "The superseded SyncEngine kept polling"
         )
+        #expect(environment.graphs.count == 1, "Re-auth must not leave two graphs for one account")
+        #expect(environment.accountIDs == [account.id], "Re-auth must not duplicate the switcher entry")
+    }
+
+    /// The whole point of P1: adding a second account used to tear the first
+    /// one's graph down, so the account you were not looking at stopped syncing
+    /// and its unread counts froze. Fails if the first account's engine no
+    /// longer answers a refresh once a second account is installed.
+    @Test func addingASecondAccountKeepsTheFirstEngineSyncing() async throws {
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
+        let store = try MailStore.inMemory()
+        let firstAPI = FakeMailAPIClient()
+        let secondAPI = FakeMailAPIClient()
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+
+        await environment.install(account: a, api: firstAPI, store: store)
+        let backgrounded = try #require(environment.mail)
+        try await wait("account A to poll once") { await firstAPI.mailboxRequestCount >= 1 }
+
+        await environment.install(account: b, api: secondAPI, store: store)
+        #expect(environment.selectedAccountID == b.id, "Adding an account should show it")
+        #expect(environment.accounts.map(\.id) == [a.id, b.id], "Both accounts belong in the switcher")
+        #expect(environment.mail?.accountID == b.id)
+
+        let baseline = await firstAPI.mailboxRequestCount
+        await backgrounded.refresh()
+        try await wait("the unselected account A to keep polling") {
+            await firstAPI.mailboxRequestCount > baseline
+        }
+    }
+
+    /// Sign-out was "sign out of everything": it dropped the whole graph and
+    /// purged the cache. Fails if signing one account out stops the other's
+    /// engine, drops it from the switcher, or purges its cached rows.
+    @Test func signingOutOneAccountLeavesTheOtherRunning() async throws {
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+        let accountStore = InMemoryAccountStore(accounts: [a, b])
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: accountStore),
+            defaults: Self.scratchDefaults()
+        )
+        let store = try MailStore.inMemory()
+        let apiA = FakeMailAPIClient()
+        let apiB = FakeMailAPIClient()
+
+        _ = try await store.upsertConversations(
+            [MailFixtures.conversation(MailFixtures.message(id: "m-a"))],
+            accountID: a.id, mailboxID: nil, folder: .inbox
+        )
+        _ = try await store.upsertConversations(
+            [MailFixtures.conversation(MailFixtures.message(id: "m-b"))],
+            accountID: b.id, mailboxID: nil, folder: .inbox
+        )
+
+        await environment.install(account: a, api: apiA, store: store)
+        await environment.install(account: b, api: apiB, store: store)
+        let survivor = try #require(environment.graphs[a.id]?.mail)
+
+        await environment.signOut(accountID: b.id)
+
+        #expect(environment.graphs[b.id] == nil)
+        #expect(environment.accountIDs == [a.id], "The signed-out account must leave the switcher")
+        #expect(environment.selectedAccountID == a.id, "The window must fall back to what is left")
+        #expect(environment.phase == .ready, "One account left is not signed out")
+        let remaining = try accountStore.accounts().map(\.id)
+        #expect(remaining == [a.id])
+
+        // Scoped purge: B's rows are gone, A's — in the same container — are not.
+        let purged = try await store.unreadCount(accountID: b.id, mailboxID: nil, folder: .inbox)
+        let kept = try await store.unreadCount(accountID: a.id, mailboxID: nil, folder: .inbox)
+        #expect(purged == 0)
+        #expect(kept == 1)
+
+        // And A's engine is still alive: it answers a refresh.
+        let baseline = await apiA.mailboxRequestCount
+        await survivor.refresh()
+        try await wait("the surviving account to keep polling") {
+            await apiA.mailboxRequestCount > baseline
+        }
+    }
+
+    /// Signing the LAST account out is still a full sign-out.
+    @Test func signingOutTheLastAccountReturnsToOnboarding() async throws {
+        let a = Self.account("a.example.com")
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [a])),
+            defaults: Self.scratchDefaults()
+        )
+        await environment.install(account: a, api: FakeMailAPIClient(), store: try MailStore.inMemory())
+
+        await environment.signOut(accountID: a.id)
+
+        #expect(environment.phase == .signedOut)
+        #expect(environment.selectedAccountID == nil)
+        #expect(environment.mail == nil)
+    }
+
+    /// A compose window opened from account A must keep sending through A even
+    /// after the user switches the window to B — otherwise the reply lands on
+    /// whichever server happened to be selected when Send was pressed. Fails if
+    /// the composer is resolved against the CURRENT selection.
+    @Test func composeStaysBoundToTheAccountItWasOpenedFrom() async throws {
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
+        let store = try MailStore.inMemory()
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+        await environment.install(account: a, api: FakeMailAPIClient(), store: store)
+
+        let id = try #require(await environment.prepareCompose(ComposeRequest(kind: .new)))
+        #expect(environment.composeAccountID(for: id) == a.id)
+
+        await environment.install(account: b, api: FakeMailAPIClient(), store: store)
+        #expect(environment.selectedAccountID == b.id)
+
+        let model = try #require(environment.makeComposeViewModel(id: id))
+        model.bodyText = "Half-written"
+        #expect(environment.composeAccountID(for: id) == a.id, "The composer followed the selection")
+        #expect(environment.makeComposeViewModel(id: id) === model)
+
+        // Signing A out takes A's composer with it: its OutboxService is gone.
+        await environment.signOut(accountID: a.id)
+        #expect(environment.composeAccountID(for: id) == nil)
+        #expect(environment.makeComposeViewModel(id: id) == nil)
     }
 
     /// The compose window's `.task(id:)` re-runs whenever SwiftUI rebuilds the
@@ -50,7 +176,7 @@ import Testing
     /// stops resolving to the same composer, or if a closed composer is
     /// resurrected instead of released.
     @Test func theSameComposeRequestAlwaysResolvesToTheSameViewModel() async throws {
-        let environment = AppEnvironment()
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
         let store = try MailStore.inMemory()
         await environment.install(
             account: Self.account("a.example.com"),
@@ -75,5 +201,94 @@ import Testing
         first.close()
         environment.releaseComposeViewModel(id: id)
         #expect(environment.makeComposeViewModel(id: id) == nil)
+    }
+
+    /// The window must reopen on the account the user was last reading, not on
+    /// whichever one the account list happens to yield first. Fails if the pick
+    /// is not persisted, or is persisted under a key another instance cannot
+    /// read back.
+    @Test func theSelectedAccountIsPersisted() async throws {
+        let defaults = Self.scratchDefaults()
+        let environment = AppEnvironment(defaults: defaults)
+        let store = try MailStore.inMemory()
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+
+        await environment.install(account: a, api: FakeMailAPIClient(), store: store)
+        await environment.install(account: b, api: FakeMailAPIClient(), store: store)
+        environment.selectedAccountID = a.id
+
+        #expect(defaults.string(forKey: AppEnvironment.selectedAccountKey) == a.id)
+
+        // Signing the last account out must not leave a dangling pick behind for
+        // the next launch to restore.
+        environment.selectedAccountID = nil
+        #expect(defaults.string(forKey: AppEnvironment.selectedAccountKey) == nil)
+    }
+
+    /// The badge value future work will read. Fails if it reports only the
+    /// selected account — which is what a naive `mail?.unread` would do.
+    @Test func aggregateUnreadCountsEveryAccount() async throws {
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
+        let store = try MailStore.inMemory()
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+
+        _ = try await store.upsertConversations(
+            [MailFixtures.conversation(MailFixtures.message(id: "m-a1")),
+             MailFixtures.conversation(MailFixtures.message(id: "m-a2"))],
+            accountID: a.id, mailboxID: nil, folder: .inbox
+        )
+        _ = try await store.upsertConversations(
+            [MailFixtures.conversation(MailFixtures.message(id: "m-b1"))],
+            accountID: b.id, mailboxID: nil, folder: .inbox
+        )
+
+        await environment.install(account: a, api: FakeMailAPIClient(), store: store)
+        await environment.install(account: b, api: FakeMailAPIClient(), store: store)
+
+        #expect(environment.unreadCount(forAccount: a.id) == 2)
+        #expect(environment.unreadCount(forAccount: b.id) == 1)
+        #expect(environment.totalUnreadCount == 3)
+    }
+
+    /// The switcher has to tell two accounts on the same provider apart, and the
+    /// default label IS the host. Fails if the host is dropped, or duplicated
+    /// when the user never renamed the account.
+    @Test func theAccountPickerLabelNamesTheHost() {
+        let plain = Self.account("a.example.com")
+        #expect(AppEnvironment.accountPickerLabel(for: plain, unread: 0) == "a.example.com")
+        #expect(AppEnvironment.accountPickerLabel(for: plain, unread: 4) == "a.example.com (4)")
+
+        var renamed = plain
+        renamed.label = "Work"
+        #expect(AppEnvironment.accountPickerLabel(for: renamed, unread: 0) == "Work — a.example.com")
+    }
+
+    /// A relaunch brings the remaining accounts up BEHIND the window, and they
+    /// must not yank it off the account the user was reading. Fails if a
+    /// background restore selects itself — while still requiring that a live
+    /// graph is selected when the window is showing nothing.
+    @Test func aBackgroundRestoreDoesNotStealTheWindow() async throws {
+        let environment = AppEnvironment(defaults: Self.scratchDefaults())
+        let store = try MailStore.inMemory()
+        let a = Self.account("a.example.com")
+        let b = Self.account("b.example.com")
+
+        // Nothing showing yet: even an unselected install has to take the window.
+        await environment.install(account: a, api: FakeMailAPIClient(), store: store, select: false)
+        #expect(environment.selectedAccountID == a.id)
+
+        await environment.install(account: b, api: FakeMailAPIClient(), store: store, select: false)
+        #expect(environment.selectedAccountID == a.id, "A background restore stole the window")
+        #expect(environment.graphs.count == 2, "…but it still has to be running")
+    }
+
+    /// A throwaway suite, so a test never writes the developer's real pick.
+    private static func scratchDefaults() -> UserDefaults {
+        let suite = "AppEnvironmentTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
     }
 }

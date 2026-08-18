@@ -141,8 +141,12 @@ struct MailCommands: Commands {
 
         CommandGroup(replacing: .appSettings) {
             Button("Add Account…") { environment.presentsAddAccount = true }
-            Button("Sign Out") { Task { await environment.signOut() } }
-                .disabled(environment.mail == nil)
+            // Names the account: with several signed in, an unqualified "Sign
+            // Out" is ambiguous about which server it burns.
+            Button(environment.signOutMenuTitle) {
+                Task { await environment.signOut(accountID: environment.selectedAccountID) }
+            }
+            .disabled(environment.mail == nil)
         }
     }
 

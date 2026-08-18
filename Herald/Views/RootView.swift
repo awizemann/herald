@@ -83,7 +83,12 @@ struct MailWindow: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 360)
         } content: {
+            // The only view state in this window that belongs to ONE account is
+            // the list's debounced search text, so the reset is scoped to the
+            // list. Re-iding the whole split view would also throw away the
+            // user's column widths on every account switch.
             MiddleColumnView(model: model)
+                .id(model.accountID)
                 .navigationSplitViewColumnWidth(min: 280, ideal: Self.listWidth, max: 520)
         } detail: {
             ReadingPaneView(model: model)
@@ -149,7 +154,8 @@ struct MailWindow: View {
     private var statusBanner: some View {
         switch model.status {
         case .needsReauth:
-            ReauthBanner()
+            // Scoped to THIS account: another account's session is untouched.
+            ReauthBanner(accountID: model.accountID)
         case .failed(let message):
             BannerView(
                 systemImage: "exclamationmark.triangle.fill",
@@ -166,6 +172,7 @@ struct MailWindow: View {
 
 struct ReauthBanner: View {
     @Environment(AppEnvironment.self) private var environment
+    let accountID: Account.ID
 
     var body: some View {
         BannerView(
@@ -173,7 +180,7 @@ struct ReauthBanner: View {
             tint: MailTheme.failure,
             text: "Your session expired. Sign in again to keep syncing."
         ) {
-            Button("Sign In") { Task { await environment.reauthenticate() } }
+            Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
         }
     }
 }

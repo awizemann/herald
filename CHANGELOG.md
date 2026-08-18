@@ -10,6 +10,24 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-18
+
+### Added
+- Delta sync. On HQBase servers that publish the new changes feed (`GET /api/v1/changes`, shipped
+  upstream on 2026-08-18), Herald takes a checkpoint, lists each mailbox once using the new
+  paginated `GET /api/v1/messages`, and from then on applies only what changed — including
+  deletions and moves made by other clients — instead of re-listing every folder every 15
+  seconds. The sync cursor is saved after every applied page, so an interrupted sync resumes
+  where it stopped. Older servers keep the previous behaviour automatically.
+- Mailbox access changes are honoured each sync: mail from a mailbox you can no longer read is
+  removed from the local cache; a newly readable mailbox is fully listed before its changes are
+  applied.
+
+### Fixed
+- Triage actions can no longer be undone by a stale update arriving from the server while the
+  action is still being sent; the server's confirmed state is applied once it answers.
+- On servers with pagination, folders with more than 100 messages are now listed completely.
+
 ## [0.1.3] - 2026-08-17
 
 ### Fixed
@@ -74,7 +92,8 @@ with OAuth 2.1 PKCE bearer tokens.
 - Local cache for instant launch, background polling sync (15 s while active).
 - Sparkle auto-updates; Developer ID signed and notarized; sandboxed.
 
-[Unreleased]: https://github.com/awizemann/herald/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/awizemann/herald/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/awizemann/herald/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/awizemann/herald/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/awizemann/herald/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/awizemann/herald/compare/v0.1.0...v0.1.1

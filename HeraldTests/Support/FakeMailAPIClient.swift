@@ -82,7 +82,11 @@ actor FakeMailAPIClient: MailAPIClient {
         return detail
     }
 
-    func thread(messageID: String) async throws -> [MessageDetail] { [] }
+    private var threads: [String: [MessageDetail]] = [:]
+
+    func setThread(_ details: [MessageDetail], forMessage id: String) { threads[id] = details }
+
+    func thread(messageID: String) async throws -> [MessageDetail] { threads[messageID] ?? [] }
 
     func messageHTML(id: String, loadRemoteImages: Bool) async throws -> MessageHTML {
         htmlRequests.append(id)
@@ -142,13 +146,73 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func trustRemoteMedia(messageID: String) async throws { trusted.append(messageID) }
 
+    /// One `GET /conversations` as the view-model asked for it.
+    struct ConversationQuery: Sendable, Hashable {
+        var folder: ConversationFolder?
+        var mailboxID: String?
+        var search: String?
+        var cursor: String?
+    }
+
+    private(set) var conversationQueries: [ConversationQuery] = []
+    /// Pages keyed by the cursor that asks for them; `""` is the first page.
+    private var conversationPages: [String: ConversationPage] = [:]
+    private var conversationError: MailAPIError?
+
+    func setConversationPage(_ page: ConversationPage, forCursor cursor: String? = nil) {
+        conversationPages[cursor ?? ""] = page
+    }
+
+    func setConversationError(_ error: MailAPIError?) { conversationError = error }
+
+    func searches() -> [ConversationQuery] { conversationQueries.filter { $0.search != nil } }
+
+    // MARK: Gate
+
+    /// Holds every `listConversations` call until the gate is opened again — the
+    /// only way to have a search genuinely IN FLIGHT while the test changes the
+    /// query underneath it, without sleeping on a timer.
+    private var gateIsOpen = true
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func closeConversationGate() { gateIsOpen = false }
+
+    func openConversationGate() {
+        gateIsOpen = true
+        let resuming = waiters
+        waiters = []
+        for waiter in resuming { waiter.resume() }
+    }
+
+    /// Resolves once at least `count` calls are parked at the closed gate, so a
+    /// test can wait for the request to have STARTED without sleeping.
+    func waitForPendingSearch(count: Int = 1) async {
+        // Bounded: a test that mis-wires the gate should fail on its assertion,
+        // not hang the suite forever.
+        for _ in 0..<10_000 {
+            if waiters.count >= count { return }
+            await Task.yield()
+        }
+    }
+
+    private func passGate() async {
+        guard !gateIsOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
     func listConversations(
         folder: ConversationFolder?,
         mailboxID: String?,
         search: String?,
         cursor: String?
     ) async throws -> ConversationPage {
-        ConversationPage(conversations: [], nextCursor: nil, totalCount: nil)
+        conversationQueries.append(
+            ConversationQuery(folder: folder, mailboxID: mailboxID, search: search, cursor: cursor)
+        )
+        await passGate()
+        if let conversationError { throw conversationError }
+        return conversationPages[cursor ?? ""]
+            ?? ConversationPage(conversations: [], nextCursor: nil, totalCount: nil)
     }
 
     @discardableResult
@@ -190,6 +254,9 @@ nonisolated enum MailFixtures {
         mailboxID: String? = "mbA",
         folder: MailFolder = .inbox,
         subject: String = "Subject",
+        from: String = "sender@example.com",
+        to: [String] = ["team@example.com"],
+        snippet: String = "snippet",
         read: Bool = false,
         starred: Bool = false,
         hasAttachments: Bool = false,
@@ -201,10 +268,10 @@ nonisolated enum MailFixtures {
             mailboxID: mailboxID,
             direction: .inbound,
             folder: folder,
-            fromAddress: "sender@example.com",
-            to: ["team@example.com"],
+            fromAddress: from,
+            to: to,
             subject: subject,
-            snippet: "snippet",
+            snippet: snippet,
             receivedAt: date,
             sentAt: nil,
             readAt: read ? date : nil,

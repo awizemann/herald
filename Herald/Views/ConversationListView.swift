@@ -33,11 +33,18 @@ struct ConversationListView: View {
     /// Search lives here and is debounced before it reaches the view-model, so a
     /// keystroke never re-runs the list's data source (or the detail pane).
     @State private var searchText = ""
+    /// ⌘F focus. `@FocusState` cannot be reached from `Commands`, which is why
+    /// the shortcut rides on a hidden button in this view instead of the menu bar.
+    @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
         List(model.presentedConversations, selection: $model.selectedThreadID) { row in
             ConversationRow(
                 row: row,
+                // The COMMITTED query, not the field's text: the rows on screen
+                // were filtered with this one, so marking them with a needle the
+                // user is still typing would highlight what is not matched yet.
+                highlight: model.searchQuery,
                 // Only in the all-mailboxes scope: with a mailbox picked, every
                 // row would carry the same chip and say nothing.
                 mailboxName: model.selection.mailboxID == nil
@@ -82,6 +89,10 @@ struct ConversationListView: View {
             return .handled
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search mail")
+        .searchFocused($searchFieldFocused)
+        // Return in the search field searches the SERVER for what is on screen;
+        // the local pass has already run on every keystroke.
+        .onSubmit(of: .search) { model.submitSearch() }
         .task(id: searchText) {
             guard searchText != model.searchQuery else { return }
             do {
@@ -91,12 +102,36 @@ struct ConversationListView: View {
             }
             model.searchQuery = searchText
         }
+        // ⌘F, the standard macOS Find. A `Commands` item cannot write this view's
+        // `@FocusState`, so the shortcut lives on a hidden button in the window
+        // that owns the field. Hidden from accessibility: the search field is
+        // already reachable, this is only the shortcut's carrier.
+        .background {
+            Button("Find") { searchFieldFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let description = model.serverSearchDescription {
+                SearchStatusBar(description: description, state: model.serverSearchState)
+            }
+        }
         .overlay {
             if model.presentedConversations.isEmpty {
-                ContentUnavailableView(
-                    model.searchQuery.isEmpty ? "No Messages" : "No Results",
-                    systemImage: MailTheme.symbol(for: model.selection.folder)
-                )
+                ContentUnavailableView {
+                    Label(
+                        model.searchQuery.isEmpty ? "No Messages" : "No Results",
+                        systemImage: MailTheme.symbol(for: model.selection.folder)
+                    )
+                } description: {
+                    // Only worth saying while a search is running and the server
+                    // has not been asked yet — otherwise it promises a second
+                    // answer that is already on its way (or already in).
+                    if !model.searchQuery.isEmpty, model.serverSearchState == .idle {
+                        Text("Press Return to search the server.")
+                    }
+                }
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -127,6 +162,48 @@ struct ConversationListView: View {
         guard model.selectedThreadID != nil else { return .ignored }
         Task { await model.performOnSelection(action) }
         return .handled
+    }
+}
+
+/// What the SERVER half of a two-tier search is doing, under the list.
+///
+/// A bar rather than an alert or a toast: the local results are already usable,
+/// so the server tier is progress information — including its failures, which
+/// are "you are seeing less than everything", not "something went wrong".
+struct SearchStatusBar: View {
+    let description: String
+    let state: MailViewModel.ServerSearchState
+
+    private var isFailure: Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
+    var body: some View {
+        HStack(spacing: MailTheme.Spacing.sm) {
+            if state == .searching {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+            } else if isFailure {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(MailTheme.failure)
+                    .accessibilityHidden(true)
+            }
+            Text(description)
+                .font(.caption)
+                .foregroundStyle(isFailure ? MailTheme.failure : .secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.xs)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+        // One live-announcing element: VoiceOver should hear "searching" and the
+        // count without the user hunting for a bar that appears and vanishes.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(description)
     }
 }
 
@@ -339,6 +416,9 @@ struct RowDateLabel: View {
 
 struct ConversationRow: View {
     let row: ConversationSummary
+    /// The committed search query, marked up inside subject and snippet. Empty
+    /// when nothing is being searched, which costs one plain `AttributedString`.
+    var highlight: String = ""
     /// Non-nil only in the all-mailboxes scope.
     let mailboxName: String?
     /// The mailbox's resolved palette tint, resolved by the view-model.
@@ -378,7 +458,7 @@ struct ConversationRow: View {
                     Spacer(minLength: 0)
                 }
                 if mailboxName != nil { participantsLabel }
-                Text(row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject)
+                Text(SearchHighlighter.highlight(subjectText, matching: highlight))
                     .font(.body)
                     .fontWeight(row.isUnread ? .semibold : .regular)
                     .lineLimit(1)
@@ -389,10 +469,12 @@ struct ConversationRow: View {
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
-                    Text(SnippetCleaner.clean(row.latest.snippet))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    Text(SearchHighlighter.highlight(
+                        SnippetCleaner.clean(row.latest.snippet), matching: highlight
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
                 }
             }
             // COMBINE, not the row's old `contain`: as a container VoiceOver
@@ -464,6 +546,10 @@ struct ConversationRow: View {
         .accessibilityActions {
             if let trash { Button("Move to Trash", action: trash) }
         }
+    }
+
+    private var subjectText: String {
+        row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject
     }
 
     private var participants: String { Self.participants(for: row) }

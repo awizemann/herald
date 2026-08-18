@@ -267,6 +267,29 @@ struct MailStoreTests {
         #expect(try await store.message(id: "m1", accountID: accountB)?.readAt == nil, "The other account was mutated")
     }
 
+    /// The body half of the local search index. Fails if it leaks another
+    /// account's bodies, invents an entry for a message with no cached body
+    /// (which would make search claim a hit the user can never see), or stops
+    /// truncating — the index is held in memory for every row on screen, so an
+    /// untruncated newsletter body is a real footprint regression.
+    @Test("Cached body texts come back scoped, sparse and truncated")
+    func cachedBodyTextsAreScopedAndTruncated() async throws {
+        let store = try MailStore.inMemory()
+        let other = "acct_other"
+        let long = String(repeating: "x", count: 500)
+        _ = try await store.storeBody(messageID: "m1", accountID: account, textBody: long, html: nil)
+        _ = try await store.storeBody(messageID: "m3", accountID: other, textBody: "elsewhere", html: nil)
+
+        let texts = try await store.cachedBodyTexts(
+            messageIDs: ["m1", "m2", "m3"], accountID: account, maxLength: 100
+        )
+
+        #expect(texts["m1"]?.count == 100)
+        // m2 has no cached body: search must simply not match it, never fetch one.
+        #expect(texts["m2"] == nil)
+        #expect(texts["m3"] == nil, "Another account's body reached this account's index")
+    }
+
     /// The sidebar badge is a count, and it has to agree with the list it labels.
     /// Fails if `unreadCount` counts read threads, ignores the mailbox or account
     /// scope, or counts an unread thread a local archive has already moved out of

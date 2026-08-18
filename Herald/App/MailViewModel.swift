@@ -155,6 +155,10 @@ final class MailViewModel {
     /// moment the rows land.
     @ObservationIgnored private var bodySearchIndex: [String: String] = [:]
 
+    /// The id set a body-index pass is currently loading, or `nil` when none is
+    /// in flight. Guards against restarting an identical pass on every sync tick.
+    @ObservationIgnored private var loadingBodyIndexIDs: Set<String>?
+
     /// What the SERVER half of search is doing. The local half is always
     /// instant; this is the only part with a state worth showing.
     enum ServerSearchState: Equatable {
@@ -386,16 +390,28 @@ final class MailViewModel {
     /// — must be ready synchronously. Nothing is FETCHED for search; only bodies
     /// the reading pane already cached participate.
     private func refreshBodySearchIndex() {
-        bodyIndexTask?.cancel()
         let ids = allConversations.map(\.latest.id)
         guard !ids.isEmpty else {
+            bodyIndexTask?.cancel()
+            loadingBodyIndexIDs = nil
+            guard !bodySearchIndex.isEmpty else { return }
             bodySearchIndex = [:]
+            // The rows that matched on body text are gone with the index.
+            if !searchQuery.isEmpty { refilter() }
             return
         }
+        let wanted = Set(ids)
+        // A sync burst calls this on every ChangeSet. Restarting a pass that is
+        // already loading EXACTLY these ids means each store round trip is
+        // cancelled before it lands and the body index never populates at all —
+        // body search would silently degrade to headers-only, with no signal.
+        guard loadingBodyIndexIDs != wanted else { return }
+        bodyIndexTask?.cancel()
+        loadingBodyIndexIDs = wanted
         let store = self.store
         let accountID = self.accountID
-        let wanted = Set(ids)
         bodyIndexTask = Task { [weak self] in
+            defer { if self?.loadingBodyIndexIDs == wanted { self?.loadingBodyIndexIDs = nil } }
             let texts = (try? await store.cachedBodyTexts(
                 messageIDs: ids, accountID: accountID, maxLength: Self.bodySearchPrefixLength
             )) ?? [:]
@@ -464,6 +480,21 @@ final class MailViewModel {
         serverSearchTask = Task { [weak self] in
             await self?.performServerSearch(query, scope: scope)
         }
+    }
+
+    /// Forgets one server-search row.
+    ///
+    /// A server result is a DTO snapshot with no cache row behind it, so nothing
+    /// re-derives it: archiving or trashing such a row would otherwise see it
+    /// re-unioned — still claiming its old folder — on the very next refilter,
+    /// and the row would spring back as though the action had failed.
+    func dropServerResult(_ threadID: String) {
+        guard serverResults.contains(where: { $0.id == threadID }) else { return }
+        serverResults.removeAll { $0.id == threadID }
+        if case .completed = serverSearchState {
+            serverSearchState = .completed(serverResults.count)
+        }
+        refilter()
     }
 
     /// Drops any in-flight server pass and its rows. Called whenever the question
@@ -936,7 +967,11 @@ final class MailViewModel {
             guard scope == selection, !Task.isCancelled else { return }
             allConversations = []
         }
-        if let selectedThreadID, !allConversations.contains(where: { $0.id == selectedThreadID }) {
+        // A server-search hit is by construction NOT in `allConversations`; the
+        // union is what the user selected from, so it is the union that decides
+        // whether the selection still exists. Checking the cache alone tore down
+        // the reading pane on the next sync tick.
+        if let selectedThreadID, conversation(withID: selectedThreadID) == nil {
             self.selectedThreadID = nil
         }
         refreshBodySearchIndex()

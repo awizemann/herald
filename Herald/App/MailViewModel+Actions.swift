@@ -55,8 +55,15 @@ extension MailViewModel {
                 action,
                 onConversation: threadID,
                 in: selection.folder,
-                accountID: accountID
+                accountID: accountID,
+                // A server-search hit has no cached messages, so the service has
+                // no message id to address the server with; the row itself does.
+                representativeMessageID: conversation(withID: threadID)?.latest.id
             )
+            // The row leaves this scope, and a server-search row has no cache
+            // entry to re-derive it from — drop the snapshot or the union puts
+            // it straight back.
+            if Self.removesRow(action) { dropServerResult(threadID) }
         } catch {
             actionError = error.localizedDescription
         }
@@ -72,6 +79,7 @@ extension MailViewModel {
             : nil
         do {
             try await actions.perform(.archive, onMessagesOfThread: threadID, accountID: accountID)
+            dropServerResult(threadID)
         } catch {
             actionError = error.localizedDescription
         }

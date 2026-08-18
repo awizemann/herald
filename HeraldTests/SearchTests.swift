@@ -298,6 +298,56 @@ struct SearchTests {
         #expect(harness.model.threadMessages.map(\.id) == ["m9", "m8"])
     }
 
+    /// Fails if a reload deselects a server-only row: `reloadConversations` runs
+    /// on every sync tick, so resolving the selection against the cache alone
+    /// tore the reading pane down under the user mid-read.
+    @Test("A sync reload keeps a server-only row selected")
+    func reloadKeepsServerOnlySelection() async throws {
+        let harness = try await Harness.make([
+            MailFixtures.message(id: "m1", threadID: "t1", subject: "Alpha")
+        ])
+        await harness.api.setConversationPage(
+            ConversationPage(
+                conversations: [Self.remoteRow("t9", subject: "Zulu remote")],
+                nextCursor: nil,
+                totalCount: nil
+            )
+        )
+
+        harness.model.searchQuery = "zulu"
+        harness.model.submitSearch()
+        await harness.settle()
+        harness.model.selectedThreadID = "t9"
+
+        await harness.model.reloadConversations()
+        #expect(harness.model.selectedThreadID == "t9")
+    }
+
+    /// Fails if an archived server-only row is re-unioned from its stale
+    /// snapshot: nothing re-derives a DTO that has no cache row behind it, so the
+    /// row springs back still claiming the folder it just left.
+    @Test("Archiving a server-only row does not resurrect it")
+    func archivingDropsTheServerSnapshot() async throws {
+        let harness = try await Harness.make([
+            MailFixtures.message(id: "m1", threadID: "t1", subject: "Alpha")
+        ])
+        await harness.api.setConversationPage(
+            ConversationPage(
+                conversations: [Self.remoteRow("t9", subject: "Zulu remote")],
+                nextCursor: nil,
+                totalCount: nil
+            )
+        )
+
+        harness.model.searchQuery = "zulu"
+        harness.model.submitSearch()
+        await harness.settle()
+        #expect(harness.model.presentedConversations.map(\.id) == ["t9"])
+
+        await harness.model.perform(.archive, onThread: "t9")
+        #expect(harness.model.presentedConversations.isEmpty, "The archived server row came back")
+    }
+
     // MARK: - Highlighting
 
     /// Fails on the three ways match-finding breaks: an empty needle looping or

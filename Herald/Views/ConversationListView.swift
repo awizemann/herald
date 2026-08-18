@@ -11,6 +11,14 @@ import SwiftUI
 struct MiddleColumnView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var model: MailViewModel
+    /// The search field's text lives HERE, not in ``ConversationListView``.
+    ///
+    /// That view is torn out of the hierarchy whenever the user drills into a
+    /// thread, and `@State` dies with it: on the way back the field came up
+    /// empty, its debounce saw "" ≠ the committed query and wiped the search
+    /// (server results and all) 250 ms after the user pressed ⎋. Owned by the
+    /// view that SURVIVES the swap, it simply comes back as it was.
+    @State private var searchText = ""
 
     var body: some View {
         ZStack {
@@ -18,7 +26,7 @@ struct MiddleColumnView: View {
                 ThreadMessageListView(model: model)
                     .transition(.opacity)
             } else {
-                ConversationListView(model: model)
+                ConversationListView(model: model, searchText: $searchText)
                     .transition(.opacity)
             }
         }
@@ -30,9 +38,10 @@ struct MiddleColumnView: View {
 /// The conversation rows for the selected scope.
 struct ConversationListView: View {
     @Bindable var model: MailViewModel
-    /// Search lives here and is debounced before it reaches the view-model, so a
-    /// keystroke never re-runs the list's data source (or the detail pane).
-    @State private var searchText = ""
+    /// Search text, owned by ``MiddleColumnView`` so it survives a drill-in, and
+    /// debounced here before it reaches the view-model — so a keystroke never
+    /// re-runs the list's data source (or the detail pane).
+    @Binding var searchText: String
     /// ⌘F focus. `@FocusState` cannot be reached from `Commands`, which is why
     /// the shortcut rides on a hidden button in this view instead of the menu bar.
     @FocusState private var searchFieldFocused: Bool

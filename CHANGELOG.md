@@ -42,6 +42,11 @@ first, then cut the release.
 - A body just opened in the reading pane is searchable at once, even during a sync burst.
 - Clicking a new-mail banner while the Drafts folder is open now actually leaves Drafts.
 
+### Changed
+- Analytics client updated to swift-stats 0.2.0: usage batches are held (not sent) while Low Data
+  Mode is on, requests time out instead of hanging, and the local queue survives a full disk by
+  falling back to memory. No change to what is collected.
+
 ## [0.2.1] - 2026-08-18
 
 ### Fixed

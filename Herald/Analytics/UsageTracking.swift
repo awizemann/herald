@@ -62,7 +62,7 @@ nonisolated struct NoopUsageTracker: UsageTracking {
 ///   schema §11 to be unresumable; re-granting it on their behalf at next launch
 ///   would break exactly that.
 ///
-/// Verified against swift-stats 0.1.0.
+/// Verified against swift-stats 0.2.0 (additive over 0.1.0; see CHANGELOG upgrade notes).
 nonisolated struct StatsUsageTracker: UsageTracking {
     private let client: StatsClient
 

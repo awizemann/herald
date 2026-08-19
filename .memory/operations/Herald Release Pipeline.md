@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/operations/herald-release-pipeline
 tags: [release, sparkle, operations]
 created: 2026-08-16
-updated: 2026-08-18
+updated: 2026-08-19
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -39,3 +39,16 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [fact] `shabubox-notary` profile was present and working again this run (the 2026-08-18 vanish was recreated); `herald-notary` is absent — use `NOTARY_PROFILE=shabubox-notary` #notary
 - [gotcha] release.sh:91 prints "Preflight (dry run)" on EVERY run (real releases included): `${DRY_RUN:+ (dry run)}` fires because DRY_RUN defaults to the non-empty string "0". Cosmetic only — real gates use `[[ $DRY_RUN -eq 1 ]]`. Fix tracked in t-043ea358 #bug
 - [fact] generate_appcast scans only releases/v<this>, so each release overwrites the gh-pages appcast with a SINGLE-item appcast (latest only) — correct for Sparkle; the Pages CDN serves the prior version for ~1 min after push (raw.githubusercontent shows the new one immediately) #appcast
+
+
+## Update (2026-08-19 — analytics write key joins the runbook; 0.3.0 rehearsed)
+- [rule] Every release now needs `APP_STATS_WRITE_KEY` in the environment (swift-stats write key, Memophant vendor `swift-stats` → `get_vendor_credential`, write it to a 0600 temp file OUTSIDE the repo and pass `APP_STATS_WRITE_KEY="$(cat <file>)"`; never on a bare command line, never in chat). Form: `APP_STATS_WRITE_KEY="$(cat <tmp>)" NOTARY_PROFILE=shabubox-notary ./scripts/release.sh <v> [--dry-run]`. Preflight dies without it; post-export asserts the baked plist value and `PrivacyInfo.xcprivacy` in the bundle #release #analytics
+- [gotcha] An `-xcconfig` keeps the key out of xcodebuild's argv echo, but xcodebuild ALSO prints "Build settings from configuration file" and script phases dump `export APP_STATS_WRITE_KEY=…` — the value reached the terminal twice per archive. release.sh now pipes the archive through `redact_key` (literal-substring awk, key via ENVIRON not argv). Verified 0 occurrences in a full dry-run log #secrets
+- [done] 0.3.0 dry run passed end to end 2026-08-19 (archive, export, signature verify, key baked, zip, post-package verify, generate_appcast); the real run is pending the owner's go. Contents: multi-account, Drafts folder, two-tier search, notifications + Dock badge, attachment polish, opt-out analytics #release
+
+
+
+## Update (2026-08-19 — v0.3.0 shipped)
+- [done] v0.3.0 released (build 7): notarization Accepted, main + tag v0.3.0 pushed (6888c3f), GitHub release live (Herald-0.3.0.zip HTTP 200), gh-pages appcast advertises 0.3.0/7. Contents as rehearsed plus the swift-stats 0.2.0 bump (b7ea704) #release
+
+- [done] Sparkle self-update 0.2.1 → 0.3.0 confirmed by the owner 2026-08-19 #verified

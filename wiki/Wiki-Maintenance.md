@@ -26,10 +26,20 @@ The wiki is meant to be publishable, so every commit/publish runs a two-tier sec
 
 Never put real keys, tokens, private keys, `.env` contents, or personal hostnames/IPs in the wiki.
 
-## Future: publishing to a GitHub Wiki
+## Keeping pages true
 
-The wiki currently lives in-repo. Publishing the same pages to a GitHub Wiki
-(`<repo>.wiki.git`) is a planned addition; the secret-scan will gate that push too.
+The `.memory/` notes are the authoritative design record; wiki pages are the readable layer over
+them. Pages that describe code carry `source_paths` in their frontmatter so Memophant's Memory
+Health can flag drift when those files change. When you change behaviour, update the memory note
+first, then the wiki page — and never leave a claim in the wiki you could not point at in the code.
+
+GitHub's wiki renders plain Markdown links only, so link to memory notes by repo path
+(`.memory/decisions/Herald Sync Model.md`), not with `[[wiki-link]]` syntax.
+
+## Publishing
+
+The same pages are published to the GitHub Wiki (`<repo>.wiki.git`); the secret-scan gates that
+push as well.
 
 ---
-_Last updated: 2026-08-16 — stub_
+_Last updated: 2026-08-19 — publishing and drift rules_

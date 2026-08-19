@@ -1,1 +1,1 @@
-_Edited in the repo's `wiki/` folder and managed by Memophant. See [Wiki Maintenance](Wiki-Maintenance)._
+_Herald is AGPL-3.0. This wiki lives in the repo's `wiki/` folder and is managed by [Memophant](https://memophant.co) — see [Wiki Maintenance](Wiki-Maintenance)._

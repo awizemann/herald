@@ -19,14 +19,14 @@ addresses, search text, mailbox names, account details, file names, or anything 
 
 Early, working, dogfooded against a real HQBase ≥ 1.1.0 instance:
 
-- Sign in with OAuth (PKCE, dynamic client registration, tokens in the Keychain)
-- All your mailboxes, Inbox / Starred / Sent / Archived / Trash
+- Sign in with OAuth (PKCE, dynamic client registration, tokens in the Keychain); multiple accounts
+- All your mailboxes, Inbox / Starred / Sent / Archived / Trash, plus a cached Drafts folder
 - Threaded reading with sanitized HTML (remote images blocked until you trust the sender)
 - Read / unread, star, archive, trash — with keyboard shortcuts
-- Reply, reply all, forward, new message
-- Local cache for instant launch; polling sync
-
-Not yet: attachments in compose, drafts folder, search, multiple accounts UI, notifications.
+- Reply, reply all, forward, new message; attachments by drag, drop or paste; Quick Look
+- Search: instant local filter plus server search, with match highlighting
+- New-mail notifications and a Dock badge
+- Local cache for instant launch; delta sync where the server supports it
 
 ## Requirements
 

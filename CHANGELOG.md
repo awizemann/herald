@@ -10,8 +10,37 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-19
+
 ### Added
-- Anonymous, opt-out usage analytics (Settings → Privacy) — see README for what is and isn't sent.
+- Multiple accounts. Add more than one HQBase account; every signed-in account keeps syncing in
+  the background, so unread counts stay live while you read another. An account switcher sits at
+  the top of the sidebar. Sign-out and re-authentication apply to one account at a time, and a
+  composer keeps sending through the account it was opened from.
+- Drafts folder. Drafts are cached locally and shown as a sidebar item with a count; double-click
+  or Return reopens one in the composer with no round trip, Delete removes it. A draft with a
+  composer open is protected from being overwritten or removed by a poll.
+- Search, in two tiers. Typing filters instantly across subject, sender, recipients and the cached
+  body text of each row; Return (or a thin local result) also asks the server for the current
+  mailbox and folder, with a status line showing progress, count, or an offline notice. Matches
+  are highlighted in subject and snippet; ⌘F focuses the search field. Server-only results can be
+  opened and acted on (archive, trash, star, read) like any other row.
+- New-mail notifications. Optional local banners for inbound, unread inbox mail (never on first
+  sign-in or a first mailbox listing), grouped when many arrive at once; clicking one switches to
+  the right account and opens the conversation. A Dock badge shows the unread total across all
+  accounts. Both switches live in Settings → Notifications.
+- Attachments in compose: drag-and-drop anywhere on the window, or ⌘V a file or copied image;
+  uploads show as chips with a spinner and cancel; Send waits for queued uploads. Limits now match
+  the server exactly (25 MiB per file, 25 MiB per draft, 20 files). In the reading pane, Quick Look
+  previews an attachment and you can drag it out to Finder.
+- Anonymous, opt-out usage analytics (Settings → Privacy) — see README for exactly what is and
+  isn't sent. Herald never sends mail content, subjects, addresses, search text, mailbox names,
+  account details, file names, or anything you type.
+
+### Fixed
+- Clearing the search field takes effect immediately instead of after the typing delay.
+- A body just opened in the reading pane is searchable at once, even during a sync burst.
+- Clicking a new-mail banner while the Drafts folder is open now actually leaves Drafts.
 
 ## [0.2.1] - 2026-08-18
 

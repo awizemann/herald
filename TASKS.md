@@ -26,6 +26,12 @@
 
 ## Done
 
+- [x] Analytics P5: keyed E2E run, fresh-eyes audit, commit, record decisions (id: t-197c4c10) (added: 2026-08-18) (priority: high)
+- [x] Upstream PR #34 (`hqbase domain`): address bermanto's changes-requested review (id: t-7d2e71be) (added: 2026-08-18) (priority: high)
+- [x] Analytics P4: Settings Privacy tab opt-out + README/release-notes disclosure (id: t-1a8767ad) (added: 2026-08-18) (priority: high)
+- [x] Analytics P3: instrument AppEnvironment/MailViewModel/ComposeViewModel + lifecycle (id: t-a73fa929) (added: 2026-08-18) (priority: high)
+- [x] Analytics P1: swift-stats package + Analytics module + wire tests (id: t-e425c325) (added: 2026-08-18) (priority: high)
+- [x] Analytics P2: write-key plumbing (Info.plist, release.sh, verify 3 cases) (id: t-dcb470be) (added: 2026-08-18) (priority: high)
 - [x] Fix release.sh cosmetic "(dry run)" label that shows on every run (id: t-043ea358) (added: 2026-08-18) (priority: low)
 - [x] P3 Upstream Issue drafts: MIME part type, LIKE escaping, FTS, changes/stream, drafts journal (id: t-90f087d0) (added: 2026-08-18)
 - [x] P5 Drafts folder: sidebar item, draft cache polled via listDrafts, resume/delete (id: t-844a7a0f) (added: 2026-08-18)

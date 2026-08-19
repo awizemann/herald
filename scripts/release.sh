@@ -210,9 +210,18 @@ NOTARIZE_ZIP="$BUILD_DIR/${APP_NAME}-notarize.zip"
 # systems on one DerivedData corrupts build.db).
 # Hand the write key to the archive through a private xcconfig in a 0600 temp dir OUTSIDE the
 # repo, deleted on exit. Why not `xcodebuild … APP_STATS_WRITE_KEY=…`: xcodebuild echoes its own
-# argv under "Command line invocation:" at the top of every build log, which would print the
-# secret to the terminal and into any CI transcript. An -xcconfig path is inert in the log; only
-# the file holds the value, and it never exists inside the repo.
+# argv under "Command line invocation:" at the top of every build log. The xcconfig is not
+# enough on its own either: xcodebuild also prints "Build settings from configuration file" and
+# script phases dump their environment (`export APP_STATS_WRITE_KEY=…`). So the archive's output
+# is piped through `redact_key`, which replaces the value wherever it appears. The key reaches
+# the filter via the environment (REDACT_VALUE), never argv, and the match is a literal
+# substring, not a regex.
+redact_key() {
+  REDACT_VALUE="$APP_STATS_WRITE_KEY" awk '
+    { v = ENVIRON["REDACT_VALUE"]; n = length(v); out = ""
+      while (n > 0 && (i = index($0, v)) > 0) { out = out substr($0, 1, i - 1) "[APP_STATS_WRITE_KEY]"; $0 = substr($0, i + n) }
+      print out $0 }'
+}
 STATS_XCCONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/herald-stats-key.XXXXXX")"
 chmod 700 "$STATS_XCCONFIG_DIR"
 STATS_XCCONFIG="$STATS_XCCONFIG_DIR/stats.xcconfig"
@@ -224,7 +233,7 @@ xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
   -archivePath "$ARCHIVE" -destination "generic/platform=macOS" \
   -derivedDataPath "$BUILD_DIR/DerivedData" -skipPackagePluginValidation \
   -xcconfig "$STATS_XCCONFIG" \
-  archive
+  archive | redact_key
 
 log "Export signed .app (Developer ID)"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \

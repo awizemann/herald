@@ -3,23 +3,33 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.2.1</title>
-            <pubDate>Tue, 18 Aug 2026 16:31:18 -0400</pubDate>
-            <sparkle:version>6</sparkle:version>
-            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <title>0.3.0</title>
+            <pubDate>Wed, 19 Aug 2026 09:26:41 -0400</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h3>Fixed</h3>
+            <description><![CDATA[<h3>Added</h3>
 <ul>
-<li>Some newly arrived messages could still show as a clipped, one-line row until the list was scrolled or re-measured — a stubborn case the earlier row-height fix missed. Freshly inserted rows now reserve their full height immediately, so new mail always lands at the right size.</li>
+<li>Multiple accounts. Add more than one HQBase account; every signed-in account keeps syncing in the background, so unread counts stay live while you read another. An account switcher sits at the top of the sidebar. Sign-out and re-authentication apply to one account at a time, and a composer keeps sending through the account it was opened from.</li>
+<li>Drafts folder. Drafts are cached locally and shown as a sidebar item with a count; double-click or Return reopens one in the composer with no round trip, Delete removes it. A draft with a composer open is protected from being overwritten or removed by a poll.</li>
+<li>Search, in two tiers. Typing filters instantly across subject, sender, recipients and the cached body text of each row; Return (or a thin local result) also asks the server for the current mailbox and folder, with a status line showing progress, count, or an offline notice. Matches are highlighted in subject and snippet; ⌘F focuses the search field. Server-only results can be opened and acted on (archive, trash, star, read) like any other row.</li>
+<li>New-mail notifications. Optional local banners for inbound, unread inbox mail (never on first sign-in or a first mailbox listing), grouped when many arrive at once; clicking one switches to the right account and opens the conversation. A Dock badge shows the unread total across all accounts. Both switches live in Settings → Notifications.</li>
+<li>Attachments in compose: drag-and-drop anywhere on the window, or ⌘V a file or copied image; uploads show as chips with a spinner and cancel; Send waits for queued uploads. Limits now match the server exactly (25 MiB per file, 25 MiB per draft, 20 files). In the reading pane, Quick Look previews an attachment and you can drag it out to Finder.</li>
+<li>Anonymous, opt-out usage analytics (Settings → Privacy) — see README for exactly what is and isn&#x27;t sent. Herald never sends mail content, subjects, addresses, search text, mailbox names, account details, file names, or anything you type.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Clearing the search field takes effect immediately instead of after the typing delay.</li>
+<li>A body just opened in the reading pane is searchable at once, even during a sync burst.</li>
+<li>Clicking a new-mail banner while the Drafts folder is open now actually leaves Drafts.</li>
 </ul>
 <h3>Changed</h3>
 <ul>
-<li>A development build now runs side by side with the released app without the two signing each other out: debug builds use their own Keychain namespace and local cache. Only relevant if you run a build from source alongside a released copy.</li>
-<li>Internal quality work with no change to how Herald behaves: spacing, corner radii, and the two display glyphs are now design tokens instead of scattered literals; the two largest source files were split under the project&#x27;s size limit; the account store&#x27;s index lock moved from NSLock to os_unfair_lock; and a handful of ignorable error paths are now documented or logged.</li>
+<li>Analytics client updated to swift-stats 0.2.0: usage batches are held (not sent) while Low Data Mode is on, requests time out instead of hanging, and the local queue survives a full disk by falling back to memory. No change to what is collected.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.2.1/Herald-0.2.1.zip" length="2849941" type="application/octet-stream" sparkle:edSignature="060nozx4/cNlHaHZcJTaMONUHm3Dd/3N9Y1DiqmptfiyBDRyFv3aQlPG0gld3H0s5/S7yOTb0XFSHQrd//G8Cg=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.3.0/Herald-0.3.0.zip" length="3229392" type="application/octet-stream" sparkle:edSignature="iGO4y7hIbVPhJX2a02gwqEVpOF4MgXyOrtN8vlDmO1W0ZnwgFgu/b4H1XrUwk+ONxwXjU2L6VcCouAXqb/xMDA=="/>
         </item>
     </channel>
 </rss>

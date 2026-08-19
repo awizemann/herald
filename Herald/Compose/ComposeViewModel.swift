@@ -76,6 +76,9 @@ final class ComposeViewModel {
     /// folder reflects an autosave immediately instead of at the next poll.
     /// `@MainActor` because the view-model that consumes it is.
     private let draftCache: @MainActor @Sendable (DraftCacheEvent) -> Void
+    /// Usage analytics, same seam as ``MailViewModel/record``: a closure, so a
+    /// composer can neither flush nor read the opt-out. Default no-op.
+    @ObservationIgnored private let record: @MainActor @Sendable (UsageEvent) -> Void
     /// Exposed so tests can await the debounce instead of sleeping on a wall clock.
     @ObservationIgnored private(set) var autosaveTask: Task<Void, Never>?
 
@@ -83,12 +86,14 @@ final class ComposeViewModel {
         context: ComposeContext,
         outbox: any Outboxing,
         autosaveDelay: Duration = .seconds(2),
+        record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in },
         draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in }
     ) {
         let draft = context.makeDraft()
         self.draft = draft
         self.initialDraft = draft
         self.outbox = outbox
+        self.record = record
         self.autosaveDelay = autosaveDelay
         self.draftCache = draftCache
         self.toText = draft.to.joined(separator: ", ")
@@ -209,6 +214,7 @@ final class ComposeViewModel {
             // The cache learns about the draft the moment the server does, so the
             // Drafts folder shows what is being typed without waiting for a poll.
             publishDraftState()
+            record(.draftSaved)
             if status == .saving { status = .idle }
         } catch {
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
@@ -250,10 +256,14 @@ final class ComposeViewModel {
         commitRecipients()
         guard !hasInvalidAddresses else {
             status = .failed(hint(for: .to) ?? hint(for: .cc) ?? hint(for: .bcc) ?? "Check the recipients.")
+            // The local checks are the same failures the server would report, so
+            // they are reported the same way — the kind only, never the address.
+            record(.sendFailed(kind: .invalidRecipient))
             return false
         }
         if draft.allRecipients.isEmpty, draft.mode.replyToMessageID == nil {
             status = .failed(OutboxError.noRecipients.localizedDescription)
+            record(.sendFailed(kind: .noRecipients))
             return false
         }
         status = .sending
@@ -265,11 +275,21 @@ final class ComposeViewModel {
         do {
             _ = try await outbox.send(draft)
             isClosed = true
+            // Counts and two booleans only — never an address, a subject or a
+            // file name.
+            record(.messageSent(
+                attachments: UsageBucket(count: draft.uploadedAttachments.count),
+                hasCC: !draft.cc.isEmpty,
+                hasBCC: !draft.bcc.isEmpty
+            ))
             if let serverDraftID { draftCache(.removed(serverDraftID)) }
             return true
         } catch {
             // Nothing is discarded: the window stays open with everything in it.
             logger.warning("Send failed: \(error.logCode, privacy: .public)")
+            // `send` throws a typed `OutboxError`, so there is nothing to unwrap
+            // — and the kind is all that is kept.
+            record(.sendFailed(kind: UsageOutboxErrorKind(error)))
             status = .failed(error.localizedDescription)
             return false
         }
@@ -279,6 +299,7 @@ final class ComposeViewModel {
         autosaveTask?.cancel()
         cancelAllUploads()
         isClosed = true
+        record(.composeDiscarded)
         let serverDraftID = draft.serverDraft?.id
         do {
             try await outbox.discard(draft)

@@ -91,7 +91,9 @@ struct MailCommands: Commands {
         // About item. The item renders itself reactively and stays disabled on builds with no
         // Sparkle signing key (CI, unsigned, test hosts).
         CommandGroup(after: .appInfo) {
-            UpdateService.shared.checkForUpdatesMenuItem()
+            UpdateService.shared.checkForUpdatesMenuItem { [environment] in
+                environment.record(.updateCheckRequested)
+            }
         }
 
         CommandGroup(after: .newItem) {

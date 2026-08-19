@@ -115,11 +115,16 @@ final class UpdateService {
 
     /// The app-menu "Check for Updates…" item. Owned here so `MailCommands` never sees a
     /// Sparkle type and needs no `#if`.
+    /// - Parameter record: called when the user picks the item. Injected rather
+    ///   than reached for through a singleton: this service IS one, and analytics
+    ///   must not become a second.
     @ViewBuilder
-    func checkForUpdatesMenuItem() -> some View {
+    func checkForUpdatesMenuItem(
+        record: @escaping @MainActor @Sendable () -> Void = {}
+    ) -> some View {
         #if canImport(Sparkle)
         if let updaterController {
-            CheckForUpdatesView(updater: updaterController.updater)
+            CheckForUpdatesView(updater: updaterController.updater, record: record)
         } else {
             Button("Check for Updates…") {}.disabled(true)
         }
@@ -137,14 +142,21 @@ final class UpdateService {
 private struct CheckForUpdatesView: View {
     @ObservedObject private var model: CheckForUpdatesModel
     private let updater: SPUUpdater
+    private let record: @MainActor @Sendable () -> Void
 
-    init(updater: SPUUpdater) {
+    init(updater: SPUUpdater, record: @escaping @MainActor @Sendable () -> Void) {
         self.updater = updater
         self.model = CheckForUpdatesModel(updater: updater)
+        self.record = record
     }
 
     var body: some View {
-        Button("Check for Updates…") { updater.checkForUpdates() }
+        // Only the EXPLICIT check is reported; Sparkle's background checks are
+        // not something the user did.
+        Button("Check for Updates…") {
+            record()
+            updater.checkForUpdates()
+        }
             .disabled(!model.canCheckForUpdates)
     }
 }

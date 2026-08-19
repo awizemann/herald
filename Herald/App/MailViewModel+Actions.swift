@@ -2,18 +2,62 @@ import Foundation
 import HeraldKit
 
 extension MailViewModel {
+    // MARK: - Usage
+
+    /// The event vocabulary's name for a message-level action.
+    nonisolated static func usageAction(for action: MessageAction) -> UsageMessageAction {
+        switch action {
+        case .read: .read
+        case .unread: .unread
+        case .star: .star
+        case .unstar: .unstar
+        case .archive: .archive
+        case .trash: .trash
+        }
+    }
+
+    /// The same, for the conversation-level verbs.
+    nonisolated static func usageAction(for action: ConversationAction) -> UsageMessageAction {
+        switch action {
+        case .read: .read
+        case .unread: .unread
+        case .star: .star
+        case .unstar: .unstar
+        case .archive: .archive
+        case .trash: .trash
+        }
+    }
+
+    /// A failed action, reduced to its kind. Anything that is not a
+    /// ``MailAPIError`` lands on `other` — the action failed and that is worth
+    /// counting; the error itself, message and all, still never leaves.
+    private func recordActionFailure(_ action: UsageMessageAction, _ error: any Error) {
+        record(.actionFailed(action: action, kind: UsageMailErrorKind(anyError: error)))
+    }
+
     // MARK: - Actions
 
     func perform(_ action: MessageAction, on messageID: String) async {
+        record(.messageActionPerformed(
+            action: Self.usageAction(for: action), scope: .message, count: .one
+        ))
         do {
             try await actions.perform(action, on: messageID, accountID: accountID)
         } catch {
             actionError = error.localizedDescription
+            recordActionFailure(Self.usageAction(for: action), error)
         }
         await reloadAfterAction(threadID: threadMessages.first(where: { $0.id == messageID })?.threadID)
     }
 
-    func perform(_ action: ConversationAction, onThread threadID: String) async {
+    /// - Parameter scope: what the user acted on. `.conversation` for a row or a
+    ///   context menu, `.selection` for the menu-bar verbs that act on whatever
+    ///   is selected.
+    func perform(
+        _ action: ConversationAction,
+        onThread threadID: String,
+        scope: UsageActionScope = .conversation
+    ) async {
         // Trash has no "put back": the v1 API offers no restore action, and the
         // CONVERSATION-level `archive` only moves inbox/catchall messages, so
         // from Trash it is a server no-op that Herald used to mirror as a local
@@ -21,12 +65,14 @@ extension MailViewModel {
         // (issue #8). Trashing what is already trashed is a no-op too.
         if isTrashScope {
             switch action {
-            case .archive: return await moveToArchiveFromTrash(threadID)
+            // Recorded as the archive it is; the trash case does nothing at all,
+            // so there is no action to report.
+            case .archive: return await moveToArchiveFromTrash(threadID, scope: scope)
             case .trash: return
             default: break
             }
         }
-        await performConversationAction(action, onThread: threadID)
+        await performConversationAction(action, onThread: threadID, scope: scope)
     }
 
     /// Whether the list the user is looking at is the Trash.
@@ -42,8 +88,12 @@ extension MailViewModel {
 
     private func performConversationAction(
         _ action: ConversationAction,
-        onThread threadID: String
+        onThread threadID: String,
+        scope: UsageActionScope
     ) async {
+        record(.messageActionPerformed(
+            action: Self.usageAction(for: action), scope: scope, count: .one
+        ))
         // Where the row sits in the list the user is looking at, captured BEFORE
         // it disappears: archiving the message you are reading has to move to the
         // next one, the way every mail client does, not empty the reading pane.
@@ -66,6 +116,7 @@ extension MailViewModel {
             if Self.removesRow(action) { dropServerResult(threadID) }
         } catch {
             actionError = error.localizedDescription
+            recordActionFailure(Self.usageAction(for: action), error)
         }
         await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
     }
@@ -73,7 +124,8 @@ extension MailViewModel {
     /// The only "put back" the v1 API has: a MESSAGE-level archive per message
     /// of the thread. `POST /messages/{id}/archive` sets `folder = archived`
     /// from any folder, including trash.
-    private func moveToArchiveFromTrash(_ threadID: String) async {
+    private func moveToArchiveFromTrash(_ threadID: String, scope: UsageActionScope) async {
+        record(.messageActionPerformed(action: .archive, scope: scope, count: .one))
         let removedIndex = threadID == selectedThreadID
             ? presentedConversations.firstIndex { $0.id == threadID }
             : nil
@@ -82,6 +134,7 @@ extension MailViewModel {
             dropServerResult(threadID)
         } catch {
             actionError = error.localizedDescription
+            recordActionFailure(.archive, error)
         }
         await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
     }
@@ -100,7 +153,9 @@ extension MailViewModel {
         await reloadConversations()
         if let removedIndex { advanceSelection(pastRowAt: removedIndex) }
         if let threadID, threadID == selectedThreadID { await loadThread(threadID) }
-        await refresh()
+        // Herald's own follow-up pass, not the Refresh button: reporting it as
+        // manual would make every action look like a refresh too.
+        await refresh(trigger: .auto)
     }
 
     /// Moves the selection to the row that took the removed row's place, or to
@@ -122,7 +177,10 @@ extension MailViewModel {
     /// Convenience for the commands: act on the current selection.
     func performOnSelection(_ action: ConversationAction) async {
         guard let threadID = selectedThreadID else { return }
-        await perform(action, onThread: threadID)
+        // Herald's list is single-selection, so the count is always one — the
+        // bucket is what makes a future multi-select reportable without changing
+        // the event.
+        await perform(action, onThread: threadID, scope: .selection)
     }
 
     func toggleStar(_ row: ConversationSummary) async {
@@ -136,16 +194,33 @@ extension MailViewModel {
     /// Runs the save panel and writes the attachment. The API client stays private
     /// to the view-model; views ask for the action, not the bytes.
     func saveAttachment(_ attachment: Attachment) async {
-        if let message = await AttachmentSaver.save(attachment, using: api) {
+        switch await AttachmentSaver.save(attachment, using: api) {
+        case .saved:
+            // No props: the filename, its size and its type are all off limits.
+            record(.attachmentSaved)
+        case .cancelled:
+            break
+        case .failed(let message):
             actionError = message
         }
     }
 
     func requestCompose(_ kind: ComposeRequest.Kind) {
+        record(.composeOpened(kind: Self.usageComposeKind(for: kind)))
         composeRequest = ComposeRequest(
             kind: kind,
             messageID: selectedMessageID,
             mailboxID: selection.mailboxID ?? selectedMessage?.mailboxID
         )
+    }
+
+    nonisolated static func usageComposeKind(for kind: ComposeRequest.Kind) -> UsageComposeKind {
+        switch kind {
+        case .new: .new
+        case .reply: .reply
+        case .replyAll: .replyAll
+        case .forward: .forward
+        case .draft: .draft
+        }
     }
 }

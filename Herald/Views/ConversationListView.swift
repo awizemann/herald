@@ -100,7 +100,7 @@ struct ConversationListView: View {
         // unchanged, so nothing else would fire.
         .onKeyPress(.return) {
             guard model.selectedThreadID != nil else { return .ignored }
-            model.openSelectedThread()
+            model.openSelectedThreadViaShortcut()
             return .handled
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search mail")
@@ -266,9 +266,9 @@ struct ThreadMessageListView: View {
             // Same unmeasured-row floor as the conversation list.
             .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
         }
-        // ⎋ backs out, as it does everywhere else on macOS. ⌘[ rides on the back
-        // button itself so the shortcut and the control cannot drift apart.
-        .onExitCommand { model.exitThread() }
+        // ⎋ backs out, as it does everywhere else on macOS; ⌘[ does the same from
+        // a hidden carrier beside the back button (see `header`).
+        .onExitCommand { model.exitThreadViaShortcut() }
     }
 
     private var header: some View {
@@ -278,7 +278,17 @@ struct ThreadMessageListView: View {
                     .iconButtonStyle("Back to \(folderTitle)")
             }
             .buttonStyle(.plain)
-            .keyboardShortcut("[", modifiers: .command)
+            // ⌘[ carries the same step on a hidden button of its own, next to
+            // the control it belongs to: a `keyboardShortcut` ON the chevron
+            // cannot tell the key press from the click, and the two are
+            // different ways of getting here. Hidden from accessibility — the
+            // chevron beside it is the reachable control.
+            .background {
+                Button("Back") { model.exitThreadViaShortcut() }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(subject)

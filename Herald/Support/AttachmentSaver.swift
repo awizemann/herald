@@ -45,12 +45,21 @@ enum AttachmentSaver {
         }
     }
 
-    /// Returns an error message for the UI, or `nil` on success/cancel.
-    static func save(_ attachment: Attachment, using api: any MailAPIClient) async -> String? {
+    /// What a save attempt did. Three cases, not "an optional error message":
+    /// dismissing the panel and writing the file were indistinguishable, and the
+    /// caller has to tell them apart to report one and not the other.
+    enum Outcome: Equatable {
+        case saved
+        case cancelled
+        /// User-facing reason.
+        case failed(String)
+    }
+
+    static func save(_ attachment: Attachment, using api: any MailAPIClient) async -> Outcome {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = sanitized(attachment.filename)
         panel.canCreateDirectories = true
-        guard await panel.begin() == .OK, let url = panel.url else { return nil }
+        guard await panel.begin() == .OK, let url = panel.url else { return .cancelled }
 
         do {
             let payload = try await api.attachmentData(id: attachment.id)
@@ -60,12 +69,12 @@ enum AttachmentSaver {
                 try payload.data.write(to: destination, options: .atomic)
                 quarantine(destination)
             }.value
-            return nil
+            return .saved
         } catch {
             logger.error(
                 "Attachment \(attachment.id, privacy: .public) save failed: \(error.localizedDescription, privacy: .private)"
             )
-            return error.localizedDescription
+            return .failed(error.localizedDescription)
         }
     }
 }

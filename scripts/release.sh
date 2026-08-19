@@ -4,9 +4,14 @@
 # scripts/release.sh and trimmed: no DMG, no vendored dylibs, no iCloud profile, no separate
 # public repo — the appcast is published to THIS repo's gh-pages branch.
 #
+# REQUIRED ENV: APP_STATS_WRITE_KEY — the swift-stats write key baked into Info.plist. Secret:
+# keep it in your password manager / Keychain, pass it per-invocation, and never put it in
+# project.yml, an xcconfig in this repo, or a commit. Dev builds resolve it to "" (analytics off).
+#
 # Usage:
 #   ./scripts/release.sh 0.1.0              # full: bump, archive, sign, notarize, staple,
 #                                           # zip, appcast, GitHub release, tag, gh-pages push
+#   (every form below also needs APP_STATS_WRITE_KEY in the environment)
 #   ./scripts/release.sh 0.1.0 --dry-run    # everything EXCEPT notarize, publish, and tag
 #   ./scripts/release.sh 0.1.0 --build 7    # pin CURRENT_PROJECT_VERSION instead of +1
 #
@@ -93,6 +98,15 @@ python3 "$CHANGELOG_SECTION" "$VERSION" >/dev/null 2>&1 \
   || die "CHANGELOG.md has no '## [$VERSION]' section — write the release notes first (see CHANGELOG.md header)"
 require_cmd xcodebuild; require_cmd xcrun; require_cmd ditto; require_cmd gh; require_cmd xcodegen; require_cmd git
 
+# The swift-stats write key is a SECRET: it lives only in the environment for this invocation and
+# is baked into Info.plist by the archive below (Herald/Info.plist holds $(APP_STATS_WRITE_KEY),
+# which resolves to the empty string for every dev build). It must never be written to project.yml,
+# an xcconfig, or any file in this repo, and it must never be printed — so nothing here echoes it.
+[[ -n "${APP_STATS_WRITE_KEY:-}" ]] || die "APP_STATS_WRITE_KEY is not set (or is empty).
+Release builds must bake the swift-stats write key into Info.plist. Supply it for this run only:
+  APP_STATS_WRITE_KEY=\"\$(<your secret store>)\" ./scripts/release.sh $VERSION
+Never commit it to project.yml, an xcconfig, or any file in this repo."
+
 # The entitlements file must parse — a malformed plist fails the archive late and cryptically,
 # and the two Sparkle mach-lookup exceptions are what let the sandboxed installer run at all.
 plutil -lint "$ENTITLEMENTS" >/dev/null || die "$ENTITLEMENTS is not a valid plist"
@@ -163,14 +177,15 @@ log "Sparkle keypair OK ($SOURCE_PUBKEY) under account '$SPARKLE_ACCOUNT'"
 CUR_MV="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' "$PROJECT_YML")"
 if [[ "$CUR_MV" == "$VERSION" ]]; then
   log "Version already $VERSION — resume mode (no bump). Regenerating project."
-  xcodegen generate
+  # env -u: xcodegen must never see the write key, so it cannot end up in the generated project.
+  env -u APP_STATS_WRITE_KEY xcodegen generate
 else
   CUR_BUILD="$(awk -F': ' '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' "$PROJECT_YML" | tr -d ' "')"
   NEW_BUILD="${PINNED_BUILD:-$((CUR_BUILD + 1))}"
   log "Bump $CUR_MV -> $VERSION (CFBundleVersion $NEW_BUILD)"
   sed -i '' -E "s/MARKETING_VERSION: \"[0-9][0-9.]*\"/MARKETING_VERSION: \"${VERSION}\"/" "$PROJECT_YML"
   sed -i '' -E "s/CURRENT_PROJECT_VERSION: \"?[0-9]+\"?/CURRENT_PROJECT_VERSION: ${NEW_BUILD}/" "$PROJECT_YML"
-  xcodegen generate
+  env -u APP_STATS_WRITE_KEY xcodegen generate
   # Guard against a silent no-op sed: confirm the EFFECTIVE setting actually changed.
   ACTUAL_MV="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null | awk -F' = ' '/ MARKETING_VERSION / {print $2; exit}')"
   [[ "$ACTUAL_MV" == "$VERSION" ]] || die "MARKETING_VERSION didn't take (effective: $ACTUAL_MV) — check $PROJECT_YML"
@@ -193,10 +208,22 @@ NOTARIZE_ZIP="$BUILD_DIR/${APP_NAME}-notarize.zip"
 
 # -derivedDataPath keeps this out of the shared DerivedData Xcode may have open (two build
 # systems on one DerivedData corrupts build.db).
+# Hand the write key to the archive through a private xcconfig in a 0600 temp dir OUTSIDE the
+# repo, deleted on exit. Why not `xcodebuild … APP_STATS_WRITE_KEY=…`: xcodebuild echoes its own
+# argv under "Command line invocation:" at the top of every build log, which would print the
+# secret to the terminal and into any CI transcript. An -xcconfig path is inert in the log; only
+# the file holds the value, and it never exists inside the repo.
+STATS_XCCONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/herald-stats-key.XXXXXX")"
+chmod 700 "$STATS_XCCONFIG_DIR"
+STATS_XCCONFIG="$STATS_XCCONFIG_DIR/stats.xcconfig"
+( umask 077; printf 'APP_STATS_WRITE_KEY = %s\n' "$APP_STATS_WRITE_KEY" > "$STATS_XCCONFIG" )
+trap 'rm -rf "$STATS_XCCONFIG_DIR"' EXIT
+
 log "Archive (Release, arm64)"
 xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
   -archivePath "$ARCHIVE" -destination "generic/platform=macOS" \
   -derivedDataPath "$BUILD_DIR/DerivedData" -skipPackagePluginValidation \
+  -xcconfig "$STATS_XCCONFIG" \
   archive
 
 log "Export signed .app (Developer ID)"
@@ -215,6 +242,24 @@ codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o 
   || die "Sparkle mach-lookup entitlement missing from the exported app — sandboxed updates would fail to install"
 codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o - - | grep -q "app-sandbox" \
   || die "app-sandbox entitlement missing — the Release build must be sandboxed"
+
+# The analytics write key must have been substituted into the shipped Info.plist. A build that
+# ships the literal $(APP_STATS_WRITE_KEY) — or an empty value — silently disables usage
+# reporting for every user of this release, so fail loudly here. Never print the value itself:
+# compare, and report only which failure mode it was. (Runs in dry-run too — same build.)
+BUILT_STATS_KEY="$(/usr/libexec/PlistBuddy -c 'Print :HeraldStatsWriteKey' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[[ -n "$BUILT_STATS_KEY" ]] \
+  || die "HeraldStatsWriteKey missing or empty in the exported app's Info.plist — check that Herald/Info.plist still carries the \$(APP_STATS_WRITE_KEY) entry"
+[[ "$BUILT_STATS_KEY" != '$(APP_STATS_WRITE_KEY)' ]] \
+  || die "HeraldStatsWriteKey in the exported app is still the literal build-setting placeholder — the xcconfig did not reach the archive"
+[[ "$BUILT_STATS_KEY" == "$APP_STATS_WRITE_KEY" ]] \
+  || die "HeraldStatsWriteKey in the exported app does not match APP_STATS_WRITE_KEY (values withheld) — stale archive or an overriding build setting?"
+log "HeraldStatsWriteKey baked into the exported app (value withheld)"
+
+# Apple requires the privacy manifest inside the shipped bundle; it is a resource, so a project
+# regeneration that drops it fails App Review / privacy reporting silently.
+[[ -f "$APP/Contents/Resources/PrivacyInfo.xcprivacy" ]] \
+  || die "PrivacyInfo.xcprivacy missing from $APP/Contents/Resources — check that project.yml still lists it as a Herald resource"
 
 # ---------- notarize + staple ----------
 if [[ $DRY_RUN -eq 1 ]]; then

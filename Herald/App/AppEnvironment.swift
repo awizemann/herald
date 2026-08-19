@@ -86,7 +86,28 @@ final class AppEnvironment {
             } else {
                 defaults.removeObject(forKey: Self.selectedAccountKey)
             }
+            // A switch is what the USER did: launch restore, an install picking
+            // up the window and a sign-out falling back all assign this too, and
+            // none of them is somebody choosing an account. `nil` on either side
+            // is likewise not a switch — it is the first account arriving, or the
+            // last one leaving.
+            guard !isAssigningAccountProgrammatically,
+                  oldValue != nil, selectedAccountID != nil
+            else { return }
+            record(.accountSwitched(accounts: UsageBucket(count: accountIDs.count)))
         }
+    }
+
+    /// Raised around the assignments that are Herald's doing rather than the
+    /// user's. Only ever set for the duration of one synchronous assignment, so
+    /// nothing can observe it down across a suspension.
+    @ObservationIgnored private var isAssigningAccountProgrammatically = false
+
+    /// Assigns ``selectedAccountID`` without counting it as an account switch.
+    private func selectAccount(_ id: Account.ID?) {
+        isAssigningAccountProgrammatically = true
+        defer { isAssigningAccountProgrammatically = false }
+        selectedAccountID = id
     }
 
     nonisolated static let selectedAccountKey = "selectedAccountID"
@@ -113,6 +134,13 @@ final class AppEnvironment {
 
     private let auth: AuthCoordinator
     private let defaults: UserDefaults
+    /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
+    /// so every test — and any caller that does not opt in — collects nothing.
+    let usage: any UsageTracking
+    /// The tail of the record chain. Every emission awaits the previous one, so
+    /// events reach the SDK in the order they happened rather than in whatever
+    /// order a pile of unstructured tasks got scheduled.
+    @ObservationIgnored private var pendingRecord: Task<Void, Never>?
     private var container: ModelContainer?
     private var store: MailStore?
 
@@ -132,11 +160,54 @@ final class AppEnvironment {
     init(
         auth: AuthCoordinator = AuthCoordinator(),
         defaults: UserDefaults = .standard,
-        notificationPoster: any NewMailNotificationPosting = UserNotificationCenterAdapter()
+        notificationPoster: any NewMailNotificationPosting = UserNotificationCenterAdapter(),
+        usage: any UsageTracking = NoopUsageTracker()
     ) {
         self.auth = auth
         self.defaults = defaults
         self.notificationPoster = notificationPoster
+        self.usage = usage
+    }
+
+    // MARK: - Usage analytics
+
+    /// Emits one event, after everything already queued. The only way anything in
+    /// Herald reaches the tracker.
+    func record(_ event: UsageEvent) {
+        enqueueUsage { usage in await usage.track(event) }
+    }
+
+    /// The closure the view-models are handed. Weak, because a composer can
+    /// outlive nothing here in practice but must never keep the environment alive.
+    var recordUsage: @MainActor @Sendable (UsageEvent) -> Void {
+        { [weak self] event in self?.record(event) }
+    }
+
+    /// Drives `app_open` / `session_start`. On the same chain as the events, so
+    /// the session opens before whatever the user does inside it.
+    func recordApplicationDidBecomeActive() {
+        enqueueUsage { usage in await usage.applicationDidBecomeActive() }
+    }
+
+    /// Pushes whatever is queued. Chained for the same reason: a flush that
+    /// overtook the events it was supposed to flush would send nothing.
+    func recordFlush() {
+        enqueueUsage { usage in await usage.flush() }
+    }
+
+    private func enqueueUsage(_ work: @escaping @Sendable (any UsageTracking) async -> Void) {
+        let previous = pendingRecord
+        let usage = self.usage
+        pendingRecord = Task {
+            await previous?.value
+            await work(usage)
+        }
+    }
+
+    /// Test seam: waits for everything queued so far to reach the tracker. There
+    /// is no production caller — the chain is fire-and-forget by design.
+    func drainPendingUsage() async {
+        await pendingRecord?.value
     }
 
     // MARK: - Derived state
@@ -195,6 +266,9 @@ final class AppEnvironment {
         } catch {
             logger.error("Mail cache unavailable: \(error.localizedDescription, privacy: .private)")
             phase = .failed("Herald could not open its local mail cache. \(error.localizedDescription)")
+            // The KIND only — the message names a file path and the underlying
+            // store error, neither of which may leave the device.
+            record(.launchFailed(kind: .cache))
             return
         }
 
@@ -209,6 +283,7 @@ final class AppEnvironment {
         } catch {
             logger.error("Account list unreadable: \(error.localizedDescription, privacy: .private)")
             phase = .failed(error.localizedDescription)
+            record(.launchFailed(kind: .restore))
             return
         }
         guard !accounts.isEmpty else {
@@ -260,6 +335,9 @@ final class AppEnvironment {
             // another one is working.
             if graphs.isEmpty {
                 phase = .failed(error.localizedDescription)
+                // Nothing came up at all: the launch failed, for a reason that is
+                // neither the cache nor the account list.
+                record(.launchFailed(kind: .other))
             } else {
                 signInError = error.localizedDescription
             }
@@ -300,7 +378,8 @@ final class AppEnvironment {
             sync: engine,
             events: engine.events,
             defaults: defaults,
-            notifier: notifier
+            notifier: notifier,
+            record: recordUsage
         )
         // The badge is the SUM across accounts, so any account's count changing
         // re-reads all of them rather than trusting the number it was handed.
@@ -321,7 +400,9 @@ final class AppEnvironment {
         // Selecting is what puts this account in the window. A restore bringing
         // the OTHER accounts up must not steal it — but an empty window beats
         // nothing, so a live graph is selected when none is showing.
-        if select || selectedGraph == nil { selectedAccountID = account.id }
+        // Not a "switch": this is an account arriving, which `account_added` (or a
+        // launch restore) already accounts for.
+        if select || selectedGraph == nil { selectAccount(account.id) }
         phase = .ready
         if let superseded {
             // Its composers point at an OutboxService that is about to go away.
@@ -341,7 +422,7 @@ final class AppEnvironment {
         // Herald) is replayed now that its graph can answer.
         if let route = pendingRoute, route.accountID == account.id {
             pendingRoute = nil
-            await open(route)
+            await open(route, isLaunchReplay: true)
         }
     }
 
@@ -379,7 +460,11 @@ final class AppEnvironment {
     /// Switching the window is right here, unlike a background action doing it:
     /// the banner said which account the mail is in, so the switcher following
     /// the click is what the user asked for.
-    func open(_ route: NewMailRoute) async {
+    /// - Parameter isLaunchReplay: whether this is the held route being replayed
+    ///   as its account comes up, rather than a click on a live window. The
+    ///   replay's account assignment is Herald finishing its own launch, not the
+    ///   user reaching for the switcher, and must not be counted as a switch.
+    func open(_ route: NewMailRoute, isLaunchReplay: Bool = false) async {
         // Clicking a banner can LAUNCH Herald — or name an account still coming
         // up behind the first one, since a restore activates the rest in the
         // background. Held until that account installs rather than dropped.
@@ -387,8 +472,16 @@ final class AppEnvironment {
             pendingRoute = route
             return
         }
-        selectedAccountID = route.accountID
+        // A clicked banner IS the user choosing an account, so this one counts —
+        // unless it is the launch replay, which is not a choice made twice.
+        if isLaunchReplay {
+            selectAccount(route.accountID)
+        } else {
+            selectedAccountID = route.accountID
+        }
         guard let threadID = route.threadID else { return }
+        // The view the reveal lands on was reached from a notification.
+        graph.mail.pendingNavigationSource = .notification
         await graph.mail.revealConversation(threadID: threadID)
     }
 
@@ -408,6 +501,7 @@ final class AppEnvironment {
     /// system prompt is tied to the action that needs it rather than to whichever
     /// message happens to arrive first.
     func notificationsSettingChanged(enabled: Bool) async {
+        record(.notificationsToggled(enabled: enabled))
         guard enabled else { return }
         guard !graphs.isEmpty else {
             // Opted in before signing in: still ask, so the prompt belongs to the
@@ -439,9 +533,21 @@ final class AppEnvironment {
     }
 
     func signIn(originText: String) async {
+        let outcome = await performSignIn(originText: originText)
+        record(.accountAdded(outcome: outcome.0, kind: outcome.1))
+    }
+
+    /// The sign-in flow itself, reduced to the two values an event may carry.
+    /// Shared by ``signIn(originText:)`` and ``reauthenticate(accountID:)`` so the
+    /// same round trip is never reported as both an add AND a re-auth.
+    private func performSignIn(
+        originText: String
+    ) async -> (UsageAccountOutcome, UsageOAuthErrorKind?) {
         guard let origin = Self.normalizedOrigin(from: originText) else {
             signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
-            return
+            // A typo in the address field, not an OAuth fault: there is no kind
+            // to report, and the text the user typed is never one.
+            return (.failed, nil)
         }
         isSigningIn = true
         signInError = nil
@@ -450,9 +556,15 @@ final class AppEnvironment {
             let account = try await auth.addAccount(origin: origin)
             presentsAddAccount = false
             await activate(account)
+            return (.success, nil)
         } catch {
             logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
             signInError = error.localizedDescription
+            // A failure that is not an `OAuthError` still failed: it counts as
+            // `other` rather than being dropped, and carries nothing of itself.
+            let kind = UsageOAuthErrorKind(anyError: error)
+            // Closing the browser window is a choice, not a failure.
+            return kind == .cancelled ? (.cancelled, nil) : (.failed, kind)
         }
     }
 
@@ -463,7 +575,8 @@ final class AppEnvironment {
             if graphs.isEmpty { phase = .signedOut }
             return
         }
-        await signIn(originText: account.origin.absoluteString)
+        let outcome = await performSignIn(originText: account.origin.absoluteString)
+        record(.accountReauthenticated(outcome: outcome.0, kind: outcome.1))
         // The same origin can come back under a DIFFERENT id (a different user
         // signed in). `install` then keys the new graph elsewhere and the dead
         // one would be left polling with a token nothing can refresh.
@@ -483,13 +596,15 @@ final class AppEnvironment {
         guard let account = graphs[accountID]?.account
             ?? (try? auth.accounts())?.first(where: { $0.id == accountID })
         else { return }
+        record(.accountRemoved)
         await stopGraph(accountID: accountID)
         accountIDs.removeAll { $0 == accountID }
         // The window settles BEFORE the slow half. Revocation is a network round
         // trip and the purge is a store write; leaving `selectedAccountID`
         // pointing at a graph that is already gone renders a launch placeholder
         // over the surviving account, and a switcher whose selection has no tag.
-        if selectedAccountID == accountID { selectedAccountID = accountIDs.first }
+        // A fallback, not a switch: `account_removed` already said what happened.
+        if selectedAccountID == accountID { selectAccount(accountIDs.first) }
         if graphs.isEmpty { phase = .signedOut }
         do {
             try await auth.signOut(account)
@@ -539,7 +654,7 @@ final class AppEnvironment {
         }
         guard let outbox = graphs[session.accountID]?.outbox else { return nil }
         let accountID = session.accountID
-        let model = ComposeViewModel(context: session.context, outbox: outbox, draftCache: { [weak self] event in
+        let model = ComposeViewModel(context: session.context, outbox: outbox, record: recordUsage, draftCache: { [weak self] event in
             // Routed to the account the composer was OPENED from — the same one
             // whose `outbox` is saving the draft — never to whichever account the
             // window happens to be showing: switching accounts with a composer up
@@ -596,7 +711,9 @@ final class AppEnvironment {
     /// the key window off the mail window, the mail scene reports inactive, and
     /// the engine backs off to the idle cadence while the user is plainly using
     /// the app.
-    private func observeActivation() {
+    /// Internal, not private, so a test can drive activation without `start()`
+    /// opening the real store.
+    func observeActivation() {
         activityTask?.cancel()
         activityTask = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
@@ -604,13 +721,23 @@ final class AppEnvironment {
                     let active = NotificationCenter.default.notifications(
                         named: NSApplication.didBecomeActiveNotification
                     )
-                    for await _ in active { await self?.setWindowActive(true) }
+                    for await _ in active {
+                        // On the record chain, so the session opens ahead of the
+                        // events the user is about to generate inside it.
+                        await self?.recordApplicationDidBecomeActive()
+                        await self?.setWindowActive(true)
+                    }
                 }
                 group.addTask { @Sendable [weak self] in
                     let resigned = NotificationCenter.default.notifications(
                         named: NSApplication.didResignActiveNotification
                     )
-                    for await _ in resigned { await self?.setWindowActive(false) }
+                    for await _ in resigned {
+                        // Queued BEHIND everything already recorded, so a flush
+                        // never overtakes the events it exists to push.
+                        await self?.recordFlush()
+                        await self?.setWindowActive(false)
+                    }
                 }
             }
         }

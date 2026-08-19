@@ -4,8 +4,13 @@ A native macOS email client for [HQBase](https://hqbase.io) — the AGPL shared-
 that runs in your own Cloudflare account.
 
 Herald talks only to HQBase's public **Mail API v1** (`/api/v1`) with OAuth 2.1 PKCE bearer tokens.
-Nothing else: no cookies, no scraping, no third-party services. Your mail stays between your Mac
-and your HQBase instance.
+Nothing else: no cookies, no scraping. Your mail stays between your Mac and your HQBase instance.
+
+The one exception is anonymous usage analytics, which you can turn off in Settings → Privacy.
+When it is on, Herald tells its developer which features are used (e.g. "archived a message")
+plus the app and OS version, tagged with a random per-install identifier so active installs can
+be counted. It is sent to the developer's swift-stats endpoint. Never sent: your mail, subjects,
+addresses, search text, mailbox names, account details, file names, or anything you type.
 
 > Herald is compatible with HQBase. It is an independent project and is **not affiliated with or
 > endorsed by the HQBase project.** "HQBase" is a trademark of its respective owner.

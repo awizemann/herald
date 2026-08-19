@@ -31,12 +31,22 @@ extension MailViewModel {
     var sidebarItem: SidebarItem {
         get { isShowingDrafts ? .drafts : .folder(selection) }
         set {
+            // Every write to this comes from the sidebar's `List(selection:)`.
+            pendingNavigationSource = .sidebar
             switch newValue {
             case .drafts:
                 showDrafts(true)
             case .folder(let scope):
-                showDrafts(false)
+                // Leaving Drafts for the folder that is ALREADY selected is a
+                // real navigation and reports itself here; `selection` then sees
+                // no change and stays quiet. Leaving it for a DIFFERENT folder
+                // must stay silent, or the old folder — the one being left — is
+                // reported as a view that was never shown, ahead of the real
+                // destination `selection` is about to report.
+                showDrafts(false, silently: scope != selection)
+                pendingNavigationSource = .sidebar
                 selection = scope
+                pendingNavigationSource = nil
             }
         }
     }
@@ -46,13 +56,23 @@ extension MailViewModel {
     /// Entering asks the engine for a fresh drafts list: the drafts poll runs on
     /// its own slow interval precisely because nobody is usually looking, and
     /// this is the moment somebody is.
-    func showDrafts(_ showing: Bool) {
+    /// - Parameter silently: suppresses the `view_shown` event, for callers that
+    ///   are only passing THROUGH the drafts flag on their way somewhere they
+    ///   report themselves (``revealConversation(threadID:)``).
+    func showDrafts(_ showing: Bool, silently: Bool = false) {
         guard showing != isShowingDrafts else { return }
         isShowingDrafts = showing
+        if !silently {
+            recordViewShown(
+                showing ? .drafts : Self.viewKind(for: selection.folder),
+                via: takeNavigationSource()
+            )
+        }
         guard showing else { return }
         // Leaving a drilled-in thread behind would draw the thread pane over the
-        // drafts list, since both live in the middle column.
-        exitThread()
+        // drafts list, since both live in the middle column. Silently: the view
+        // being shown is the drafts list, already reported above.
+        leaveThreadSilently()
         selectedDraftID = nil
         // Owned, and cancelled by `stop()`: an unstructured `Task` here outlives
         // the account graph that spawned it, and a signed-out account's view-model
@@ -98,6 +118,7 @@ extension MailViewModel {
     /// draft including its version stamp is already there — so this costs no
     /// round trip and works offline.
     func openDraft(_ draftID: String) {
+        record(.composeOpened(kind: .draft))
         composeRequest = ComposeRequest(kind: .draft, draftID: draftID)
     }
 
@@ -116,6 +137,10 @@ extension MailViewModel {
     /// cache is the only place the draft still exists once the row is gone, so a
     /// failed delete has to be able to put exactly it back.
     func deleteDraft(_ draftID: String) async {
+        // The user's intent, recorded once at the point they expressed it: the
+        // delete is optimistic, and a server refusal is already covered by the
+        // restore path below rather than by a second event.
+        record(.draftDeleted)
         let restorable = try? await store.draft(id: draftID, accountID: accountID)
         do {
             try await store.deleteDraft(id: draftID, accountID: accountID)

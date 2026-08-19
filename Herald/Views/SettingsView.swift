@@ -12,8 +12,89 @@ struct SettingsView: View {
                 .tabItem { Label("Notifications", systemImage: "bell") }
             MailboxSettingsPane(model: environment.mail)
                 .tabItem { Label("Mailboxes", systemImage: "tray.2") }
+            PrivacySettingsPane(model: UsagePrivacyModel(usage: environment.usage))
+                .tabItem { Label("Privacy", systemImage: "hand.raised") }
         }
         .frame(width: 640, height: 320)
+    }
+}
+
+/// The usage-analytics opt-out. There is no `@AppStorage` mirror on purpose: the
+/// swift-stats SDK persists the choice and is the only reader of it, so a second
+/// copy in `UserDefaults` could only ever disagree with the truth.
+///
+/// Toggling it records NO usage event — an opt-out must not itself be reported.
+struct PrivacySettingsPane: View {
+    @State var model: UsagePrivacyModel
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Share anonymous usage", isOn: Binding(
+                    get: { model.isEnabled ?? false },
+                    set: { enabled in Task { await model.setEnabled(enabled) } }
+                ))
+                // Until the snapshot has been read there is nothing truthful to
+                // show, so the switch is inert rather than guessing a position.
+                .disabled(model.isEnabled == nil)
+                // While loading, the hint says why the switch is inert. Once
+                // loaded there is NO hint: the explanation below is a sibling
+                // element VoiceOver reads in its own right, and repeating it as
+                // the switch's hint reads the whole paragraph twice.
+                .accessibilityHint(Self.accessibilityHint(isEnabled: model.isEnabled))
+
+                Text(Self.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, MailTheme.Spacing.xxs)
+        .task { await model.load() }
+    }
+
+    /// The switch's VoiceOver hint. Only while the tracker's answer is still on
+    /// its way, where the disabled switch would otherwise be unexplained; once
+    /// loaded the hint is empty, because the visible explanation is its own
+    /// element and a hint repeating it makes VoiceOver read the paragraph twice.
+    static func accessibilityHint(isEnabled: Bool?) -> String {
+        isEnabled == nil ? "Loading current setting" : ""
+    }
+
+    /// Verbatim from the approved plan's "Opt-out copy". Every clause of the
+    /// "never sent" list is enforced by the privacy contract in `UsageEvent.swift`.
+    static let explanation = """
+        Sends which features you use (e.g. “archived a message”, “opened search”) and basic \
+        app/OS version info to Herald’s developer, tagged with a random per-install identifier \
+        so active installs can be counted. Never sent: your mail, subjects, addresses, search \
+        text, mailbox names, account details, file names, or anything you type. Turn this off \
+        and nothing further is sent, including anything queued.
+        """
+}
+
+/// The toggle's whole behaviour, out of the view so it can be tested.
+///
+/// `isEnabled` is an optional because the SDK offers a snapshot and no change
+/// stream: nil means "not read yet". Every write re-reads the tracker instead of
+/// trusting the value it just sent, so the switch always shows the SDK's truth.
+@MainActor
+@Observable
+final class UsagePrivacyModel {
+    private let usage: any UsageTracking
+    private(set) var isEnabled: Bool?
+
+    init(usage: any UsageTracking) {
+        self.usage = usage
+    }
+
+    func load() async {
+        isEnabled = await usage.isEnabled
+    }
+
+    func setEnabled(_ enabled: Bool) async {
+        await usage.setEnabled(enabled)
+        await load()
     }
 }
 

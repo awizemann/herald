@@ -10,6 +10,9 @@ first, then cut the release.
 
 ## [Unreleased]
 
+### Added
+- Anonymous, opt-out usage analytics (Settings → Privacy) — see README for what is and isn't sent.
+
 ## [0.2.1] - 2026-08-18
 
 ### Fixed

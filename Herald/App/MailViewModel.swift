@@ -105,6 +105,83 @@ final class MailViewModel {
     /// so the badge updates exactly when the count does. Observation-ignored: no
     /// view reads it, and assigning it would otherwise invalidate every observer.
     @ObservationIgnored var unreadCountDidChange: (@MainActor (Int) -> Void)?
+    /// Where usage events go. A closure rather than the tracker itself: the
+    /// view-model must not be able to reach `flush`/`setEnabled`, and
+    /// ``AppEnvironment`` owns the ordering chain behind this. Default no-op, so
+    /// every test that does not care about analytics records nothing.
+    @ObservationIgnored let record: @MainActor @Sendable (UsageEvent) -> Void
+
+    /// What the NEXT view change was reached by. Set by the caller immediately
+    /// before it navigates (a sidebar click, a search result, a notification, a
+    /// shortcut) and consumed by the very next attempt to change the view —
+    /// whether or not that attempt actually changes anything, so a no-op click
+    /// cannot leave a stale label behind for the next real navigation to wear.
+    @ObservationIgnored var pendingNavigationSource: UsageViewTrigger?
+
+    /// Takes the pending source, leaving `.other` behind for anything that
+    /// navigates without saying how.
+    private func consumeNavigationSource() -> UsageViewTrigger {
+        defer { pendingNavigationSource = nil }
+        return pendingNavigationSource ?? .other
+    }
+
+    /// The event vocabulary's name for a conversation folder.
+    nonisolated static func viewKind(for folder: ConversationFolder) -> UsageViewKind {
+        switch folder {
+        case .inbox: .inbox
+        case .sent: .sent
+        case .starred: .starred
+        case .archived: .archived
+        case .trash: .trash
+        case .catchall: .catchall
+        }
+    }
+
+    /// The view the middle column is showing right now.
+    private var currentViewKind: UsageViewKind {
+        if isShowingThread { return .thread }
+        if isShowingDrafts { return .drafts }
+        return Self.viewKind(for: selection.folder)
+    }
+
+    /// Raised around an assignment that changes the scope WITHOUT being a view the
+    /// user reached — today only the launch restore correcting the mailbox behind
+    /// a launch view that has already been reported. Only ever set for the
+    /// duration of one synchronous assignment, so nothing can observe it down
+    /// across a suspension.
+    @ObservationIgnored private var suppressesViewShown = false
+
+    /// Records one `view_shown`. Internal so the drafts extension can call it.
+    func recordViewShown(_ view: UsageViewKind, via: UsageViewTrigger) {
+        guard !suppressesViewShown else { return }
+        record(.viewShown(view: view, via: via))
+    }
+
+    /// The sidebar restoring the mailbox scope the window was last showing.
+    ///
+    /// This races ``start()``: SwiftUI runs the restore task whenever the mailbox
+    /// list first arrives, which can be before or after the view-model started.
+    /// Whichever gets here first reports THE launch view; the other stays silent,
+    /// so a launch is exactly one `view_shown` either way.
+    func restoreSelection(_ scope: FolderSelection) {
+        guard scope != selection else { return }
+        if didRecordLaunchView {
+            // The launch view is already out; this only corrects which mailbox
+            // it was showing, and is not a second view.
+            suppressesViewShown = true
+            defer { suppressesViewShown = false }
+            pendingNavigationSource = nil
+            selection = scope
+        } else {
+            didRecordLaunchView = true
+            pendingNavigationSource = .launch
+            selection = scope
+        }
+    }
+
+    /// Consumes the pending source even when nothing changed — see
+    /// ``pendingNavigationSource``. Internal for the drafts extension.
+    func takeNavigationSource() -> UsageViewTrigger { consumeNavigationSource() }
 
     // MARK: Published state
 
@@ -125,7 +202,12 @@ final class MailViewModel {
 
     var selection: FolderSelection {
         didSet {
+            // Consumed BEFORE the guard: re-picking the folder that is already
+            // showing is a navigation that happened, and leaving its `via` behind
+            // would mislabel whatever the user does next.
+            let via = consumeNavigationSource()
             guard selection != oldValue else { return }
+            recordViewShown(Self.viewKind(for: selection.folder), via: via)
             selectedThreadID = nil
             // Server search is scoped to (mailbox, folder): its rows answer the
             // OLD scope's question and would leak into the new folder's list.
@@ -182,6 +264,9 @@ final class MailViewModel {
             // list never shows the old query's server hits under the new one.
             cancelServerSearch()
             refilter()
+            // NOT reported here: this fires on every debounced keystroke, so
+            // "typed one word" would arrive as five searches. A search is what
+            // the user COMMITTED — see ``submitSearch()``.
             autoRunServerSearchIfSparse()
         }
     }
@@ -261,7 +346,13 @@ final class MailViewModel {
             // ONLY a user-driven selection drills: a programmatic advance past a
             // deleted row (see `select(_:drill:)`) must land on the next thread
             // without opening it (issue #5).
-            isShowingThread = drillsOnSelection ? (threadID.map(isMultiMessage) ?? false) : false
+            let drills = drillsOnSelection ? (threadID.map(isMultiMessage) ?? false) : false
+            // Only the way IN is an event. Dropping out of a thread because the
+            // selection moved (or the folder changed) is not a navigation of its
+            // own: whatever caused it already reported the view it landed on.
+            let entersThread = drills && !isShowingThread
+            isShowingThread = drills
+            if entersThread { recordViewShown(.thread, via: consumeNavigationSource()) }
             guard let threadID else { return }
             threadTask = Task { await loadThread(threadID) }
         }
@@ -351,8 +442,10 @@ final class MailViewModel {
         events: AsyncStream<SyncEvent>,
         markReadDelay: Duration = .seconds(1),
         defaults: UserDefaults = .standard,
-        notifier: NewMailNotifier? = nil
+        notifier: NewMailNotifier? = nil,
+        record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in }
     ) {
+        self.record = record
         self.defaults = defaults
         self.notifier = notifier
         self.accountID = accountID
@@ -544,7 +637,17 @@ final class MailViewModel {
 
     /// The Return key in the search field: search the server for what is on
     /// screen now, whether or not the local pass found anything.
+    ///
+    /// This is also where the LOCAL search is reported. The local tier has been
+    /// re-running on every debounced keystroke since the first letter; the moment
+    /// the user pressed Return is the one moment they asked a question, and only
+    /// the RESULT COUNT is reported, bucketed — the needle itself never leaves.
     func submitSearch() {
+        if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            record(.searchRun(
+                scope: .local, results: UsageBucket(count: presentedConversations.count)
+            ))
+        }
         runServerSearch()
     }
 
@@ -620,6 +723,9 @@ final class MailViewModel {
                 // failure is not a failure the user should be told about.
                 guard !Task.isCancelled, !Self.isCancellation(error), isCurrentSearch(query, scope) else { return }
                 logger.warning("Server search failed: \(error.localizedDescription, privacy: .private)")
+                // Anything that is not a `MailAPIError` counts as `other`: the
+                // search failed either way, and nothing of the error survives.
+                record(.searchFailed(kind: UsageMailErrorKind(anyError: error)))
                 serverResults = collected
                 serverSearchState = .failed(Self.serverSearchMessage(for: error))
                 refilter()
@@ -636,6 +742,7 @@ final class MailViewModel {
         }
 
         guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
+        record(.searchRun(scope: .server, results: UsageBucket(count: collected.count)))
         serverResults = collected
         serverSearchState = .completed(collected.count)
         refilter()
@@ -711,6 +818,33 @@ final class MailViewModel {
 
     /// The back chevron / ⎋ / ⌘[: leave the thread, keep the row selected.
     func exitThread() {
+        guard isShowingThread else { return }
+        isShowingThread = false
+        // Back to whatever list was underneath.
+        recordViewShown(currentViewKind, via: consumeNavigationSource())
+    }
+
+    /// ⌘[ and ⎋: the same back step, reached from the keyboard rather than by
+    /// clicking the chevron. The source is cleared afterwards rather than left
+    /// for the next navigation to wear, since ``exitThread()`` consumes nothing
+    /// when there is no thread to leave.
+    func exitThreadViaShortcut() {
+        pendingNavigationSource = .shortcut
+        exitThread()
+        pendingNavigationSource = nil
+    }
+
+    /// ⏎ in the conversation list — the keyboard's way into a thread.
+    func openSelectedThreadViaShortcut() {
+        pendingNavigationSource = .shortcut
+        openSelectedThread()
+        pendingNavigationSource = nil
+    }
+
+    /// Leaves the thread pane WITHOUT reporting a view: for callers that are on
+    /// their way somewhere else and will report that destination themselves
+    /// (entering the Drafts folder).
+    func leaveThreadSilently() {
         isShowingThread = false
     }
 
@@ -719,7 +853,9 @@ final class MailViewModel {
     /// it is already fully shown in the reading pane.
     func openSelectedThread() {
         guard let selectedThreadID, isMultiMessage(selectedThreadID) else { return }
+        guard !isShowingThread else { return }
         isShowingThread = true
+        recordViewShown(.thread, via: consumeNavigationSource())
     }
 
     /// Drills into a specific row — the mouse-click path, where the click both
@@ -727,6 +863,11 @@ final class MailViewModel {
     /// thread, and re-clicking the row that is already selected must still open
     /// it (the selection binding would report no change at all).
     func openThread(_ threadID: String) {
+        // A row opened out of a filtered list was reached by searching, whatever
+        // the mouse did to get there. An explicit source still wins.
+        if pendingNavigationSource == nil, !searchQuery.isEmpty {
+            pendingNavigationSource = .search
+        }
         selectedThreadID = threadID
         openSelectedThread()
     }
@@ -767,6 +908,9 @@ final class MailViewModel {
     /// through to `UserDefaults` AND to the observed map: the map is what repaints
     /// the list, the defaults write is what survives relaunch.
     func setMailboxColorToken(_ token: String?, for mailboxID: String) {
+        // No props: the token is a colour NAME the user chose per mailbox, and
+        // the mailbox id is an identifier. Neither may be reported.
+        record(.mailboxColorChanged)
         let key = MailboxColorAssignment.storageKey(accountID: accountID, mailboxID: mailboxID)
         if let token, MailTheme.mailboxTint(named: token) != nil {
             mailboxColorOverrides[mailboxID] = token
@@ -851,10 +995,41 @@ final class MailViewModel {
         await reloadMailboxes()
         await reloadConversations()
         await reloadDrafts()
+        // The launch view has to be said out loud: `selection` is assigned in
+        // `init`, where a `didSet` does not fire, so nothing else reports the
+        // folder the window comes up on. Once per view-model — a re-`start()`
+        // (there is none today) must not double-count a launch.
+        guard !didRecordLaunchView else { return }
+        didRecordLaunchView = true
+        pendingNavigationSource = nil
+        recordViewShown(currentViewKind, via: .launch)
     }
+
+    @ObservationIgnored private var didRecordLaunchView = false
 
     /// Set by ``refresh()``, consumed by the next `.finished` event.
     @ObservationIgnored private var reloadsWhenPassFinishes = false
+
+    // MARK: Sync trigger attribution
+    //
+    // ``SyncEvent`` carries no trigger, so it is derived here: the FIRST pass a
+    // view-model sees is the launch pass, an explicit ``refresh()`` claims the
+    // next completion as manual, and everything else is the cadence.
+
+    /// Claimed by ``refresh(trigger:)``, consumed by the next terminal event.
+    @ObservationIgnored private var requestedSyncTrigger: UsageSyncTrigger?
+    @ObservationIgnored private var hasReportedSyncPass = false
+    /// Whether anything actually changed during the pass now in flight.
+    @ObservationIgnored private var passChangedAnything = false
+
+    private func consumeSyncTrigger() -> UsageSyncTrigger {
+        defer {
+            requestedSyncTrigger = nil
+            hasReportedSyncPass = true
+        }
+        if let requestedSyncTrigger { return requestedSyncTrigger }
+        return hasReportedSyncPass ? .auto : .launch
+    }
 
     /// The Refresh button (and ⌘⇧K, and the post-action refresh).
     ///
@@ -864,8 +1039,12 @@ final class MailViewModel {
     /// but leaving the folder and coming back does" (issue #6). Whatever the
     /// ChangeSets say, an explicit refresh reloads the presented scope once the
     /// pass finishes, because that is what pressing Refresh means.
-    func refresh() async {
+    /// - Parameter trigger: how this pass is reported. The button, ⌘⇧K and the
+    ///   pull-to-refresh path are `manual`; the reload that follows an action is
+    ///   Herald's own doing and must not inflate the manual count.
+    func refresh(trigger: UsageSyncTrigger = .manual) async {
         reloadsWhenPassFinishes = true
+        if trigger == .manual { requestedSyncTrigger = .manual }
         await sync?.refreshNow()
     }
 
@@ -880,7 +1059,10 @@ final class MailViewModel {
             switch event {
             case .began:
                 if status != .needsReauth { status = .syncing }
+                passChangedAnything = false
             case .finished:
+                record(.syncCompleted(trigger: consumeSyncTrigger(), changed: passChangedAnything))
+                passChangedAnything = false
                 if status != .needsReauth {
                     status = .idle
                     lastSyncedAt = .now
@@ -891,13 +1073,22 @@ final class MailViewModel {
                     await reloadConversations()
                 }
             case .changed(let changes):
+                if !changes.isEmpty { passChangedAnything = true }
                 // Before the reloads: the banner is about what ARRIVED, and the
                 // reload path can take several store round trips.
                 await notifyNewMail(changes)
                 await apply(changes)
             case .draftsChanged(let changes):
+                if !changes.isEmpty { passChangedAnything = true }
                 await applyDraftChanges(changes)
             case .failed(let error):
+                // A `MailAPIError` reports its case; anything else (an OAuth
+                // failure surfacing as the re-auth banner) reports `other`, so a
+                // pass that failed is never invisible. No made-up kind, and
+                // nothing of the error itself.
+                let trigger = consumeSyncTrigger()
+                passChangedAnything = false
+                record(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
                 if Self.requiresReauthentication(error) {
                     status = .needsReauth
                 } else {
@@ -946,15 +1137,30 @@ final class MailViewModel {
         // list, so a banner clicked while it is open would select the thread
         // behind a drafts list that never went away — the reading pane would
         // change and nothing else would, with the sidebar still on Drafts.
-        showDrafts(false)
+        // How this reveal was reached is the CALLER's to say — the notification
+        // router sets `.notification` before calling — so an unattributed reveal
+        // is `other` like every other unlabelled navigation, rather than being
+        // silently credited to a banner nobody clicked.
+        let via = pendingNavigationSource ?? .other
+        pendingNavigationSource = nil
+        let wasShowingDrafts = isShowingDrafts
+        // Silent: the view this lands on is the inbox, reported once below —
+        // never a drafts→inbox→inbox trail for one click.
+        showDrafts(false, silently: true)
         searchQuery = ""
         let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
         if selection != inbox {
+            pendingNavigationSource = via
             selection = inbox
             // The `didSet` starts the reload; awaiting it is what makes the row
             // available to select below.
             await reloadTask?.value
+        } else if wasShowingDrafts || isShowingThread {
+            // Already on the inbox scope, but not looking at it: the click still
+            // moved the user back to the conversation list.
+            recordViewShown(.inbox, via: via)
         }
+        leaveThreadSilently()
         if !allConversations.contains(where: { $0.id == threadID }) {
             await reloadConversations()
         }
@@ -962,7 +1168,11 @@ final class MailViewModel {
             logger.info("Notification named a conversation that is no longer in the inbox")
             return
         }
+        // Set only now, so a thread that turned out to be gone leaves nothing
+        // stale behind for the user's next click to wear.
+        pendingNavigationSource = via
         select(threadID, drill: true)
+        pendingNavigationSource = nil
     }
 
     /// Reloads only the slices a change actually touched.
@@ -1349,6 +1559,7 @@ final class MailViewModel {
             actionError = error.localizedDescription
             return
         }
+        record(.remoteMediaLoaded)
         await loadBody(for: detail, allowRemote: true)
     }
 

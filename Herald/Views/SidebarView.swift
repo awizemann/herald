@@ -61,6 +61,7 @@ struct SidebarView: View {
             get: { model.selection.mailboxID ?? "" },
             set: { newValue in
                 storedMailboxID = newValue
+                model.pendingNavigationSource = .sidebar
                 model.selection = MailViewModel.FolderSelection(
                     mailboxID: newValue.isEmpty ? nil : newValue,
                     folder: model.selection.folder
@@ -105,10 +106,14 @@ struct SidebarView: View {
             return
         }
         guard model.selection.mailboxID != storedMailboxID else { return }
-        model.selection = MailViewModel.FolderSelection(
+        // Nobody clicked anything: this is the launch restoring the scope the
+        // window was last showing. Routed through the model rather than assigned
+        // here, because the launch view is reported exactly once and this path
+        // races `start()` for the right to report it.
+        model.restoreSelection(MailViewModel.FolderSelection(
             mailboxID: storedMailboxID,
             folder: model.selection.folder
-        )
+        ))
     }
 
     // MARK: Header

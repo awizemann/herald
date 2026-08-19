@@ -16,9 +16,9 @@
 - [ ] Verify journal-mode sync live once an HQBase release includes #35/#37; retire the 100-cap guard note (id: t-8a1c0051) (added: 2026-08-18) (priority: high)
 - [ ] Wire "Put back" from Trash once upstream ships a restore action (HQBase/hqbase#42; Herald #7) (id: t-8a1c0050) (added: 2026-08-18) (priority: medium)
 - [ ] Reading pane polish: collapse quoted history, system font for text/plain bodies (id: t-8a1c0017) (added: 2026-08-15) (priority: medium)
-- [ ] Enforce per-draft 25 MiB attachment total client-side (id: t-8a1c0014) (added: 2026-08-15) (priority: low)
 - [ ] Keychain I/O off the main actor at boot (id: t-8a1c0012) (added: 2026-08-15) (priority: low)
 - [ ] Optimistic action vs concurrent sync pass fence (id: t-8a1c0011) (added: 2026-08-15) (priority: medium)
+- [ ] Follow-ups from 2026-08-18 feature audit (compose test handshake, pendingRoute clearing, stale search field, quotedBody dead code) (id: t-19d0d9ef) (added: 2026-08-18) (priority: low)
 
 ## Doing
 
@@ -26,6 +26,14 @@
 
 ## Done
 
+- [x] Fix release.sh cosmetic "(dry run)" label that shows on every run (id: t-043ea358) (added: 2026-08-18) (priority: low)
+- [x] P3 Upstream Issue drafts: MIME part type, LIKE escaping, FTS, changes/stream, drafts journal (id: t-90f087d0) (added: 2026-08-18)
+- [x] P5 Drafts folder: sidebar item, draft cache polled via listDrafts, resume/delete (id: t-844a7a0f) (added: 2026-08-18)
+- [x] P6 Search: widen local index + escalate to server search for the selected folder (id: t-b0632395) (added: 2026-08-18)
+- [x] P4 Notifications: local new-mail notifications + Dock badge from ChangeSet.inserted (id: t-051b3799) (added: 2026-08-18) (priority: high)
+- [x] Enforce per-draft 25 MiB attachment total client-side (id: t-8a1c0014) (added: 2026-08-15) (priority: low)
+- [x] P2 Attachments polish: 25 MiB caps, drag/paste, in-flight UI, QuickLook (id: t-0f5393b9) (added: 2026-08-18)
+- [x] P1 Multi-account: per-account graphs in AppEnvironment + sidebar account switcher (id: t-a78d4e01) (added: 2026-08-18) (priority: high)
 - [x] Split MailStore.swift (1254) and MailViewModel.swift (1183) under the 1000-line limit (id: t-9f94365e) (added: 2026-08-18)
 - [x] Replace KeychainAccountStore NSLock with os_unfair_lock (not actor — sync nonisolated protocol) (id: t-e2af8452) (added: 2026-08-18)
 - [x] Add MailTheme token scales (spacing/radius/typography/animation) and migrate literals (id: t-2144407d) (added: 2026-08-18) (priority: high)

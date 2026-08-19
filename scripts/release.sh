@@ -88,7 +88,7 @@ require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $
 cd "$REPO_ROOT"
 
 # ---------- preflight ----------
-log "Preflight${DRY_RUN:+ (dry run)}"
+log "Preflight$([[ $DRY_RUN -eq 1 ]] && printf ' (dry run)')"
 python3 "$CHANGELOG_SECTION" "$VERSION" >/dev/null 2>&1 \
   || die "CHANGELOG.md has no '## [$VERSION]' section — write the release notes first (see CHANGELOG.md header)"
 require_cmd xcodebuild; require_cmd xcrun; require_cmd ditto; require_cmd gh; require_cmd xcodegen; require_cmd git

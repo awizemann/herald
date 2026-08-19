@@ -2,11 +2,9 @@
 title: Upstream PR Queue
 type: note
 permalink: hqbase-mac/roadmap/upstream-pr-queue
-tags:
-- upstream
-- roadmap
+tags: [upstream, roadmap]
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-18
 ---
 
 Owner decision 2026-08-15: submit upstream changes as separate PRs, in order, smallest first; the
@@ -56,3 +54,9 @@ client itself comes last after UI polish. Branches live in the fork ~/Developer/
 
 ## Update (2026-08-18 — close)
 - [fact] Open upstream threads: #41 (refresh-token reuse interval), #42 (restore action + document folder restrictions), #32 (adoption: recommended community client). Herald #7 blocked on #42. All PR branches deleted from awizemann/hqbase-fork (everything merged) #status
+
+
+## Update (2026-08-18 late — six feature-gap issues filed)
+- [fact] Filed HQBase/hqbase #44 (search LIKE wildcards unescaped), #45 (draft attachment multipart part lacks Content-Type in spec — server already honours file.type), #46 (expose forwardMessage on /api/v1), #47 (drafts absent from changes journal, GET /drafts unpaged, dead `drafts` message folder), #48 (SSE/long-poll changes stream), #49 (FTS5 search design); drafts kept in documents/upstream/issues-2026-08-18/ #issues
+- [fact] Review 2026-08-18: #41/#42/#32 have no new replies; upstream spec on main differs from vendored copy only in nullable notation (normalized by vendor-openapi.py) — no regen needed; no HQBase release yet includes #35/#37 (latest 1.1.2) #status
+- [todo] PR #34 (`hqbase domain`, other session's branch feat/hqbase-domain-move) has CHANGES_REQUESTED from bermanto: detach path, BETTER_AUTH_URL update, non-interactive conflict override, manifest ordering, attach-verify-cutover-redirect design + hqbase-site spec + operator guide, real-Wrangler regression tests, fail-closed around experimental `wrangler triggers deploy`, CI action_required #pr34

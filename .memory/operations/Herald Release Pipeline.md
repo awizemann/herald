@@ -2,12 +2,9 @@
 title: Herald Release Pipeline
 type: note
 permalink: hqbase-mac/operations/herald-release-pipeline
-tags:
-- release
-- sparkle
-- operations
+tags: [release, sparkle, operations]
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-18
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -35,3 +32,10 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [done] Sparkle self-update PROVEN 2026-08-16: installed 0.1.0 offered and installed 0.1.1 — the pipeline is verified end to end #verified
 - [rule] Full release runbook: (1) CHANGELOG section, (2) tree clean on main, (3) `NOTARY_PROFILE=shabubox-notary ./scripts/release.sh <v>` [--dry-run first if anything changed in the pipeline], (4) verify `curl -s https://awizemann.github.io/herald/appcast.xml | grep <v>` and `spctl -a -vv` on the downloaded zip, (5) push main (release.sh commits the version bump) #runbook
 - [gotcha] 2026-08-18: the notarytool keychain profile `shabubox-notary` vanished from the login keychain (worked for 0.1.3 an hour earlier; Sparkle key + Herald items intact; cause unknown). Recreate with `xcrun notarytool store-credentials shabubox-notary --key <p8> --key-id <id> --issuer <issuer>` (or --apple-id/--team-id/--password). Preflight fails cleanly before any bump #notary
+
+
+## Update (2026-08-18 — v0.2.1 shipped)
+- [done] v0.2.1 released (build 6): notarization Accepted, tag v0.2.1 pushed, GitHub release live (Herald-0.2.1.zip, HTTP 200), gh-pages appcast advertises 0.2.1. Contents: new-mail row-height fix + debug-namespace + the standards-audit remediation (design tokens, MailStore/MailViewModel split, os_unfair_lock, hygiene) #release
+- [fact] `shabubox-notary` profile was present and working again this run (the 2026-08-18 vanish was recreated); `herald-notary` is absent — use `NOTARY_PROFILE=shabubox-notary` #notary
+- [gotcha] release.sh:91 prints "Preflight (dry run)" on EVERY run (real releases included): `${DRY_RUN:+ (dry run)}` fires because DRY_RUN defaults to the non-empty string "0". Cosmetic only — real gates use `[[ $DRY_RUN -eq 1 ]]`. Fix tracked in t-043ea358 #bug
+- [fact] generate_appcast scans only releases/v<this>, so each release overwrites the gh-pages appcast with a SINGLE-item appcast (latest only) — correct for Sparkle; the Pages CDN serves the prior version for ~1 min after push (raw.githubusercontent shows the new one immediately) #appcast

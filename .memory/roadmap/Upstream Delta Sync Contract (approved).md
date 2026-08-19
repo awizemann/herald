@@ -6,6 +6,8 @@ tags:
 - upstream
 - sync
 - contract
+created: 2026-08-18
+updated: 2026-08-18
 ---
 
 bermanto approved delta sync on 2026-08-17 (https://github.com/HQBase/hqbase/issues/11#issuecomment-5310381797)

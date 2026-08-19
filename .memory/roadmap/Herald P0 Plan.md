@@ -2,11 +2,9 @@
 title: Herald P0 Plan
 type: note
 permalink: hqbase-mac/roadmap/herald-p0-plan
-tags:
-- roadmap
-- p0
+tags: [roadmap, p0]
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-18
 ---
 
 P0 = a usable read/triage/reply client against a v1.1.0 HQBase: add account (origin + OAuth PKCE),
@@ -20,6 +18,7 @@ reply/new message (plain text), local cache for instant launch, polling sync.
 ## Relations
 - relates_to [[Herald Architecture]]
 - relates_to [[Herald Sync Model]]
+- relates_to [[Herald Multi-Account, Notifications, Drafts and Search Design]]
 
 ## Update (2026-08-15 — P0 complete)
 - [done] P0.1–P0.6 shipped on main (9 commits): 112 kit + 32 app discriminating tests green under Swift 6.4 / Xcode 27b; three read-only specialist audits (concurrency, security, testing) + two UI audits (SwiftUI, a11y/perf) → 41 verified fixes applied #status
@@ -55,3 +54,8 @@ reply/new message (plain text), local cache for instant launch, polling sync.
 - [done] v0.2.0: journal/pagination sync (with hardening from audit), auth cross-process fix (root cause #3: refresh rotation family invalidation across two Herald processes), maintainer issues #5 #6 #8 fixed; #7 open (needs upstream restore action, HQBase/hqbase#42); upstream #41 (reuse interval) filed. Kit 157 / app 78 tests #shipped
 - [todo] Next session: (1) watch #41/#42/#32 and Herald #7; (2) when an HQBase release includes #35/#37, verify journal mode live and retire the 100-cap guard note; (3) if #42 lands, wire "Put back"; (4) cosmetic: re-auth banner replaces the account header instead of stacking; (5) polish tickets on the board #next
 - [fact] Session close 2026-08-18: all work on main (hqbase-mac 25b552c), fork branches deleted (all merged upstream), worktrees + scratch cleaned; ~/Developer/hqbase belongs to another live session (feat/hqbase-domain-move) #state
+
+
+## Update (2026-08-18 — post-P0 features landed)
+- [done] All five deferred items shipped on main in one orchestrated run (P1 multi-account, P2 attachments polish, P4 notifications, P5 drafts folder, P6 search) — see [[Herald Multi-Account, Notifications, Drafts and Search Design]]; upstream Issue drafts in documents/upstream/issues-2026-08-18/ await filing #features
+- [todo] Follow-ups: re-auth still discards that account's open composers; account unreachable at launch missing from switcher until relaunch; delete-draft-while-composer-open re-creates the row; same draft opened twice → two windows; reloadUnreadCounts staleness guard; cc not in local search index #followups

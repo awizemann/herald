@@ -73,7 +73,9 @@ import Testing
         "attachment_saved": [:],
         "remote_media_loaded": [:],
         "account_added": ["outcome": accountOutcomes, "kind": oauthErrorKinds],
-        "account_reauthenticated": ["outcome": accountOutcomes, "kind": oauthErrorKinds],
+        "account_reauthenticated": [
+            "outcome": accountOutcomes, "kind": oauthErrorKinds, "automatic": Set<String>?.none,
+        ],
         "account_removed": [:],
         "account_switched": ["accounts": buckets],
         "notifications_toggled": ["enabled": Set<String>?.none],

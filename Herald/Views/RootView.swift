@@ -162,12 +162,26 @@ struct ReauthBanner: View {
     let accountID: Account.ID
 
     var body: some View {
+        // Herald tries the sign-in itself when the app is frontmost (see
+        // `AppEnvironment.attemptAutomaticReauthentication`). The banner does not
+        // disappear for it — the account IS still signed out — it says what is
+        // happening and withdraws the button, which would otherwise open a second
+        // authorization window over the one already up.
+        let isAutomatic = environment.isReauthenticating(accountID: accountID)
         BannerView(
             systemImage: "lock.fill",
             tint: MailTheme.failure,
-            text: "Your session expired. Sign in again to keep syncing."
+            text: isAutomatic
+                ? "Your session expired. Signing you back in…"
+                : "Your session expired. Sign in again to keep syncing."
         ) {
-            Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
+            if isAutomatic {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+            } else {
+                Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
+            }
         }
     }
 }

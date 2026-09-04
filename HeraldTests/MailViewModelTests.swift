@@ -440,6 +440,50 @@ func wait(
         }
         #expect(harness.model.mailboxName(for: "mbC") != nil, "the row's chip needs the mailbox name on first render")
     }
+
+    /// The automatic re-auth hook must fire on the TRANSITION into
+    /// `needsReauth`, once. Fails if it were announced per failed pass: every
+    /// poll fails identically while the session is dead, and `AppEnvironment`
+    /// would be asked for a new authorization window on every cadence tick.
+    @Test func anExpiredSessionAsksForReauthenticationExactlyOncePerExpiry() async throws {
+        let harness = try await Harness.make()
+        var requests: [String] = []
+        harness.model.reauthenticationRequired = { requests.append($0) }
+        await harness.model.start()
+
+        harness.events.yield(.failed(MailAPIError.unauthorized))
+        try await wait("the banner to come up") { harness.model.status == .needsReauth }
+        harness.events.yield(.failed(OAuthError.reauthenticationRequired))
+        harness.events.yield(.failed(MailAPIError.unauthorized))
+        // A pass that begins and finishes while the session is still dead keeps
+        // the banner; it must not re-arm the announcement either.
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        // The stream is ordered: a later event landing proves the ones above were
+        // consumed, without waiting on a clock.
+        harness.events.yield(.failed(MailAPIError.server(code: "boom", message: "boom")))
+        try await wait("every queued pass to be consumed") {
+            if case .failed = harness.model.status { return true } else { return false }
+        }
+
+        #expect(requests == ["acct"], "one expired session is one re-auth request")
+    }
+
+    /// Fails if an ordinary sync failure (offline, 500) asked for a sign-in — it
+    /// belongs on "Sync problem / Retry", and a browser window for a flaky
+    /// network would be indefensible.
+    @Test func anOrdinaryFailureNeverAsksForReauthentication() async throws {
+        let harness = try await Harness.make()
+        var requests: [String] = []
+        harness.model.reauthenticationRequired = { requests.append($0) }
+        await harness.model.start()
+
+        harness.events.yield(.failed(MailAPIError.server(code: "boom", message: "boom")))
+        try await wait("the failure to surface") {
+            if case .failed = harness.model.status { return true } else { return false }
+        }
+        #expect(requests.isEmpty)
+    }
 }
 
 @MainActor

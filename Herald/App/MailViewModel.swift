@@ -105,6 +105,12 @@ final class MailViewModel {
     /// so the badge updates exactly when the count does. Observation-ignored: no
     /// view reads it, and assigning it would otherwise invalidate every observer.
     @ObservationIgnored var unreadCountDidChange: (@MainActor (Int) -> Void)?
+    /// Called with this account's id the moment sync decides only a fresh
+    /// sign-in can fix things — on the TRANSITION into ``SyncStatus/needsReauth``
+    /// and not on the failed passes that follow it, so one expired session is one
+    /// request no matter how many polls fail behind it. ``AppEnvironment`` decides
+    /// whether to act on it; the banner is up either way.
+    @ObservationIgnored var reauthenticationRequired: (@MainActor (Account.ID) -> Void)?
     /// Where usage events go. A closure rather than the tracker itself: the
     /// view-model must not be able to reach `flush`/`setEnabled`, and
     /// ``AppEnvironment`` owns the ordering chain behind this. Default no-op, so
@@ -1090,7 +1096,12 @@ final class MailViewModel {
                 passChangedAnything = false
                 record(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
                 if Self.requiresReauthentication(error) {
+                    // The transition is the event: every poll while the session
+                    // is dead fails the same way, and re-announcing it would ask
+                    // for a new authorization window per cadence tick.
+                    let isNewExpiry = status != .needsReauth
                     status = .needsReauth
+                    if isNewExpiry { reauthenticationRequired?(accountID) }
                 } else {
                     status = .failed(error.localizedDescription)
                 }

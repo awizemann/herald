@@ -284,6 +284,147 @@ import Testing
         #expect(environment.graphs.count == 2, "…but it still has to be running")
     }
 
+    // MARK: Automatic re-authentication
+
+    /// A dead port: discovery refuses immediately, so the automatic attempt runs
+    /// its real path and fails fast without leaving the machine.
+    private static func unreachableAccount() -> Account {
+        Account(origin: URL(string: "https://127.0.0.1:9")!, clientID: "cid", scopes: [])
+    }
+
+    /// Herald's frontmost state, flipped mid-test.
+    private final class ActivationFlag: @unchecked Sendable {
+        var isActive: Bool
+        init(_ isActive: Bool) { self.isActive = isActive }
+    }
+
+    /// An API client whose every conversation fetch is a 401, which is what a
+    /// dead HQBase web session looks like to the sync engine.
+    private static func expiredAPI() async -> FakeMailAPIClient {
+        let api = FakeMailAPIClient()
+        await api.setListError(.unauthorized)
+        return api
+    }
+
+    private static func environment(
+        account: Account,
+        tracker: RecordingUsageTracker,
+        flag: ActivationFlag
+    ) -> AppEnvironment {
+        AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [account])),
+            defaults: scratchDefaults(),
+            usage: tracker,
+            isApplicationActive: { flag.isActive }
+        )
+    }
+
+    /// The whole point of the guardrail AND of the deferral behind it: an expired
+    /// session discovered while the user is in another app must NOT open a
+    /// consent window then — and must not be forgotten either, because that is
+    /// when sessions expire. Fails both if Herald signs in behind the user's back
+    /// and if coming back to Herald never retries (the feature would then almost
+    /// never fire, since the sync pass that finds the expiry usually runs in the
+    /// background).
+    @Test func anExpirySeenInTheBackgroundIsDeferredUntilHeraldIsFrontmost() async throws {
+        let account = Self.unreachableAccount()
+        let tracker = RecordingUsageTracker()
+        let flag = ActivationFlag(false)
+        let environment = Self.environment(account: account, tracker: tracker, flag: flag)
+        await environment.install(account: account, api: await Self.expiredAPI(), store: try MailStore.inMemory())
+
+        try await wait("the expired session to reach the banner") {
+            environment.graphs[account.id]?.mail.status == .needsReauth
+        }
+        await environment.drainPendingUsage()
+        #expect(await tracker.names.contains("account_reauthenticated") == false, "signed in behind the user's back")
+        #expect(environment.isReauthenticating(accountID: account.id) == false)
+
+        // The user comes back to Herald.
+        flag.isActive = true
+        await environment.setWindowActive(true)
+
+        await environment.drainPendingUsage()
+        let reauths = await tracker.events.filter { $0.name == "account_reauthenticated" }
+        #expect(reauths.count == 1, "the deferred repair was dropped instead of retried")
+        #expect(reauths.first?.props["automatic"] == .bool(true), "an automatic attempt must be labelled one")
+        // It failed (the origin is unreachable), so the banner is still the way
+        // back in — and nothing of the attempt leaked into the sheet state.
+        #expect(environment.isReauthenticating(accountID: account.id) == false)
+        #expect(environment.presentsAddAccount == false)
+        #expect(environment.signInError == nil, "an automatic failure must stay quiet")
+        #expect(environment.isSigningIn == false)
+    }
+
+    /// Fails if the cooldown is not wired to the entry point: every activation —
+    /// and every failed poll — would otherwise reopen the consent window.
+    @Test func aFailedAutomaticAttemptIsNotRepeatedImmediately() async throws {
+        let account = Self.unreachableAccount()
+        let tracker = RecordingUsageTracker()
+        let environment = Self.environment(account: account, tracker: tracker, flag: ActivationFlag(true))
+        await environment.install(account: account, api: await Self.expiredAPI(), store: try MailStore.inMemory())
+
+        try await wait("the automatic attempt to run and fail") {
+            await environment.drainPendingUsage()
+            return await tracker.names.contains("account_reauthenticated")
+        }
+        await environment.setWindowActive(true)
+        await environment.attemptAutomaticReauthentication(accountID: account.id)
+
+        await environment.drainPendingUsage()
+        let reauths = await tracker.names.filter { $0 == "account_reauthenticated" }
+        #expect(reauths.count == 1, "the cooldown did not suppress the later attempts")
+    }
+
+    /// An account syncing BEHIND the window must not sign itself in: the sign-in
+    /// selects the account it installs, which would pull the user off the mail
+    /// they are reading. Fails if the attempt is not scoped to the selection.
+    @Test func aBackgroundAccountDoesNotSignItselfIn() async throws {
+        let background = Self.unreachableAccount()
+        let front = Self.account("front.example.com")
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [background, front])),
+            defaults: Self.scratchDefaults(),
+            usage: tracker,
+            isApplicationActive: { true }
+        )
+        let store = try MailStore.inMemory()
+        await environment.install(account: background, api: await Self.expiredAPI(), store: store)
+        await environment.install(account: front, api: FakeMailAPIClient(), store: store)
+        #expect(environment.selectedAccountID == front.id)
+
+        try await wait("the background account's session to expire") {
+            environment.graphs[background.id]?.mail.status == .needsReauth
+        }
+        await environment.setWindowActive(true)
+
+        await environment.drainPendingUsage()
+        #expect(await tracker.names.contains("account_reauthenticated") == false)
+        #expect(environment.selectedAccountID == front.id, "a background account stole the window")
+    }
+
+    /// Signing out while an automatic attempt is in flight used to be able to
+    /// bring the account back: the attempt's `install` lands after the removal
+    /// and re-selects it. Fails if the sign-out does not cancel and await the
+    /// attempt.
+    @Test func signingOutCancelsAnAutomaticAttempt() async throws {
+        let account = Self.unreachableAccount()
+        let tracker = RecordingUsageTracker()
+        let environment = Self.environment(account: account, tracker: tracker, flag: ActivationFlag(true))
+        await environment.install(account: account, api: await Self.expiredAPI(), store: try MailStore.inMemory())
+        try await wait("the expired session to reach the banner") {
+            environment.graphs[account.id]?.mail.status == .needsReauth
+        }
+
+        await environment.signOut(accountID: account.id)
+
+        #expect(environment.graphs[account.id] == nil, "the signed-out account came back")
+        #expect(environment.accountIDs.isEmpty)
+        #expect(environment.isReauthenticating(accountID: account.id) == false)
+        #expect(environment.phase == .signedOut)
+    }
+
     /// A throwaway suite, so a test never writes the developer's real pick.
     private static func scratchDefaults() -> UserDefaults {
         let suite = "AppEnvironmentTests.\(UUID().uuidString)"

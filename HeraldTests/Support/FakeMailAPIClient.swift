@@ -56,8 +56,15 @@ actor FakeMailAPIClient: MailAPIClient {
 
     // MARK: MailAPIClient
 
+    /// Set to make every sync pass fail at its first request — `.unauthorized`
+    /// is what a dead HQBase web session looks like to the engine.
+    private var listError: MailAPIError?
+
+    func setListError(_ error: MailAPIError?) { listError = error }
+
     func listMailboxes() async throws -> [Mailbox] {
         mailboxRequestCount += 1
+        if let listError { throw listError }
         return []
     }
 

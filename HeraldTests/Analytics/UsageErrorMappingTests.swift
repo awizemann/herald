@@ -90,7 +90,7 @@ import Testing
         #expect(UsageEventContractTests.oauthErrorKinds.contains(kind.rawValue))
         expectNoLeak(in: [
             .accountAdded(outcome: .failed, kind: kind),
-            .accountReauthenticated(outcome: .failed, kind: kind),
+            .accountReauthenticated(outcome: .failed, kind: kind, automatic: false),
         ])
     }
 

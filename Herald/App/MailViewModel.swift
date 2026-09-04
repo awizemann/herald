@@ -17,6 +17,16 @@ nonisolated protocol MailSyncing: Sendable {
 
 extension SyncEngine: MailSyncing {}
 
+/// The wake socket, as the view-model needs it: something it can bring up while
+/// the app is frontmost and take down when it is not. `nonisolated` so
+/// ``MailEventSocket`` (an actor) can conform.
+nonisolated protocol MailWaking: Sendable {
+    func start() async
+    func stop() async
+}
+
+extension MailEventSocket: MailWaking {}
+
 /// A request to open the composer. P0.5 owns the composer itself; this is the
 /// hook it plugs into, so ⌘R already has somewhere to land.
 nonisolated struct ComposeRequest: Sendable, Hashable, Identifiable {
@@ -99,6 +109,11 @@ final class MailViewModel {
     let actions: MailActionService
     /// Internal for the same reason as ``store``: the drafts extension drives it.
     let sync: (any MailSyncing)?
+    /// The wake socket, when this account has one. Assigned after `init` rather
+    /// than injected, because the socket's callbacks point back AT this
+    /// view-model: it cannot exist before the thing it talks to. `nil` in tests
+    /// that are not about it, and on any account whose graph came up without one.
+    @ObservationIgnored var wake: (any MailWaking)?
     private let events: AsyncStream<SyncEvent>
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
@@ -1120,6 +1135,66 @@ final class MailViewModel {
 
     func setActive(_ active: Bool) async {
         await sync?.setCadence(active ? .active : .idle)
+        // The wake socket follows the app's activation, exactly like the cadence
+        // — and for a blunter reason: a socket held open behind a closed lid is a
+        // radio kept awake for mail nobody is looking at. A backgrounded Herald
+        // falls back to the 60s idle poll, which is what it did before the socket
+        // existed, so nothing is lost by dropping it.
+        if active {
+            await wake?.start()
+        } else {
+            await wake?.stop()
+        }
+    }
+
+    // MARK: - Wake socket
+
+    /// The wake socket could not authenticate even after refreshing its token.
+    ///
+    /// Routed through the SAME transition the sync loop uses, rather than setting
+    /// the banner directly: the socket and the poll loop discover a dead session
+    /// within seconds of each other, and two independent announcements would ask
+    /// for two authorization windows for one expiry.
+    func wakeSocketRequiresReauthentication() {
+        let isNewExpiry = status != .needsReauth
+        status = .needsReauth
+        if isNewExpiry { reauthenticationRequired?(accountID) }
+    }
+
+    /// Handles one frame from `GET /events`.
+    ///
+    /// Every case is a REFRESH, never a write: the frames carry no mail data and
+    /// no cursor, so the only correct response to one is to go and read the
+    /// authoritative REST resource. The mapping is not one-to-one with the
+    /// topics, because the server's topics are not:
+    ///
+    /// - `messages` — the change journal (a normal pass). Label MEMBERSHIP
+    ///   changes arrive here too (verified live: assigning a label to a message
+    ///   publishes `messages`, not `labels`), and the v1 payload has no `labels`
+    ///   field, so this frame cannot fix membership and deliberately does not
+    ///   try: forcing a per-label sweep on every message frame would put one
+    ///   request per label behind every read/star in the workspace.
+    /// - `mailboxes` — grants changed. A pass re-lists mailboxes anyway, so this
+    ///   is the same refresh.
+    /// - `drafts` — a whole-list drafts read, out of turn.
+    /// - `labels` — the workspace label LIST (create/rename/delete), so the sweep
+    ///   is forced.
+    /// - `reconnected` — a gap in the socket is a gap in the frames, and nothing
+    ///   is replayed across it, so every surface is re-read at once.
+    func handleWakeSignal(_ signal: MailEventSignal) async {
+        switch signal {
+        case .changed(.messages), .changed(.mailboxes):
+            await sync?.refreshNow()
+        case .changed(.drafts):
+            await sync?.refreshDraftsNow()
+        case .changed(.labels):
+            await sync?.refreshLabelsNow()
+        case .reconnected:
+            // Both forcing calls, then one pass covers all three surfaces.
+            await sync?.refreshDraftsNow()
+            await sync?.refreshLabelsNow()
+            await sync?.refreshNow()
+        }
     }
 
     // MARK: - Sync events

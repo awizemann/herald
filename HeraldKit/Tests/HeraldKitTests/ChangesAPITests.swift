@@ -221,6 +221,40 @@ import Testing
         }
     }
 
+    /// 410 is documented but not yet reachable: the LIVE 1.3.4 server answers a
+    /// foreign or out-of-range cursor with **400 INVALID_CHANGE_CURSOR** (410 is
+    /// reserved for a retention policy it does not have yet). Verified by hand
+    /// against localhost:8787 on 2026-09-04.
+    ///
+    /// Fails if that 400 goes back to being a generic server error: the cursor is
+    /// persisted in the cache, so an unrecoverable one is UNRECOVERABLE — every
+    /// pass fails on it, forever, and only deleting the cache would fix it.
+    @Test(
+        "A rejected cursor maps to .cursorExpired whichever status the server used",
+        arguments: [(400, "INVALID_CHANGE_CURSOR"), (410, "CHANGE_CURSOR_EXPIRED")]
+    )
+    func rejectedCursorsAllRebootstrap(status: Int, code: String) async throws {
+        let server = FakeServer()
+        server.route("GET", "/api/v1/changes", .error(status, code: code, message: "no good"))
+
+        await #expect(throws: MailAPIError.cursorExpired) {
+            _ = try await makeClient(server).changes(cursor: "foreign", limit: nil)
+        }
+    }
+
+    /// …but a 400 that is NOT about the cursor must stay an ordinary failure:
+    /// re-bootstrapping the whole account on a bad `limit` would turn a client
+    /// bug into a full re-listing on every pass.
+    @Test("A 400 that is not about the cursor is not a re-bootstrap")
+    func otherBadRequestsAreOrdinaryFailures() async throws {
+        let server = FakeServer()
+        server.route("GET", "/api/v1/changes", .error(400, code: "INVALID_LIMIT", message: "bad limit"))
+
+        await #expect(throws: MailAPIError.server(code: "INVALID_LIMIT", message: "bad limit")) {
+            _ = try await makeClient(server).changes(cursor: "c1", limit: 9_000)
+        }
+    }
+
     /// The owner's instance is 1.1.2: `/api/v1/changes` does not exist there and
     /// answers 404. The engine's fallback keys on exactly `.notFound`, so a 404
     /// that arrived as `.server(code:)` would leave sync permanently broken

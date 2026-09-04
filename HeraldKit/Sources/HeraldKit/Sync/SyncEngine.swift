@@ -64,9 +64,13 @@ public nonisolated struct SyncScope: Sendable, Hashable {
     )
 }
 
-/// Polling cadence. There is no push (the server's only push is browser Web
-/// Push), so the client polls — cheaply in journal mode, by re-listing on an
-/// older server: 15s while a window is key, 60s when idle.
+/// Polling cadence: 15s while a window is key, 60s when idle.
+///
+/// Polling is the FLOOR, not the mechanism. Upstream 1.3.4 added a wake socket
+/// (`GET /events`), and while it is connected the interval stretches — but it
+/// never goes away, because the server documents those frames as wake-only and
+/// explicitly not reliable delivery, and because a socket that dies silently
+/// must not take mail delivery with it.
 public nonisolated enum SyncCadence: Sendable, Hashable {
     case active
     case idle
@@ -75,6 +79,20 @@ public nonisolated enum SyncCadence: Sendable, Hashable {
         switch self {
         case .active: .seconds(15)
         case .idle: .seconds(60)
+        }
+    }
+
+    /// The interval used while the wake socket is connected.
+    ///
+    /// Not "never": these are the safety net for a frame the server dropped, a
+    /// socket that is half-open without knowing it, and the two surfaces whose
+    /// staleness a frame cannot fix (label MEMBERSHIP arrives as a `messages`
+    /// frame that identifies nothing, and the drafts/labels sweeps only run
+    /// inside a pass). Active stays at two minutes for exactly that reason.
+    var stretchedInterval: Duration {
+        switch self {
+        case .active: .seconds(120)
+        case .idle: .seconds(300)
         }
     }
 }
@@ -113,6 +131,12 @@ public actor SyncEngine {
     /// into the cache and reconciled from the server's `LabelAssignmentResult`.
     public static let defaultLabelPollInterval: Duration = .seconds(120)
 
+    /// How rarely a rejected change cursor may be answered with a full
+    /// re-bootstrap. See ``journalSync(accountID:)`` — the recovery looks like a
+    /// SUCCESSFUL pass, so without a limit a persistently rejected cursor is an
+    /// invisible re-listing loop.
+    public static let defaultRebootstrapCooldown: Duration = .seconds(300)
+
     private let api: any MailAPIClient
     private let store: MailStore
     private let scope: SyncScope
@@ -120,6 +144,7 @@ public actor SyncEngine {
     private let maxMessagePages: Int
     private let draftPollInterval: Duration
     private let labelPollInterval: Duration
+    private let rebootstrapCooldown: Duration
 
     /// When the drafts list was last read. `nil` means "never", which is what
     /// makes the first pass of a session always poll them.
@@ -133,6 +158,8 @@ public actor SyncEngine {
     private var accountID: String?
     private var loopTask: Task<Void, Never>?
     private var cadence: SyncCadence = .active
+    /// Whether the wake socket is delivering. Stretches the poll while true.
+    private var isWakeSocketConnected = false
     private var consecutiveFailures = 0
 
     /// Coalescing state: a refresh asked for while a pass is in flight becomes
@@ -165,7 +192,8 @@ public actor SyncEngine {
         maxConversationPages: Int = SyncEngine.defaultMaxConversationPages,
         maxMessagePages: Int = SyncEngine.defaultMaxMessagePages,
         draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval,
-        labelPollInterval: Duration = SyncEngine.defaultLabelPollInterval
+        labelPollInterval: Duration = SyncEngine.defaultLabelPollInterval,
+        rebootstrapCooldown: Duration = SyncEngine.defaultRebootstrapCooldown
     ) {
         self.api = api
         self.store = store
@@ -174,6 +202,7 @@ public actor SyncEngine {
         self.maxMessagePages = max(1, maxMessagePages)
         self.draftPollInterval = draftPollInterval
         self.labelPollInterval = labelPollInterval
+        self.rebootstrapCooldown = rebootstrapCooldown
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
         self.eventContinuation = continuation
@@ -264,6 +293,28 @@ public actor SyncEngine {
         if cadence == .active { signalWake() }
     }
 
+    /// Tells the loop whether the wake socket is currently delivering.
+    ///
+    /// Healthy → the poll stretches to ``SyncCadence/stretchedInterval``, because
+    /// the socket is what makes a change visible now and the poll is only the
+    /// backstop. Unhealthy → back to the full cadence IMMEDIATELY: the loop is
+    /// woken so a socket that dropped during a two-minute wait does not leave the
+    /// user waiting out the rest of it with nothing watching the server.
+    ///
+    /// Deliberately NOT a "stop polling" switch. The frames are wake-only and
+    /// undelivered ones are never replayed, so a poll that never runs is a cache
+    /// that silently diverges the first time a frame is missed.
+    public func setWakeSocketConnected(_ connected: Bool) {
+        guard connected != isWakeSocketConnected else { return }
+        isWakeSocketConnected = connected
+        if !connected { signalWake() }
+    }
+
+    /// Test seam: the interval the NEXT wait will use.
+    var currentPollInterval: Duration {
+        backoffInterval ?? (isWakeSocketConnected ? cadence.stretchedInterval : cadence.interval)
+    }
+
     // MARK: - Loop
 
     private func runLoop(accountID: String) async {
@@ -284,7 +335,7 @@ public actor SyncEngine {
     private func waitForNextTick() async {
         waitGeneration &+= 1
         let generation = waitGeneration
-        let interval = backoffInterval ?? cadence.interval
+        let interval = currentPollInterval
         let timer = Task { [weak self] in
             // A cancelled timer must NOT signal: swallowing the cancellation and
             // waking anyway leaves `wakeSignalled` latched, and the next wait
@@ -678,11 +729,27 @@ public actor SyncEngine {
         do {
             return try await steadyState(accountID: accountID, cursor: cursor, bootstrappedAt: checkpoint.bootstrappedAt)
         } catch let error as MailAPIError where error == .cursorExpired {
-            logger.warning("Change cursor expired; discarding the checkpoint and re-bootstrapping")
+            // Rate-limited, because a re-bootstrap reports SUCCESS: it re-lists
+            // every mailbox and flags the result as a bootstrap, so
+            // notifications stay silent, no failure is counted, no backoff
+            // starts and no banner appears. A server that keeps rejecting the
+            // cursor it just issued would therefore have Herald re-listing
+            // everything on every single tick, invisibly and forever. Once per
+            // cooldown; anything sooner is an ordinary failure the user can see
+            // and the backoff can slow down.
+            if let last = lastRebootstrapAt[accountID], last.duration(to: .now) < rebootstrapCooldown {
+                logger.error("Change cursor rejected again right after a re-bootstrap; reporting it as a failure")
+                throw error
+            }
+            lastRebootstrapAt[accountID] = .now
+            logger.warning("Change cursor rejected; discarding the checkpoint and re-bootstrapping")
             try await store.clearSyncCheckpoint(accountID: accountID)
             return try await bootstrap(accountID: accountID)
         }
     }
+
+    /// When this account last recovered from a rejected cursor.
+    private var lastRebootstrapAt: [String: ContinuousClock.Instant] = [:]
 
     /// Checkpoint FIRST, then the full listing, then the changes that landed
     /// while the listing ran. Taking the checkpoint afterwards would silently

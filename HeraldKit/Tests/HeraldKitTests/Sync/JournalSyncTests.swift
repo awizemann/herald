@@ -341,6 +341,76 @@ struct JournalSyncTests {
         #expect(try await store.syncCheckpoint(accountID: account)?.bootstrappedAt != nil)
     }
 
+    /// The other half of the recovery: a cursor rejected again right after a
+    /// re-bootstrap has to become a VISIBLE failure.
+    ///
+    /// A re-bootstrap reports success — it re-lists everything and flags the
+    /// result as a bootstrap, so notifications stay silent, nothing is counted as
+    /// a failure and no banner appears. A server that keeps rejecting the cursor
+    /// it just issued would therefore have Herald re-listing every mailbox on
+    /// every tick, invisibly and forever. Fails if that spin comes back.
+    @Test("A cursor rejected again inside the cooldown fails instead of re-bootstrapping")
+    func repeatedlyRejectedCursorFails() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages([SyncFixtures.message("m1")], folder: .inbox)
+        await api.setChangeFailure(.cursorExpired, forCursor: "chk_0")
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        // The real cooldown: two passes back to back are inside it by definition.
+        let engine = SyncEngine(api: api, store: store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+        let checkpointsBefore = await api.calls.filter { $0 == .changes(cursor: nil) }.count
+
+        // Put a rejected cursor back and run again on the SAME engine — the
+        // cooldown is engine state, and `runOnePass` stops the loop when done.
+        try await seedCheckpoint(store)
+        await api.setChangeFailure(.cursorExpired, forCursor: "chk_0")
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        #expect(
+            await api.calls.filter { $0 == .changes(cursor: nil) }.count == checkpointsBefore,
+            "a second rejection inside the cooldown must not buy another full re-listing"
+        )
+        #expect(await engine.consecutiveFailureCount >= 1, "it has to surface as a failed pass")
+        await engine.stopAndWait()
+    }
+
+    /// …and the cooldown must not break the recovery it guards: once it has
+    /// elapsed, a rejected cursor re-bootstraps again as it always did.
+    @Test("Past the cooldown, a rejected cursor re-bootstraps again")
+    func rejectedCursorRecoversAgainAfterTheCooldown() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setMessages([SyncFixtures.message("m1")], folder: .inbox)
+        await api.setChangeFailure(.cursorExpired, forCursor: "chk_0")
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = SyncEngine(api: api, store: store, rebootstrapCooldown: .zero)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+        let checkpointsBefore = await api.calls.filter { $0 == .changes(cursor: nil) }.count
+
+        try await seedCheckpoint(store)
+        await api.setChangeFailure(.cursorExpired, forCursor: "chk_0")
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        #expect(await api.calls.filter { $0 == .changes(cursor: nil) }.count == checkpointsBefore + 1)
+        #expect(await engine.consecutiveFailureCount == 0, "the pass recovered, so it did not fail")
+        await engine.stopAndWait()
+    }
+
     // MARK: - Mailbox reconciliation
 
     /// Access can be revoked. The journal never mentions a mailbox we cannot read,

@@ -21,19 +21,23 @@ final class AccountGraph {
     /// Per-account: its "already announced" history dies with the graph, so a
     /// sign-out and a fresh sign-in cannot silence the new account's first mail.
     let notifier: NewMailNotifier
+    /// This account's `GET /events` wake socket, when it has one.
+    let wake: MailEventSocket?
 
     init(
         account: Account,
         sync: SyncEngine,
         mail: MailViewModel,
         outbox: OutboxService,
-        notifier: NewMailNotifier
+        notifier: NewMailNotifier,
+        wake: MailEventSocket? = nil
     ) {
         self.account = account
         self.sync = sync
         self.mail = mail
         self.outbox = outbox
         self.notifier = notifier
+        self.wake = wake
     }
 
     /// `stopAndWait`, not `stop`: sign-out purges this account's rows immediately
@@ -41,6 +45,12 @@ final class AccountGraph {
     /// purge.
     func stop() async {
         mail.stop()
+        // Before the engine: a socket still up would keep asking a stopping
+        // engine for passes, and a superseded graph's socket left running is a
+        // second connection against the server's three-per-user limit — the
+        // server closes the OLDEST to make room, so a leak here would evict the
+        // live account's socket.
+        await wake?.stop()
         await sync.stopAndWait()
     }
 }
@@ -348,7 +358,11 @@ final class AppEnvironment {
                 account: account,
                 api: HQBaseAPIClient(origin: account.origin, tokens: tokens),
                 store: store,
-                select: select
+                select: select,
+                // The wake socket authenticates with the SAME provider as the
+                // REST client, so one refresh serves both and the two can never
+                // race each other into spending the rotating grant twice.
+                wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens)
             )
             return true
         } catch {
@@ -381,11 +395,16 @@ final class AppEnvironment {
     /// overlapping installs of the same account (a double-tapped "Sign In" on the
     /// re-auth banner) would otherwise both survive, one of them unreachable from
     /// ``graphs`` and polling forever with nothing able to stop it.
+    /// - Parameter wake: how to open this account's `GET /events` socket, and the
+    ///   provider that authenticates it. `nil` in tests (and on any account
+    ///   brought up without one), which leaves the poll loop at its full cadence
+    ///   — the socket is an accelerator, never a dependency.
     func install(
         account: Account,
         api: any MailAPIClient,
         store: MailStore,
-        select: Bool = true
+        select: Bool = true,
+        wake: (channels: any MailEventChannelOpening, tokens: any BearerTokenProvider)? = nil
     ) async {
         // All accounts share the one container; keeping the reference here is
         // what lets sign-out purge THIS account's rows out of it.
@@ -414,12 +433,35 @@ final class AppEnvironment {
         viewModel.reauthenticationRequired = { [weak self] id in
             Task { await self?.attemptAutomaticReauthentication(accountID: id) }
         }
+        // Built here, not in `activate`, because every one of its callbacks
+        // points back at the engine and the view-model that were just created.
+        let socket = wake.map { wake in
+            MailEventSocket(
+                channels: wake.channels,
+                tokens: wake.tokens,
+                // Awaited, never fired into a detached `Task`: two unordered
+                // tasks can deliver a connected/disconnected pair BACKWARDS, and
+                // the engine's flag is a latch — it would then hold the poll at
+                // the stretched interval behind a socket that is already dead.
+                healthChanged: { [weak engine] connected in
+                    await engine?.setWakeSocketConnected(connected)
+                },
+                reauthenticationRequired: { [weak viewModel] in
+                    await MainActor.run { viewModel?.wakeSocketRequiresReauthentication() }
+                },
+                signal: { [weak viewModel] signal in
+                    await viewModel?.handleWakeSignal(signal)
+                }
+            )
+        }
+        viewModel.wake = socket
         let graph = AccountGraph(
             account: account,
             sync: engine,
             mail: viewModel,
             outbox: OutboxService(api: api),
-            notifier: notifier
+            notifier: notifier,
+            wake: socket
         )
         // Published synchronously, so no second install can slip in and be
         // forgotten.

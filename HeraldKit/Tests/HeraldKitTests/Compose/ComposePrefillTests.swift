@@ -101,6 +101,32 @@ import Testing
         #expect(!reply.body.contains("wrote:") && !fwd.body.contains("> "))
     }
 
+    /// Display-only preview shown under the compose editor. Must never end up in
+    /// `ComposeDraft.body` (see `replyAndForwardBodiesCarryNoClientSideQuote`) —
+    /// this is a separate value the view-model surfaces alongside the draft.
+    @Test("Quoted preview: reply and reply-all get the attributed quote, forward gets the raw body, new gets nothing")
+    func quotedPreview() {
+        let detail = Self.detail()
+        let reply = ComposePrefill.quotedPreview(
+            of: detail,
+            mode: .reply(toMessageID: detail.id, replyAll: false),
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        #expect(reply == ComposePrefill.quotedBody(of: detail, locale: Locale(identifier: "en_US_POSIX")))
+
+        let replyAll = ComposePrefill.quotedPreview(of: detail, mode: .reply(toMessageID: detail.id, replyAll: true))
+        #expect(replyAll?.contains("wrote:") == true)
+
+        let forward = ComposePrefill.quotedPreview(of: detail, mode: .forward(messageID: detail.id))
+        #expect(forward == detail.textBody)
+        // Forward's preview is the RAW body — no attribution header and no
+        // client-added "> " quote marks, matching what POST /forward builds.
+        #expect(forward?.contains("wrote:") == false)
+        #expect(forward?.hasPrefix("> ") == false)
+
+        #expect(ComposePrefill.quotedPreview(of: detail, mode: .new(mailboxID: nil)) == nil)
+    }
+
     @Test("Quoted body carries an attribution header and quotes every line")
     func quotedBody() {
         let quoted = ComposePrefill.quotedBody(of: Self.detail(), locale: Locale(identifier: "en_US_POSIX"))

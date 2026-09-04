@@ -81,6 +81,8 @@ struct ComposeView: View {
                 .padding(MailTheme.Spacing.sm)
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
+            if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
+            if model.showsSignaturePicker { signatureSection }
             if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
             if let message = model.status.message { errorBar(message) }
         }
@@ -99,6 +101,9 @@ struct ComposeView: View {
                     .accessibilityHidden(true)
             }
         }
+        // Keyed on the From address: it can arrive after the first layout, and a
+        // bare `.task` would then leave the window without a picker for good.
+        .task(id: model.draft.fromAddress) { await model.loadSignatures() }
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
         .background(pasteShortcut)
@@ -159,7 +164,11 @@ struct ComposeView: View {
             Spacer()
 
             if model.isBusy {
-                ProgressView().controlSize(.small)
+                // A bare spinner is an unlabelled "busy" element: VoiceOver said
+                // "progress indicator" and nothing about what the window is doing.
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(model.busyDescription)
             }
         }
         .padding(.horizontal, MailTheme.Spacing.md)
@@ -205,6 +214,84 @@ struct ComposeView: View {
                 }
             }
         }
+    }
+
+    /// Read-only, collapsed-by-default preview of the quoted original the
+    /// server will append below the authored text on send. Display only: it is
+    /// never written into `model.bodyText` — the server appends its own copy
+    /// on `POST /reply`/`POST /forward`, so folding it into the draft would
+    /// double the quoted history.
+    private func quotedPreviewSection(_ text: String) -> some View {
+        DisclosureGroup("Quoted \(model.draft.mode.forwardOfMessageID != nil ? "message" : "original")") {
+            ScrollView {
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(MailTheme.Spacing.sm)
+            }
+            .frame(maxHeight: 160)
+            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+        }
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
+        .accessibilityLabel("Quoted original message, included automatically when you send")
+    }
+
+    /// Signature picker plus a read-only preview of what the server will append.
+    ///
+    /// Display only, exactly like ``quotedPreviewSection``: the server assembles
+    /// authored text + signature + quoted original itself, so writing the preview
+    /// into `model.bodyText` would send the signature twice.
+    private var signatureSection: some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
+            if let preview = model.signaturePreview {
+                Text(preview)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(MailTheme.Spacing.sm)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+                    .accessibilityLabel("Signature preview, added automatically when you send")
+            }
+            Menu {
+                // Toggle rows, exactly like `LabelMenu`/`MessageLabelMenu`: the
+                // checkmark a `Toggle` draws is also EXPOSED (VoiceOver says
+                // "selected"), where the old hand-drawn `Label(systemImage:)`
+                // check was visual only — and its empty-string symbol on the
+                // unselected rows was undefined behaviour.
+                //
+                // Still a Menu of rows rather than a Picker, for the original
+                // reason: a Picker cannot disable a single row, and the draft's
+                // saved copy of a deleted signature MUST be unpickable — asking
+                // for it again is a 400 `SIGNATURE_NOT_AVAILABLE`.
+                ForEach(model.signatureOptions) { option in
+                    // The getter reads the model, never a value snapshotted at
+                    // body-evaluation time, so an open menu shows the checkmark move.
+                    Toggle(option.label, isOn: Binding(
+                        get: { model.signatureTag == option.id },
+                        set: { isOn in if isOn { model.signatureTag = option.id } }
+                    ))
+                    .disabled(!option.isSelectable)
+                }
+            } label: {
+                Text(model.signatureMenuLabel)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            // Label only, NO `.accessibilityValue`: a pop-up button's value is
+            // already its label view (the current signature), so spelling the
+            // same string into the value made VoiceOver say it twice. The
+            // modifier goes on the MENU, not on its label view — a Menu's label
+            // is not the accessibility element (see `MessageLabelMenu`).
+            .accessibilityLabel("Signature")
+            .disabled(model.isBusy)
+        }
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
     }
 
     private var attachmentBar: some View {

@@ -139,6 +139,7 @@ private actor EventRecorder {
     private(set) var draftsInserted: Set<String> = []
     private(set) var changed = 0
     private(set) var failures = 0
+    private(set) var labelsChanged = 0
     /// The pass boundary the assertions synchronise on.
     private(set) var finished = 0
 
@@ -151,6 +152,7 @@ private actor EventRecorder {
             case .changed: changed += 1
             case .failed: failures += 1
             case .finished: finished += 1
+            case .labelsChanged: labelsChanged += 1
             case .began: break
             }
         }

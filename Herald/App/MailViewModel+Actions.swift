@@ -12,7 +12,9 @@ extension MailViewModel {
         case .star: .star
         case .unstar: .unstar
         case .archive: .archive
+        case .unarchive: .unarchive
         case .trash: .trash
+        case .restore: .restore
         }
     }
 
@@ -24,7 +26,9 @@ extension MailViewModel {
         case .star: .star
         case .unstar: .unstar
         case .archive: .archive
+        case .unarchive: .unarchive
         case .trash: .trash
+        case .restore: .restore
         }
     }
 
@@ -58,29 +62,53 @@ extension MailViewModel {
         onThread threadID: String,
         scope: UsageActionScope = .conversation
     ) async {
-        // Trash has no "put back": the v1 API offers no restore action, and the
-        // CONVERSATION-level `archive` only moves inbox/catchall messages, so
-        // from Trash it is a server no-op that Herald used to mirror as a local
-        // move — the thread then vanished from every folder until sync healed it
-        // (issue #8). Trashing what is already trashed is a no-op too.
-        if isTrashScope {
-            switch action {
-            // Recorded as the archive it is; the trash case does nothing at all,
-            // so there is no action to report.
-            case .archive: return await moveToArchiveFromTrash(threadID, scope: scope)
-            case .trash: return
-            default: break
-            }
-        }
+        // Trashing what is already trashed is a server no-op; do not pretend.
+        if isTrashScope, action == .trash { return }
         await performConversationAction(action, onThread: threadID, scope: scope)
     }
 
     /// Whether the list the user is looking at is the Trash.
     var isTrashScope: Bool { selection.folder == .trash }
 
-    /// What the Archive affordance is called here. In the Trash it moves the
-    /// thread OUT of the trash, which "Archive" understates.
-    var archiveActionTitle: String { isTrashScope ? "Move to Archive" : "Archive" }
+    /// Whether "Archive" does anything here. The server only archives messages
+    /// in inbox/catchall (conversation-queries.ts), so in Trash and Archive the
+    /// affordance is dropped in favour of the restore one below.
+    var offersArchiveAction: Bool {
+        selection.folder != .trash && selection.folder != .archived
+    }
+
+    /// The "put back" verb for the folder being looked at, or nil where nothing
+    /// can be put back. Upstream 1.3.4 added both; each is a server no-op unless
+    /// the request's `folder` matches the one it undoes, which is exactly the
+    /// folder the user is looking at.
+    ///
+    /// Never offered inside a LABEL listing: both verbs are server no-ops unless
+    /// the request's `folder` is the one the row is actually in, and a label
+    /// listing crosses folders — `selection.folder` there is only the folder the
+    /// user was last looking at, so the verb would be wrong for most rows and
+    /// would silently no-op-and-revert. (Archive and Trash stay: they are safe
+    /// from any folder, at worst an accurate no-op.)
+    var restoreAction: ConversationAction? {
+        selectedLabelID == nil ? Self.restoreAction(in: selection.folder) : nil
+    }
+
+    /// Both verbs land the thread back in inbox/sent/catchall, so the Archive
+    /// folder's says where it goes and the Trash's says what it undoes.
+    var restoreActionTitle: String { Self.restoreActionTitle(in: selection.folder) }
+
+    /// Shared with ``MailCommands``, which only has the focused folder value —
+    /// one rule, so the menu and the list can never name different verbs.
+    nonisolated static func restoreAction(in folder: ConversationFolder?) -> ConversationAction? {
+        switch folder {
+        case .trash: .restore
+        case .archived: .unarchive
+        default: nil
+        }
+    }
+
+    nonisolated static func restoreActionTitle(in folder: ConversationFolder?) -> String {
+        folder == .trash ? "Put Back" : "Move to Inbox"
+    }
 
     /// Whether "Move to Trash" is worth offering at all: in the Trash it is a
     /// no-op, so the row/menu/toolbar simply do not show it.
@@ -121,28 +149,10 @@ extension MailViewModel {
         await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
     }
 
-    /// The only "put back" the v1 API has: a MESSAGE-level archive per message
-    /// of the thread. `POST /messages/{id}/archive` sets `folder = archived`
-    /// from any folder, including trash.
-    private func moveToArchiveFromTrash(_ threadID: String, scope: UsageActionScope) async {
-        record(.messageActionPerformed(action: .archive, scope: scope, count: .one))
-        let removedIndex = threadID == selectedThreadID
-            ? presentedConversations.firstIndex { $0.id == threadID }
-            : nil
-        do {
-            try await actions.perform(.archive, onMessagesOfThread: threadID, accountID: accountID)
-            dropServerResult(threadID)
-        } catch {
-            actionError = error.localizedDescription
-            recordActionFailure(.archive, error)
-        }
-        await reloadAfterAction(threadID: threadID, removedIndex: removedIndex)
-    }
-
     /// Actions that take the row out of the scope it was acted on in.
     private nonisolated static func removesRow(_ action: ConversationAction) -> Bool {
         switch action {
-        case .archive, .trash: true
+        case .archive, .trash, .unarchive, .restore: true
         case .read, .unread, .star, .unstar: false
         }
     }

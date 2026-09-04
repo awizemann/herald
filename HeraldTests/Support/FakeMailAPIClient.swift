@@ -56,8 +56,15 @@ actor FakeMailAPIClient: MailAPIClient {
 
     // MARK: MailAPIClient
 
+    /// Set to make every sync pass fail at its first request — `.unauthorized`
+    /// is what a dead HQBase web session looks like to the engine.
+    private var listError: MailAPIError?
+
+    func setListError(_ error: MailAPIError?) { listError = error }
+
     func listMailboxes() async throws -> [Mailbox] {
         mailboxRequestCount += 1
+        if let listError { throw listError }
         return []
     }
 
@@ -77,7 +84,14 @@ actor FakeMailAPIClient: MailAPIClient {
         throw MailAPIError.notFound
     }
 
+    /// Forced failure for `GET /messages/{id}` — the offline/contract-break
+    /// cases the reading pane has to tell apart.
+    var detailError: MailAPIError?
+
+    func setDetailError(_ error: MailAPIError?) { detailError = error }
+
     func message(id: String) async throws -> MessageDetail {
+        if let detailError { throw detailError }
         guard let detail = details[id] else { throw MailAPIError.notFound }
         return detail
     }
@@ -226,6 +240,53 @@ actor FakeMailAPIClient: MailAPIClient {
         return ConversationActionResult(threadID: id, affected: conversationAffected)
     }
 
+    // MARK: Labels
+    //
+    // Recorded like the triage actions: the view-model's label menu is optimistic,
+    // so "the request was actually made, with this label and this direction" is
+    // half of what the tests assert.
+
+    private(set) var labelWrites: [(labelID: String, id: String, assigned: Bool, isConversation: Bool)] = []
+    private var labels: [MailLabel] = []
+    private var labelWriteError: MailAPIError?
+    /// The set the server reports AFTER the write. `nil` echoes the request.
+    private var labelResultOverride: [MailLabel]?
+
+    func setLabels(_ labels: [MailLabel]) { self.labels = labels }
+    func setLabelWriteError(_ error: MailAPIError?) { labelWriteError = error }
+    func setLabelResult(_ labels: [MailLabel]?) { labelResultOverride = labels }
+
+    func listLabels() async throws -> [MailLabel] { labels }
+
+    func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        MessagePage(messages: [], nextCursor: nil)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        labelWrites.append((labelID, id, assigned, false))
+        if let labelWriteError { throw labelWriteError }
+        return assignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        labelWrites.append((labelID, id, assigned, true))
+        if let labelWriteError { throw labelWriteError }
+        return assignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    private func assignment(_ labelID: String, assigned: Bool, messageID: String) -> LabelAssignment {
+        let label = labels.first { $0.id == labelID } ?? MailLabel(id: labelID, name: labelID, color: .gray)
+        return LabelAssignment(
+            affected: 1,
+            assigned: assigned,
+            labelID: labelID,
+            messageID: messageID,
+            labels: labelResultOverride ?? (assigned ? [label] : [])
+        )
+    }
+
     // MARK: Drafts
     //
     // Recorded, not stubbed away: "the composer was seeded from the CACHE" is
@@ -257,8 +318,10 @@ actor FakeMailAPIClient: MailAPIClient {
         throw MailAPIError.notFound
     }
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws {}
+    func signatures(from address: String) async throws -> SignatureCandidates { .empty }
     func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
+    func forward(_ input: ForwardInput) async throws -> MessageSummary { throw MailAPIError.notFound }
 }
 
 /// Minimal DTO builders for the app-hosted suites.

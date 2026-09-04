@@ -39,6 +39,7 @@ nonisolated enum Fixtures {
           "contentType": "image/png",
           "sizeBytes": 1234,
           "contentId": "logo@cid",
+          "disposition": "inline",
           "createdAt": "2026-08-14T09:30:02.000Z"
         },
         {
@@ -48,6 +49,7 @@ nonisolated enum Fixtures {
           "contentType": "application/pdf",
           "sizeBytes": 88000,
           "contentId": null,
+          "disposition": "attachment",
           "createdAt": "2026-08-14T09:30:02.000Z"
         }
       ]
@@ -142,12 +144,22 @@ nonisolated enum Fixtures {
     ]
     """
 
+    /// The two fields upstream 1.3.4 added to `Draft` as REQUIRED (`signature`
+    /// and `labels`). Herald maps neither yet, but a response without them no
+    /// longer decodes, so every draft fixture splices this in.
+    static let draftSignatureAndLabelsJSON = """
+    "signature":{"mode":"none","id":null,"name":"","html":"","text":""},"labels":[]
+    """
+
     static let draftAttachmentJSON = """
-    {"id":"datt_7","filename":"quote.txt","contentType":"text/plain","sizeBytes":11}
+    {"id":"datt_7","filename":"quote.txt","contentType":"text/plain","sizeBytes":11,"inline":false}
     """
 
     static let messageHTMLJSON = """
-    {"hasRemoteImages":true,"html":"<p>Hi</p>","quotedHtml":null,"remoteMediaTrusted":false}
+    {"hasRemoteImages":true,"html":"<p>Hi</p>","htmlHasRemoteImages":true,
+     "quotedHtml":null,"quotedHtmlHasRemoteImages":false,
+     "afterQuotedHtml":null,"afterQuotedHtmlHasRemoteImages":false,
+     "remoteMediaTrusted":false}
     """
 
     /// Parses an ISO-8601 instant, so date assertions state the wire value literally.

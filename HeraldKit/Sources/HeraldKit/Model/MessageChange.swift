@@ -22,10 +22,14 @@ public nonisolated struct MessagePage: Sendable, Hashable {
 ///
 /// A `delete` carries its own `mailboxID` because the message row is already
 /// gone server-side — the tombstone is authorized (and scoped) by the mailbox id
-/// the journal stored with it.
+/// the journal stored with it. Since upstream 1.3.4 that id is NULLABLE: mail the
+/// owner holds with no mailbox assignment tombstones with `mailboxId: null`, which
+/// addresses the UNASSIGNED listing scope (the one cached rows carry as
+/// `mailboxKey == ""`) — not "every mailbox". The all-folders fan-out is a
+/// separate condition, driven by an unknown FOLDER (see `SyncEngine`).
 public nonisolated enum MessageChange: Sendable, Hashable {
     case upsert(MessageSummary)
-    case delete(messageID: String, mailboxID: String)
+    case delete(messageID: String, mailboxID: String?)
 
     public var messageID: String {
         switch self {

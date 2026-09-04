@@ -229,3 +229,51 @@ import Testing
         #expect(model.mailboxTint(for: "nope") == nil)
     }
 }
+
+/// The accessibility strings the app SPEAKS rather than draws — the ones a
+/// rendered-view test cannot reach, so they live as pure statics beside the views
+/// that post them (the `accessibilitySummary`/`accessibilityPhrase` pattern).
+@MainActor
+@Suite struct AnnouncementCopyTests {
+    /// The reauth banner's two states must be distinguishable BY EAR: the visual
+    /// difference is a button being replaced by a spinner, which VoiceOver would
+    /// otherwise experience as its cursor landing on nothing.
+    @Test func theReauthBannerAnnouncesBothOfItsStates() {
+        let manual = ReauthBanner.announcement(isAutomatic: false)
+        let automatic = ReauthBanner.announcement(isAutomatic: true)
+
+        #expect(manual != automatic)
+        // The manual state's only affordance is the button, so the announcement
+        // has to name it — the cursor may never reach it on its own.
+        #expect(manual.contains("Sign In"))
+        #expect(automatic.contains("Signing you back in"))
+        // The drawn text stays the drawn text: the announcement is allowed to say
+        // more, never less.
+        #expect(ReauthBanner.message(isAutomatic: true) == automatic)
+        #expect(ReauthBanner.message(isAutomatic: false).hasPrefix("Your session expired."))
+    }
+
+    /// One source for what the banner draws and what it announces. Fails if the
+    /// two ever drift into separately worded copies.
+    @Test func theImageBannersSayTheSameThingTheyDraw() {
+        #expect(
+            MessageBodySection.remoteConsentText(quotedHistoryOnly: true)
+                != MessageBodySection.remoteConsentText(quotedHistoryOnly: false)
+        )
+        #expect(MessageBodySection.remoteConsentText(quotedHistoryOnly: true).contains("quoted history"))
+        // Singular/plural: "1 images" in a spoken announcement is worse than on
+        // screen, where it is at least skimmed past.
+        #expect(MessageBodySection.inlineImageFailureText(count: 1) == "An image embedded in this message could not be loaded.")
+        #expect(MessageBodySection.inlineImageFailureText(count: 3).hasPrefix("3 images"))
+    }
+
+    /// Search announces RESULTS only. The bar's text also changes on every
+    /// debounced keystroke while the server tier runs, and speaking those would
+    /// talk over the user typing.
+    @Test func searchAnnouncesSettledStatesOnly() {
+        #expect(SearchStatusBar.announces(.idle) == false)
+        #expect(SearchStatusBar.announces(.searching) == false)
+        #expect(SearchStatusBar.announces(.completed(4)))
+        #expect(SearchStatusBar.announces(.failed("offline")))
+    }
+}

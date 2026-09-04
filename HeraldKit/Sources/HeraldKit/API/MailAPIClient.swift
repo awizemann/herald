@@ -57,6 +57,27 @@ public nonisolated protocol MailAPIClient: Sendable {
     /// Marks the sender trusted so remote media loads for this message from now on.
     func trustRemoteMedia(messageID: String) async throws
 
+    // MARK: Labels
+    /// Every workspace label. Requires a server at upstream 1.3.4 or newer; older
+    /// ones answer 404.
+    func listLabels() async throws -> [MailLabel]
+    /// One page of the messages carrying `labelID`, across every folder and every
+    /// readable mailbox.
+    ///
+    /// This is the ONLY way to learn which messages carry a label on the v1 API:
+    /// v1 message, conversation and change payloads have no `labels` field (the
+    /// server gates the embed on `/api/v2` — `includeLabels` in
+    /// `worker/features/messages/routes.ts`), so membership is derived by
+    /// filtering, not read off the row.
+    func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage
+    /// Adds (`assigned: true`) or removes one label on one message.
+    @discardableResult
+    func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment
+    /// Same for a whole thread. `id` is a MESSAGE id representing the
+    /// conversation, exactly like the conversation action routes.
+    @discardableResult
+    func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment
+
     // MARK: Conversations
     func listConversations(
         folder: ConversationFolder?,
@@ -89,9 +110,18 @@ public nonisolated protocol MailAPIClient: Sendable {
     func addDraftAttachment(draftID: String, filename: String, mimeType: String, data: Data) async throws -> DraftAttachment
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws
 
+    // MARK: Signatures
+    /// Signatures usable from this EXACT sending address, plus the id the
+    /// `automatic` selection resolves to. Requires a server at upstream 1.3.4 or
+    /// newer; older ones answer 404.
+    func signatures(from address: String) async throws -> SignatureCandidates
+
     // MARK: Sending
     func send(_ input: SendInput) async throws -> MessageSummary
     func reply(_ input: ReplyInput) async throws -> MessageSummary
+    /// `POST /forward` — the only send path that preserves the forwarded
+    /// original. Requires a server at upstream 1.3.4 or newer.
+    func forward(_ input: ForwardInput) async throws -> MessageSummary
 }
 
 nonisolated extension MailAPIClient {

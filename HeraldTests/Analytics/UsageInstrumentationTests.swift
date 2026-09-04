@@ -26,6 +26,15 @@ actor RecordingUsageTracker: UsageTracking {
 
     private(set) var enabledWrites: [Bool] = []
     private(set) var isEnabled = true
+    /// `nonisolated(unsafe)` because the protocol requirement is synchronous —
+    /// tests only ever flip this before other calls are in flight, so there is
+    /// no real race to guard against.
+    nonisolated(unsafe) var isAvailable = true
+
+    /// Test-only: simulates the no-write-key build the toggle disables for.
+    func makeUnavailable() {
+        isAvailable = false
+    }
 
     var names: [String] { events.map(\.name) }
 

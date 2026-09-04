@@ -17,6 +17,7 @@ struct SyncEngineTests {
             if case .began = event { continue }
             if case .changed = event { continue }
             if case .draftsChanged = event { continue }
+            if case .labelsChanged = event { continue }
             completed += 1
             if completed == count { break }
         }
@@ -24,13 +25,14 @@ struct SyncEngineTests {
     }
 
     enum EventKind: Sendable, Hashable {
-        case began, changed, draftsChanged, finished, failed
+        case began, changed, draftsChanged, labelsChanged, finished, failed
 
         init(_ event: SyncEvent) {
             switch event {
             case .began: self = .began
             case .changed: self = .changed
             case .draftsChanged: self = .draftsChanged
+            case .labelsChanged: self = .labelsChanged
             case .finished: self = .finished
             case .failed: self = .failed
             }

@@ -1,4 +1,5 @@
 import Foundation
+import HTTPTypes
 import HeraldAPI
 import OpenAPIRuntime
 import OpenAPIURLSession
@@ -154,7 +155,13 @@ public actor HQBaseAPIClient: MailAPIClient {
             switch try await client.getAttachment(.init(path: .init(id: id))) {
             case .ok(let ok):
                 let data = try await Self.collect(ok.body.binary)
-                return BinaryPayload(data: data, mimeType: "application/octet-stream")
+                // The generated client does not surface the response's
+                // `Content-Type` for this route, and the hardcoded
+                // `application/octet-stream` that used to sit here staged every
+                // download as `.dat` — Quick Look picks its previewer from the
+                // extension alone, so nothing previewed. Sniff the bytes; the
+                // caller crosses this with the server's `Attachment.contentType`.
+                return BinaryPayload(data: data, mimeType: MIMESniffer.sniff(data) ?? MIMESniffer.unknownType)
             case .undocumented(let code, _):
                 throw unexpected(code)
             default:
@@ -181,6 +188,73 @@ public actor HQBaseAPIClient: MailAPIClient {
         try await perform {
             switch try await client.trustRemoteMedia(.init(path: .init(id: messageID))) {
             case .ok: return
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    // MARK: - Labels
+
+    public func listLabels() async throws -> [MailLabel] {
+        try await perform {
+            switch try await client.listLabels(.init()) {
+            case .ok(let ok): return try ok.body.json.map(MailLabel.init)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        try await perform {
+            // `labelId`, singular: the repeated `labelIds` form is an AND across
+            // labels upstream (`queries.ts` adds one EXISTS per id), which is not
+            // what a per-label membership sweep is asking.
+            let query = Operations.ListMessages.Input.Query(labelId: labelID, limit: limit, cursor: cursor)
+            switch try await client.listMessages(.init(query: query)) {
+            case .ok(let ok):
+                return MessagePage(
+                    messages: try ok.body.json.map(MessageSummary.init),
+                    nextCursor: LinkHeader.nextCursor(from: ok.headers.link)
+                )
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    @discardableResult
+    public func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        try await perform {
+            let path = Operations.AddMessageLabel.Input.Path(id: id, labelId: labelID)
+            if assigned {
+                switch try await client.addMessageLabel(.init(path: path)) {
+                case .ok(let ok): return try LabelAssignment(ok.body.json)
+                case .undocumented(let code, _): throw unexpected(code)
+                default: throw unhandledErrorResponse
+                }
+            }
+            switch try await client.removeMessageLabel(.init(path: .init(id: id, labelId: labelID))) {
+            case .ok(let ok): return try LabelAssignment(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    @discardableResult
+    public func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        try await perform {
+            if assigned {
+                switch try await client.addConversationLabel(.init(path: .init(id: id, labelId: labelID))) {
+                case .ok(let ok): return try LabelAssignment(ok.body.json)
+                case .undocumented(let code, _): throw unexpected(code)
+                default: throw unhandledErrorResponse
+                }
+            }
+            switch try await client.removeConversationLabel(.init(path: .init(id: id, labelId: labelID))) {
+            case .ok(let ok): return try LabelAssignment(ok.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
             }
@@ -294,18 +368,24 @@ public actor HQBaseAPIClient: MailAPIClient {
         data: Data
     ) async throws -> DraftAttachment {
         try await perform {
-            // The spec's `file` part carries no declared headers, so the generated
-            // payload has nowhere to put a per-part Content-Type; the server infers
-            // it from the filename. `mimeType` is kept in the signature because the
-            // spec is expected to gain the header (and callers already know it).
-            _ = mimeType
-            let part = MultipartPart<Operations.AddDraftAttachment.Input.Body.MultipartFormPayload.FilePayload>(
-                payload: .init(body: HTTPBody([UInt8](data))),
-                filename: filename
+            // Upstream 1.3.4 honours a per-part Content-Type (their #45), and the
+            // spec declares `encoding.file.contentType: "*/*"` — but the generator
+            // burns that literal `*/*` into the typed `.file` case, so the typed
+            // payload can only ever send `*/*` and the server falls back to
+            // sniffing. The raw part is the only way to state the real type; the
+            // operation allows unknown parts, and the name/filename here are
+            // exactly what the typed case would have produced.
+            var partHeaders = HTTPFields()
+            partHeaders[.contentType] = mimeType
+            let raw = MultipartRawPart(
+                name: "file",
+                filename: filename,
+                headerFields: partHeaders,
+                body: HTTPBody([UInt8](data))
             )
             let input = Operations.AddDraftAttachment.Input(
                 path: .init(id: draftID),
-                body: .multipartForm(.init([.file(part)]))
+                body: .multipartForm(.init([.undocumented(raw)]))
             )
             switch try await client.addDraftAttachment(input) {
             case .created(let created): return try DraftAttachment(created.body.json)
@@ -325,11 +405,33 @@ public actor HQBaseAPIClient: MailAPIClient {
         }
     }
 
+    // MARK: - Signatures
+
+    public func signatures(from address: String) async throws -> SignatureCandidates {
+        try await perform {
+            switch try await client.listSignatures(.init(query: .init(from: address))) {
+            case .ok(let ok): return try SignatureCandidates(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
     // MARK: - Sending
 
     public func send(_ input: SendInput) async throws -> MessageSummary {
         try await perform {
             switch try await client.sendMessage(.init(body: .json(input.generated))) {
+            case .created(let created): return try MessageSummary(created.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func forward(_ input: ForwardInput) async throws -> MessageSummary {
+        try await perform {
+            switch try await client.forwardMessage(.init(body: .json(input.generated))) {
             case .created(let created): return try MessageSummary(created.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse

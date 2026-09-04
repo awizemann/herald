@@ -39,6 +39,40 @@ import Testing
         #expect(body.contains("hello world"))
         // A body that only has headers means the payload never got attached.
         #expect(request.body.count > payload.count)
+        // Upstream 1.3.4 stores the per-part Content-Type (their #45); the
+        // generated typed part can only ever say `*/*`, so a regression to the
+        // typed payload would put the wrong type on every attachment. The
+        // literal `*/*` must NOT be what goes out.
+        // HTTPTypes lowercases field NAMES, so only the header lookup is
+        // case-insensitive; the payload and filename assertions above are not.
+        #expect(body.range(of: "content-type: text/plain", options: .caseInsensitive) != nil)
+        #expect(body.range(of: "content-type: */*", options: .caseInsensitive) == nil)
+    }
+
+    /// Fails if the sniffed type is not the one that reaches the wire — the whole
+    /// point of the per-part header is that the server stops guessing.
+    @Test("The declared MIME type is the one sent, not a sniffed default")
+    func multipartCarriesTheDeclaredType() async throws {
+        let server = FakeServer()
+        server.route("POST", "/api/v1/drafts/dft_1/attachments", .json(201, Fixtures.draftAttachmentJSON))
+        let client = HQBaseAPIClient(
+            origin: FakeServer.origin,
+            tokens: FakeTokenProvider(),
+            session: server.makeSession()
+        )
+
+        _ = try await client.addDraftAttachment(
+            draftID: "dft_1",
+            filename: "report.pdf",
+            mimeType: "application/pdf",
+            data: Data("%PDF-1.4".utf8)
+        )
+
+        let body = try #require(
+            server.requests(path: "/api/v1/drafts/dft_1/attachments").first?.bodyText
+        )
+        #expect(body.range(of: "content-type: application/pdf", options: .caseInsensitive) != nil)
+        #expect(body.contains(#"filename="report.pdf""#))
     }
 
     @Test("Draft round-trips through create and re-read with its version stamp")
@@ -58,7 +92,8 @@ import Testing
           "bcc": [],
           "subject": "Re: Invoice question",
           "text": "On it.",
-          "html": ""
+          "html": "",
+          \(Fixtures.draftSignatureAndLabelsJSON)
         }
         """
         let server = FakeServer()
@@ -102,7 +137,7 @@ import Testing
             {"id":"dft_1","version":\(version),"updatedAt":"2026-08-14T10:00:00.000Z","attachments":[],
              "mailboxId":"mbx_support","replyToMessageId":null,"forwardOfMessageId":null,
              "from":"support@example.com","to":["ada@example.net"],"cc":[],"bcc":[],
-             "subject":"\(subject)","text":"Hi there","html":""}
+             "subject":"\(subject)","text":"Hi there","html":"",\(Fixtures.draftSignatureAndLabelsJSON)}
             """
         }
         let server = FakeServer()

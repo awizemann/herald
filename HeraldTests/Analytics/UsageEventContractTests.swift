@@ -24,7 +24,7 @@ import Testing
     ]
     static let syncTriggers: Set<String> = ["manual", "auto", "launch"]
     static let messageActions: Set<String> = [
-        "read", "unread", "star", "unstar", "archive", "trash",
+        "read", "unread", "star", "unstar", "archive", "unarchive", "trash", "restore",
     ]
     static let actionScopes: Set<String> = ["message", "conversation", "selection"]
     static let searchScopes: Set<String> = ["local", "server"]
@@ -73,7 +73,9 @@ import Testing
         "attachment_saved": [:],
         "remote_media_loaded": [:],
         "account_added": ["outcome": accountOutcomes, "kind": oauthErrorKinds],
-        "account_reauthenticated": ["outcome": accountOutcomes, "kind": oauthErrorKinds],
+        "account_reauthenticated": [
+            "outcome": accountOutcomes, "kind": oauthErrorKinds, "automatic": Set<String>?.none,
+        ],
         "account_removed": [:],
         "account_switched": ["accounts": buckets],
         "notifications_toggled": ["enabled": Set<String>?.none],

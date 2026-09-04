@@ -10,10 +10,25 @@ nonisolated protocol MailSyncing: Sendable {
     func refreshNow() async
     /// A pass that also re-reads `GET /drafts`, whatever the drafts interval says.
     func refreshDraftsNow() async
+    /// A pass that also re-sweeps label membership, whatever the label interval says.
+    func refreshLabelsNow() async
     func setCadence(_ cadence: SyncCadence) async
+    /// Whether anything on screen is showing labels, which decides whether the
+    /// membership sweep runs on its fast or its idle interval.
+    func setLabelSurfaceVisible(_ visible: Bool) async
 }
 
 extension SyncEngine: MailSyncing {}
+
+/// The wake socket, as the view-model needs it: something it can bring up while
+/// the app is frontmost and take down when it is not. `nonisolated` so
+/// ``MailEventSocket`` (an actor) can conform.
+nonisolated protocol MailWaking: Sendable {
+    func start() async
+    func stop() async
+}
+
+extension MailEventSocket: MailWaking {}
 
 /// A request to open the composer. P0.5 owns the composer itself; this is the
 /// hook it plugs into, so ⌘R already has somewhere to land.
@@ -41,6 +56,9 @@ nonisolated struct RenderedBody: Sendable, Equatable {
     var blocksRemote: Bool
     /// Whether the "Load remote images" banner should be offered.
     var offersRemoteConsent: Bool
+    /// Whether the blocked images live only in the collapsed quoted history, so
+    /// the banner can say which part of the message it is about.
+    var remoteConsentIsForQuotedHistoryOnly: Bool = false
 }
 
 /// The single owner of UI state.
@@ -76,6 +94,10 @@ final class MailViewModel {
     nonisolated enum SidebarItem: Hashable, Sendable {
         case folder(FolderSelection)
         case drafts
+        /// One workspace label, by id. Also not a ``ConversationFolder``: a label
+        /// spans every folder at once (a labelled thread stays in its inbox, its
+        /// archive or its trash), so it is a listing of its own.
+        case label(String)
     }
 
     // MARK: Dependencies
@@ -90,6 +112,11 @@ final class MailViewModel {
     let actions: MailActionService
     /// Internal for the same reason as ``store``: the drafts extension drives it.
     let sync: (any MailSyncing)?
+    /// The wake socket, when this account has one. Assigned after `init` rather
+    /// than injected, because the socket's callbacks point back AT this
+    /// view-model: it cannot exist before the thing it talks to. `nil` in tests
+    /// that are not about it, and on any account whose graph came up without one.
+    @ObservationIgnored var wake: (any MailWaking)?
     private let events: AsyncStream<SyncEvent>
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
@@ -105,6 +132,12 @@ final class MailViewModel {
     /// so the badge updates exactly when the count does. Observation-ignored: no
     /// view reads it, and assigning it would otherwise invalidate every observer.
     @ObservationIgnored var unreadCountDidChange: (@MainActor (Int) -> Void)?
+    /// Called with this account's id the moment sync decides only a fresh
+    /// sign-in can fix things — on the TRANSITION into ``SyncStatus/needsReauth``
+    /// and not on the failed passes that follow it, so one expired session is one
+    /// request no matter how many polls fail behind it. ``AppEnvironment`` decides
+    /// whether to act on it; the banner is up either way.
+    @ObservationIgnored var reauthenticationRequired: (@MainActor (Account.ID) -> Void)?
     /// Where usage events go. A closure rather than the tracker itself: the
     /// view-model must not be able to reach `flush`/`setEnabled`, and
     /// ``AppEnvironment`` owns the ordering chain behind this. Default no-op, so
@@ -206,7 +239,20 @@ final class MailViewModel {
             // showing is a navigation that happened, and leaving its `via` behind
             // would mislabel whatever the user does next.
             let via = consumeNavigationSource()
-            guard selection != oldValue else { return }
+            // A folder was chosen, so a label listing is no longer what the
+            // middle column is showing. Cleared HERE rather than only in the
+            // sidebar's setter, because `reloadConversations` branches on it
+            // first: any other writer of `selection` (the launch restore, a
+            // reveal) would otherwise leave label rows under a folder that
+            // changed underneath them.
+            //
+            // Leaving a label for the folder that was ALREADY selected changes
+            // nothing about `selection`, so the guard below would return before
+            // reloading and the label's rows would stay on screen under a folder
+            // row. Dropping the listing counts as a change in its own right.
+            let leftLabelListing = selectedLabelID != nil
+            selectedLabelID = nil
+            guard selection != oldValue || leftLabelListing else { return }
             recordViewShown(Self.viewKind(for: selection.folder), via: via)
             selectedThreadID = nil
             // Server search is scoped to (mailbox, folder): its rows answer the
@@ -244,6 +290,44 @@ final class MailViewModel {
     @ObservationIgnored var draftReloadCount = 0
     /// The in-flight drafts load, owned so ``stop()`` can cancel it.
     @ObservationIgnored var draftTask: Task<Void, Never>?
+
+    // MARK: Labels
+    //
+    // Storage only, same arrangement as the drafts block above: every write lives
+    // in `MailViewModel+Labels.swift`.
+
+    /// The workspace's labels, name-ordered. Shared across mailboxes — a label is
+    /// not scoped to one, and assigning it never moves a message.
+    var labels: [MailLabel] = []
+    /// thread id → the label ids on ANY of its messages, so a row's chips are a
+    /// dictionary lookup rather than a store round trip per row.
+    ///
+    /// A `Set`, not an array: every read of it is a membership test (the chips,
+    /// the context menu's checkmark), and an array made each one a linear scan
+    /// inside a view body.
+    var labelIDsByThread: [String: Set<String>] = [:]
+    /// label id → how many cached conversations carry it, precomputed alongside
+    /// the index. The sidebar draws one badge per label per render pass, and
+    /// deriving each by walking the index was O(threads × labels) IN THE VIEW
+    /// BODY — the audit's P2.
+    var labelThreadCounts: [String: Int] = [:]
+    /// The label ids on the message the reading pane is showing.
+    var selectedMessageLabelIDs: [String] = []
+    /// The label the middle column is listing, or `nil` when it is showing a
+    /// folder. A label listing crosses folders, which is exactly why it cannot be
+    /// expressed as a ``FolderSelection``.
+    var selectedLabelID: String?
+    /// Whether the app is frontmost, as ``setActive(_:)`` last saw it. Kept
+    /// because the label surface signal needs it and the cadence it drives is
+    /// write-only from here.
+    @ObservationIgnored var isAppActive = true
+    /// What the sync engine was last told about the label surface, so a signal
+    /// recomputed from four places is only sent when it actually flips.
+    @ObservationIgnored var isLabelSurfaceVisible = false
+    /// Instrumentation, same contract as ``conversationReloadCount``: it exists
+    /// so "one label write rebuilt the index exactly once" is assertable. Not
+    /// `private(set)` only because the write lives in the labels extension file.
+    @ObservationIgnored var labelIndexReloadCount = 0
 
     /// Everything the store holds for the current scope, before search.
     private(set) var allConversations: [ConversationSummary] = [] {
@@ -400,12 +484,20 @@ final class MailViewModel {
             guard let messageID = selectedMessageID else { return }
             detailTask = Task { await loadDetail(messageID) }
             markReadTask = Task { await markReadAfterDwell(messageID) }
+            // The chips come from the CACHE, so they are there the moment the
+            // selection lands rather than after the detail round trip.
+            labelTask?.cancel()
+            labelTask = Task { await reloadSelectedMessageLabels() }
         }
     }
 
     private(set) var detail: MessageDetail?
     private(set) var body: RenderedBody?
     private(set) var isLoadingBody = false
+    /// How many inline parts of the presented message could not be rendered
+    /// (fetch failed, or the part was not renderable media). Surfaced as a note
+    /// under the body rather than left as a hole the reader cannot explain.
+    private(set) var inlineImagesUnavailable = 0
     private(set) var status: SyncStatus = .idle
     /// When the last pass finished cleanly. The sidebar's status slot is always
     /// present, so idle needs something quiet to say.
@@ -424,10 +516,14 @@ final class MailViewModel {
     // MARK: Tasks
 
     /// Exposed so tests can assert the superseded reload was cancelled, not just
-    /// dropped on the floor.
-    @ObservationIgnored private(set) var reloadTask: Task<Void, Never>?
+    /// dropped on the floor. Not `private(set)`: the labels extension owns the
+    /// label listing's reload and lives in another file, where `private` does not
+    /// reach.
+    @ObservationIgnored var reloadTask: Task<Void, Never>?
     private var threadTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
+    /// The reading pane's label load. Owned so `stop()` can cancel it.
+    @ObservationIgnored var labelTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     /// Exposed so tests can await the dwell timer instead of sleeping.
     private(set) var markReadTask: Task<Void, Never>?
@@ -470,16 +566,24 @@ final class MailViewModel {
         bodyIndexTask?.cancel()
         cancelServerSearch()
         draftTask?.cancel()
+        labelTask?.cancel()
     }
 
     // MARK: - Derived state
 
     /// Recomputes ``presentedConversations``. The ONLY writer of it, called from
     /// the `didSet` of each of the three inputs the filter depends on.
-    private func refilter() {
+    /// Internal, not private: the labels extension changes the presentation rule
+    /// (a label listing is not folder-filtered) and has to recompute it.
+    func refilter() {
         filterCount += 1
         let folder = selection.folder
-        let inScope = allConversations.filter { Self.belongs($0, to: folder) }
+        // A label listing is NOT a folder listing: its rows legitimately sit in
+        // the inbox, the archive and the trash at once, so the folder rule that
+        // makes a locally-archived row vanish would empty most of it.
+        let inScope = selectedLabelID == nil
+            ? allConversations.filter { Self.belongs($0, to: folder) }
+            : allConversations
         // Trimmed, and trimmed HERE as well as on the wire: the local tier and
         // the server tier must agree on what the needle is, or a trailing space
         // silently empties the list while the server still finds rows.
@@ -492,7 +596,10 @@ final class MailViewModel {
         // Union with whatever the server matched that the cache does not hold.
         // Local rows win on identity: they carry any optimistic action the user
         // just took, where the server's copy predates it.
-        if !serverResults.isEmpty {
+        // Server search answers a (mailbox, folder) question; inside a label
+        // listing its rows would arrive unfiltered by the label and read as hits
+        // that do not carry it.
+        if !serverResults.isEmpty, selectedLabelID == nil {
             var seen = Set(rows.map(\.id))
             for row in serverResults where Self.belongs(row, to: folder) && seen.insert(row.id).inserted {
                 rows.append(row)
@@ -995,6 +1102,7 @@ final class MailViewModel {
         await reloadMailboxes()
         await reloadConversations()
         await reloadDrafts()
+        await reloadLabels()
         // The launch view has to be said out loud: `selection` is assigned in
         // `init`, where a `didSet` does not fire, so nothing else reports the
         // folder the window comes up on. Once per view-model — a re-`start()`
@@ -1049,7 +1157,72 @@ final class MailViewModel {
     }
 
     func setActive(_ active: Bool) async {
+        isAppActive = active
         await sync?.setCadence(active ? .active : .idle)
+        // Same argument as the cadence, one surface further in: a backgrounded
+        // Herald is drawing no chips and no badges, so the label sweep's 120s is
+        // being spent on an answer nobody can see.
+        await updateLabelSurfaceVisibility()
+        // The wake socket follows the app's activation, exactly like the cadence
+        // — and for a blunter reason: a socket held open behind a closed lid is a
+        // radio kept awake for mail nobody is looking at. A backgrounded Herald
+        // falls back to the 60s idle poll, which is what it did before the socket
+        // existed, so nothing is lost by dropping it.
+        if active {
+            await wake?.start()
+        } else {
+            await wake?.stop()
+        }
+    }
+
+    // MARK: - Wake socket
+
+    /// The wake socket could not authenticate even after refreshing its token.
+    ///
+    /// Routed through the SAME transition the sync loop uses, rather than setting
+    /// the banner directly: the socket and the poll loop discover a dead session
+    /// within seconds of each other, and two independent announcements would ask
+    /// for two authorization windows for one expiry.
+    func wakeSocketRequiresReauthentication() {
+        let isNewExpiry = status != .needsReauth
+        status = .needsReauth
+        if isNewExpiry { reauthenticationRequired?(accountID) }
+    }
+
+    /// Handles one frame from `GET /events`.
+    ///
+    /// Every case is a REFRESH, never a write: the frames carry no mail data and
+    /// no cursor, so the only correct response to one is to go and read the
+    /// authoritative REST resource. The mapping is not one-to-one with the
+    /// topics, because the server's topics are not:
+    ///
+    /// - `messages` — the change journal (a normal pass). Label MEMBERSHIP
+    ///   changes arrive here too (verified live: assigning a label to a message
+    ///   publishes `messages`, not `labels`), and the v1 payload has no `labels`
+    ///   field, so this frame cannot fix membership and deliberately does not
+    ///   try: forcing a per-label sweep on every message frame would put one
+    ///   request per label behind every read/star in the workspace.
+    /// - `mailboxes` — grants changed. A pass re-lists mailboxes anyway, so this
+    ///   is the same refresh.
+    /// - `drafts` — a whole-list drafts read, out of turn.
+    /// - `labels` — the workspace label LIST (create/rename/delete), so the sweep
+    ///   is forced.
+    /// - `reconnected` — a gap in the socket is a gap in the frames, and nothing
+    ///   is replayed across it, so every surface is re-read at once.
+    func handleWakeSignal(_ signal: MailEventSignal) async {
+        switch signal {
+        case .changed(.messages), .changed(.mailboxes):
+            await sync?.refreshNow()
+        case .changed(.drafts):
+            await sync?.refreshDraftsNow()
+        case .changed(.labels):
+            await sync?.refreshLabelsNow()
+        case .reconnected:
+            // Both forcing calls, then one pass covers all three surfaces.
+            await sync?.refreshDraftsNow()
+            await sync?.refreshLabelsNow()
+            await sync?.refreshNow()
+        }
     }
 
     // MARK: - Sync events
@@ -1081,6 +1254,9 @@ final class MailViewModel {
             case .draftsChanged(let changes):
                 if !changes.isEmpty { passChangedAnything = true }
                 await applyDraftChanges(changes)
+            case .labelsChanged:
+                passChangedAnything = true
+                await applyLabelsChanged()
             case .failed(let error):
                 // A `MailAPIError` reports its case; anything else (an OAuth
                 // failure surfacing as the re-auth banner) reports `other`, so a
@@ -1090,7 +1266,12 @@ final class MailViewModel {
                 passChangedAnything = false
                 record(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
                 if Self.requiresReauthentication(error) {
+                    // The transition is the event: every poll while the session
+                    // is dead fails the same way, and re-announcing it would ask
+                    // for a new authorization window per cadence tick.
+                    let isNewExpiry = status != .needsReauth
                     status = .needsReauth
+                    if isNewExpiry { reauthenticationRequired?(accountID) }
                 } else {
                     status = .failed(error.localizedDescription)
                 }
@@ -1144,9 +1325,15 @@ final class MailViewModel {
         let via = pendingNavigationSource ?? .other
         pendingNavigationSource = nil
         let wasShowingDrafts = isShowingDrafts
+        let wasShowingLabel = selectedLabelID != nil
         // Silent: the view this lands on is the inbox, reported once below —
         // never a drafts→inbox→inbox trail for one click.
         showDrafts(false, silently: true)
+        // A label listing occupies the SAME middle column, and its rows are
+        // fetched by membership: leaving it set would have the reload below fetch
+        // the label again, never find the inbox thread, and silently do nothing —
+        // the drafts bug this function already guards against.
+        showLabel(nil)
         searchQuery = ""
         let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
         if selection != inbox {
@@ -1155,7 +1342,7 @@ final class MailViewModel {
             // The `didSet` starts the reload; awaiting it is what makes the row
             // available to select below.
             await reloadTask?.value
-        } else if wasShowingDrafts || isShowingThread {
+        } else if wasShowingDrafts || wasShowingLabel || isShowingThread {
             // Already on the inbox scope, but not looking at it: the click still
             // moved the user back to the conversation list.
             recordViewShown(.inbox, via: via)
@@ -1304,17 +1491,29 @@ final class MailViewModel {
         // otherwise race, and whichever store read finishes last wins — showing
         // the previous folder's rows under the current selection.
         let scope = selection
+        let labelID = selectedLabelID
         do {
-            let rows = try await store.conversations(
-                accountID: accountID,
-                mailboxID: scope.mailboxID,
-                folder: scope.folder
-            )
-            guard scope == selection, !Task.isCancelled else { return }
+            let rows: [ConversationSummary]
+            if let labelID {
+                rows = try await store.conversations(withLabel: labelID, accountID: accountID)
+            } else {
+                rows = try await store.conversations(
+                    accountID: accountID,
+                    mailboxID: scope.mailboxID,
+                    folder: scope.folder
+                )
+            }
+            // BEFORE the rows are published, not after: macOS `List` caches a
+            // measured height per row identity, so a row that first renders
+            // without its label chips and grows a line afterwards stays clipped
+            // at the height it was measured at (the same trap the mailbox chip
+            // has — see the design-system note).
+            await reloadLabelIndex()
+            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
             allConversations = rows
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
-            guard scope == selection, !Task.isCancelled else { return }
+            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
             allConversations = []
         }
         // A server-search hit is by construction NOT in `allConversations`; the
@@ -1429,8 +1628,9 @@ final class MailViewModel {
         // load finishing late would otherwise hide the spinner for the new one.
         defer { if selectedMessageID == messageID { isLoadingBody = false } }
         do {
-            // Attachments and the full recipient list are not cached, so the
-            // single-message route is the source here (never a list route).
+            // The single-message route is the authoritative source (never a list
+            // route): it is the only one carrying attachments and the full
+            // recipient list.
             let loaded = try await api.message(id: messageID)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             detail = loaded
@@ -1438,12 +1638,56 @@ final class MailViewModel {
         } catch {
             logger.warning("Message detail failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
-            actionError = error.localizedDescription
+            // Offline (or a flaky detail route) used to blank the whole pane
+            // header AND the attachment bar while the body still rendered from
+            // cache. Rebuild a detail from the cache instead.
+            // A DECODING failure is the server contract breaking (an instance
+            // older than the `disposition` field, say) — every message would fail
+            // the same way, and quietly serving cached detail forever would hide
+            // it. Only a transport/availability failure earns the fallback.
+            if !Self.isContractFailure(error), let cached = await cachedDetail(messageID: messageID) {
+                guard selectedMessageID == messageID else { return }
+                detail = cached
+                await loadBody(for: cached, allowRemote: false)
+            } else {
+                actionError = error.localizedDescription
+            }
         }
+    }
+
+    /// Whether the error says the response itself was unusable rather than
+    /// unreachable.
+    private nonisolated static func isContractFailure(_ error: any Error) -> Bool {
+        if case MailAPIError.decoding = error { return true }
+        return false
+    }
+
+    /// A `MessageDetail` reassembled from the cache: the summary row plus the
+    /// body sidecar (which carries the attachment metadata). Recipients the cache
+    /// never held (cc/bcc) come back empty — deliberately, rather than wrongly.
+    private func cachedDetail(messageID: String) async -> MessageDetail? {
+        guard let summary = try? await store.message(id: messageID, accountID: accountID) else { return nil }
+        let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID)
+        guard let cached else { return nil }
+        return MessageDetail(
+            summary: summary,
+            cc: [],
+            bcc: [],
+            deliveredToAddress: nil,
+            textBody: cached.textBody,
+            htmlAvailable: cached.html != nil,
+            rfcMessageID: nil,
+            inReplyTo: nil,
+            references: [],
+            attachments: cached.attachments
+        )
     }
 
     private func loadBody(for detail: MessageDetail, allowRemote: Bool) async {
         let messageID = detail.id
+        // Cleared per load, not only inside `inlineImages`: the plain-text path
+        // never calls that, so a previous message's count used to stay on screen.
+        inlineImagesUnavailable = 0
         // The subject becomes the document's <title>: VoiceOver announces the web
         // area by it, and an untitled web area is announced as "HTML content".
         let title = detail.summary.subject
@@ -1454,7 +1698,7 @@ final class MailViewModel {
             }.value
             guard selectedMessageID == messageID else { return }
             body = RenderedBody(messageID: messageID, html: rendered, blocksRemote: true, offersRemoteConsent: false)
-            await cacheBody(messageID: messageID, text: text, html: nil)
+            await cacheBody(messageID: messageID, text: text, html: nil, attachments: detail.attachments)
             return
         }
 
@@ -1463,11 +1707,18 @@ final class MailViewModel {
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             let inline = await inlineImages(for: detail)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
-            let raw = payload.html
+            // All three authored fragments, not just the first: `afterQuotedHTML`
+            // is text the sender wrote BELOW the quote, and rendering only `html`
+            // silently dropped it.
+            let composed = Self.composeBody(
+                html: payload.html,
+                quotedHTML: payload.quotedHTML,
+                afterQuotedHTML: payload.afterQuotedHTML
+            )
             // Substitution walks the whole body; never on the main actor.
             let substituted = await Task.detached(priority: .userInitiated) { @Sendable in
                 Self.document(
-                    wrapping: Self.substituteInlineImages(in: raw, with: inline),
+                    wrapping: Self.substituteInlineImages(in: composed, with: inline),
                     title: title,
                     allowsRemote: allowRemote
                 )
@@ -1477,28 +1728,64 @@ final class MailViewModel {
                 messageID: messageID,
                 html: substituted,
                 blocksRemote: !allowRemote,
-                offersRemoteConsent: payload.needsRemoteMediaConsent && !allowRemote
+                offersRemoteConsent: payload.needsRemoteMediaConsent && !allowRemote,
+                // Quoted history is collapsed by default: when that is the only
+                // place the blocked images live, the banner says so rather than
+                // pointing at a body with no pictures in it. It is still OFFERED —
+                // expanding the history is one click, and this banner is the only
+                // route to trusting the sender.
+                remoteConsentIsForQuotedHistoryOnly: payload.remoteImagesAreOnlyInQuotedHistory
             )
-            await cacheBody(messageID: messageID, text: detail.textBody, html: payload.html)
+            await cacheBody(
+                messageID: messageID,
+                text: detail.textBody,
+                // The COMPOSED fragment is what the cache holds: the sidecar has
+                // one HTML column, and caching `payload.html` alone would lose the
+                // quoted history and the after-quote text on every offline read.
+                html: composed,
+                attachments: detail.attachments
+            )
         } catch {
             logger.warning("Message HTML failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
             // Fall back to the cached copy so an offline read still shows something.
             if let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID), let html = cached.html {
+                // The cached HTML still holds raw `cid:` references; without the
+                // substitution every inline image in an offline read is a broken
+                // image (the CSP forbids the web view fetching `cid:` itself).
+                // The inline route may well be up when the HTML route is not.
+                let inline = await inlineImages(for: detail)
+                guard !Task.isCancelled, selectedMessageID == messageID else { return }
                 let wrapped = await Task.detached(priority: .userInitiated) { @Sendable in
-                    Self.document(wrapping: html, title: title)
+                    // `allowsRemote` was dropped here: a reader who had already
+                    // trusted the sender got the strict CSP back on the offline
+                    // render, with every remote image broken.
+                    Self.document(
+                        wrapping: Self.substituteInlineImages(in: html, with: inline),
+                        title: title,
+                        allowsRemote: allowRemote
+                    )
                 }.value
                 guard selectedMessageID == messageID else { return }
-                body = RenderedBody(messageID: messageID, html: wrapped, blocksRemote: true, offersRemoteConsent: false)
+                body = RenderedBody(
+                    messageID: messageID, html: wrapped,
+                    blocksRemote: !allowRemote, offersRemoteConsent: false
+                )
             } else {
                 actionError = error.localizedDescription
             }
         }
     }
 
-    private func cacheBody(messageID: String, text: String, html: String?) async {
+    private func cacheBody(messageID: String, text: String, html: String?, attachments: [Attachment]) async {
         do {
-            try await store.storeBody(messageID: messageID, accountID: accountID, textBody: text, html: html)
+            try await store.storeBody(
+                messageID: messageID,
+                accountID: accountID,
+                textBody: text,
+                html: html,
+                attachments: attachments
+            )
         } catch {
             logger.error("Body cache write failed: \(error.localizedDescription, privacy: .private)")
         }
@@ -1540,10 +1827,19 @@ final class MailViewModel {
                 }
             }
             var result: [String: String] = [:]
+            var failures = 0
             for await entry in group {
-                guard let entry else { continue }
+                guard let entry else {
+                    failures += 1
+                    continue
+                }
                 result[entry.0] = entry.1
             }
+            // Inline failures used to be entirely silent: the reader saw a body
+            // with holes in it and no reason why. Only the CURRENT selection's
+            // load may publish a count; a superseded load must not label the
+            // message that replaced it.
+            if selectedMessageID == messageID { inlineImagesUnavailable = failures }
             return result
         }
     }

@@ -10,6 +10,14 @@ extension MailStore {
     /// Removes cached messages in exactly this (account, mailbox, folder) scope
     /// that the server no longer returns. Siblings in other folders/mailboxes
     /// are untouched — the predicate, not a post-filter, enforces that.
+    ///
+    /// Cascades exactly like ``deleteMessage(id:accountID:)``: body sidecar,
+    /// label assignments and the pending-mutation fence all name a message that
+    /// no longer exists. An orphaned assignment keeps the row in its label's
+    /// sidebar listing forever (the sweep only ever REPLACES the set of a label
+    /// it re-reads), an orphaned sidecar is a body nothing can reach, and an
+    /// orphaned fence outlives everything it could protect while silently
+    /// blocking the journal from ever writing that id again.
     @discardableResult
     public func deleteMissingMessages(
         accountID: String,
@@ -23,7 +31,17 @@ extension MailStore {
         do {
             var changes = ChangeSet()
             for row in try modelContext.fetch(descriptor) where !ids.contains(row.id) {
-                changes.deleted.insert(row.id)
+                let id = row.id
+                changes.deleted.insert(id)
+                pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
+                try modelContext.delete(
+                    model: CachedMessageBody.self,
+                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+                )
+                try modelContext.delete(
+                    model: CachedLabelAssignment.self,
+                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+                )
                 modelContext.delete(row)
             }
             if !changes.isEmpty { try save() }
@@ -85,6 +103,13 @@ extension MailStore {
                 model: CachedMessageBody.self,
                 where: #Predicate { $0.accountID == accountID && $0.messageID == id }
             )
+            // Label assignments name a message that no longer exists; leaving them
+            // would keep the row in its labels' sidebar listings forever, since the
+            // per-label sweep only ever REPLACES the set of a label it re-reads.
+            try modelContext.delete(
+                model: CachedLabelAssignment.self,
+                where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+            )
             try save()
             return MessageDeletion(changes: ChangeSet(deleted: [id]), mailboxID: mailboxID, folder: folder)
         } catch {
@@ -111,6 +136,10 @@ extension MailStore {
                 pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
                 try modelContext.delete(
                     model: CachedMessageBody.self,
+                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+                )
+                try modelContext.delete(
+                    model: CachedLabelAssignment.self,
                     where: #Predicate { $0.accountID == accountID && $0.messageID == id }
                 )
                 modelContext.delete(row)

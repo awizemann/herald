@@ -93,6 +93,7 @@ nonisolated extension Attachment {
             contentType: generated.contentType,
             sizeBytes: generated.sizeBytes,
             contentID: generated.contentId,
+            disposition: AttachmentDisposition(rawValue: generated.disposition.rawValue) ?? .attachment,
             createdAt: generated.createdAt
         )
     }
@@ -121,7 +122,11 @@ nonisolated extension MessageHTML {
         self.init(
             html: generated.html,
             quotedHTML: generated.quotedHtml,
+            afterQuotedHTML: generated.afterQuotedHtml,
             hasRemoteImages: generated.hasRemoteImages,
+            htmlHasRemoteImages: generated.htmlHasRemoteImages,
+            quotedHTMLHasRemoteImages: generated.quotedHtmlHasRemoteImages,
+            afterQuotedHTMLHasRemoteImages: generated.afterQuotedHtmlHasRemoteImages,
             remoteMediaTrusted: generated.remoteMediaTrusted
         )
     }
@@ -165,8 +170,102 @@ nonisolated extension DraftAttachment {
     }
 }
 
+nonisolated extension SignatureScope {
+    init?(_ generated: Components.Schemas.Signature.ScopePayload) {
+        self.init(rawValue: generated.rawValue)
+    }
+}
+
+nonisolated extension Signature {
+    init(_ generated: Components.Schemas.Signature) {
+        self.init(
+            id: generated.id,
+            name: generated.name,
+            html: generated.html,
+            text: generated.text,
+            // A scope Herald does not know cannot be resolved into anything
+            // sensible, and `user` is the least surprising label to show.
+            scope: SignatureScope(generated.scope) ?? .user,
+            scopeID: generated.scopeId,
+            scopeLabel: generated.scopeLabel,
+            isDefault: generated.isDefault,
+            createdAt: generated.createdAt,
+            updatedAt: generated.updatedAt
+        )
+    }
+}
+
+nonisolated extension SignatureCandidates {
+    init(_ generated: Components.Schemas.SignatureCandidates) {
+        self.init(
+            automaticSignatureID: generated.automaticSignatureId,
+            signatures: generated.signatures.map(Signature.init)
+        )
+    }
+}
+
+nonisolated extension MailLabel {
+    init(_ generated: Components.Schemas.Label) {
+        self.init(
+            id: generated.id,
+            name: generated.name,
+            // KNOWN LIMIT: the spec declares `color` as a closed enum, so the
+            // GENERATED decoder rejects an eleventh colour before this runs and
+            // the whole `GET /labels` response fails (consistent with Herald's
+            // min-server-1.3.4 policy — see the contract note). Re-parsing the raw
+            // value is still what protects the CACHE read path, where `colorRaw`
+            // is a plain stored string that an older build may have written.
+            color: LabelColor(serverValue: generated.color.rawValue),
+            createdAt: generated.createdAt,
+            updatedAt: generated.updatedAt
+        )
+    }
+}
+
+nonisolated extension LabelAssignment {
+    init(_ generated: Components.Schemas.LabelAssignmentResult) {
+        self.init(
+            affected: generated.affected,
+            assigned: generated.assigned,
+            labelID: generated.labelId,
+            messageID: generated.messageId,
+            threadID: generated.threadId,
+            draftID: generated.draftId,
+            labels: generated.labels.map(MailLabel.init)
+        )
+    }
+}
+
+nonisolated extension SignatureSnapshot {
+    init(_ generated: Components.Schemas.SignatureSnapshot) {
+        self.init(
+            mode: Mode(rawValue: generated.mode.rawValue) ?? .none,
+            id: generated.id,
+            name: generated.name,
+            html: generated.html,
+            text: generated.text
+        )
+    }
+}
+
+nonisolated extension SignatureSelection {
+    /// The generated `oneOf` has no discriminator, so the payload's `mode`
+    /// literal is what separates the cases — the case NUMBER is meaningless.
+    var generated: Components.Schemas.SignatureSelection {
+        switch self {
+        case .automatic: return .case1(.init(mode: .automatic))
+        case .selected(let id): return .case2(.init(mode: .selected, id: id))
+        case .noSignature: return .case3(.init(mode: .none))
+        }
+    }
+}
+
 nonisolated extension DraftInput {
-    init(_ generated: Components.Schemas.DraftInput) {
+    /// From a STORED draft's fields. `DraftFields` is `DraftInput` minus the
+    /// write-only `signature` selection (see the schema's own note in
+    /// `openapi.json`): on a response that key holds the server's SNAPSHOT, and
+    /// `Draft.init` restates the selection from it.
+    init(_ generated: Components.Schemas.DraftFields) {
         self.init(
             mailboxID: generated.mailboxId,
             replyToMessageID: generated.replyToMessageId,
@@ -178,6 +277,7 @@ nonisolated extension DraftInput {
             subject: generated.subject,
             text: generated.text,
             html: generated.html,
+            signature: nil,
             version: generated.version
         )
     }
@@ -194,7 +294,8 @@ nonisolated extension DraftInput {
             subject: subject,
             text: text,
             html: html,
-            version: version
+            version: version,
+            signature: signature?.generated
         )
     }
 }
@@ -206,6 +307,7 @@ nonisolated extension Draft {
             version: generated.value2.version,
             updatedAt: generated.value2.updatedAt,
             attachments: generated.value2.attachments.map(DraftAttachment.init),
+            signature: SignatureSnapshot(generated.value2.signature),
             content: DraftInput(generated.value1)
         )
     }
@@ -224,7 +326,26 @@ nonisolated extension SendInput {
             text: text,
             html: html,
             attachmentIds: attachmentIDs,
-            draftId: draftID
+            draftId: draftID,
+            signature: signature?.generated
+        )
+    }
+}
+
+nonisolated extension ForwardInput {
+    var generated: Components.Schemas.ForwardInput {
+        .init(
+            messageId: messageID,
+            from: from,
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            text: text,
+            html: html,
+            attachmentIds: attachmentIDs,
+            includeOriginalAttachments: includeOriginalAttachments,
+            signature: signature?.generated
         )
     }
 }
@@ -240,7 +361,8 @@ nonisolated extension ReplyInput {
             text: text,
             html: html,
             attachmentIds: attachmentIDs,
-            draftId: draftID
+            draftId: draftID,
+            signature: signature?.generated
         )
     }
 }
@@ -278,8 +400,8 @@ nonisolated extension MailAPIError {
 
 /// The inline-image route responds with `image/*`; the generated client does not
 /// surface the concrete `Content-Type`, so recover it from the bytes.
-nonisolated enum MIMESniffer {
-    static func imageType(of data: Data) -> String {
+public nonisolated enum MIMESniffer {
+    public static func imageType(of data: Data) -> String {
         let prefix = [UInt8](data.prefix(12))
         func starts(_ bytes: [UInt8]) -> Bool { prefix.count >= bytes.count && Array(prefix.prefix(bytes.count)) == bytes }
 
@@ -290,6 +412,64 @@ nonisolated enum MIMESniffer {
             return "image/webp"
         }
         if starts([0x3C, 0x73, 0x76, 0x67]) || starts([0x3C, 0x3F, 0x78, 0x6D, 0x6C]) { return "image/svg+xml" }
-        return "application/octet-stream"
+        return Self.unknownType
+    }
+
+    /// The type we report when nothing is known — never a claim about the bytes.
+    public static let unknownType = "application/octet-stream"
+
+    /// Types that are real formats but also the envelope of many others (a .docx
+    /// IS a zip). When the server declares something more specific, its word wins.
+    private static let containerTypes: Set<String> = ["application/zip", "application/gzip", "image/svg+xml"]
+
+    /// Best-effort type of an arbitrary downloaded part, from its magic bytes.
+    /// `nil` when the bytes say nothing.
+    public static func sniff(_ data: Data) -> String? {
+        let prefix = [UInt8](data.prefix(12))
+        func starts(_ bytes: [UInt8]) -> Bool { prefix.count >= bytes.count && Array(prefix.prefix(bytes.count)) == bytes }
+
+        if starts([0x25, 0x50, 0x44, 0x46]) { return "application/pdf" }            // %PDF
+        if starts([0x50, 0x4B, 0x03, 0x04]) || starts([0x50, 0x4B, 0x05, 0x06]) || starts([0x50, 0x4B, 0x07, 0x08]) {
+            return "application/zip"                                                // PK.. — also every OOXML/iWork file
+        }
+        if starts([0x7B, 0x5C, 0x72, 0x74, 0x66]) { return "application/rtf" }      // {\rtf
+        if starts([0x1F, 0x8B]) { return "application/gzip" }
+        if starts([0xD0, 0xCF, 0x11, 0xE0]) { return "application/x-ole-storage" }  // legacy .doc/.xls
+        if starts([0x25, 0x21, 0x50, 0x53]) { return "application/postscript" }     // %!PS
+        let image = imageType(of: data)
+        // `imageType` answers SVG for ANY `<?xml` prolog because the inline-image
+        // route only ever serves images. Here the part can be any XML at all, and
+        // naming a `.xml` attachment `.svg` is exactly the mislabelling this
+        // resolution exists to stop.
+        if image == "image/svg+xml", !starts([0x3C, 0x73, 0x76, 0x67]) { return nil }
+        return image == unknownType ? nil : image
+    }
+
+    /// The type to stage a downloaded attachment as.
+    ///
+    /// The server's `Attachment.contentType` is trustworthy metadata and is
+    /// preferred; the bytes are the cross-check. `GET /attachments/{id}` gives the
+    /// client no usable `Content-Type`, so before this the staged file was always
+    /// `application/octet-stream` and Quick Look had nothing to work with.
+    public static func resolve(declaredType: String?, data: Data) -> String {
+        let declared = normalize(declaredType)
+        let sniffed = sniff(data)
+        guard let declared else { return sniffed ?? unknownType }
+        guard let sniffed, sniffed != declared else { return declared }
+        // A declared type that merely refines what the bytes can tell us (docx
+        // inside a zip, svg inside xml) is the better answer.
+        if containerTypes.contains(sniffed) { return declared }
+        // Otherwise the bytes are ground truth: a mislabelled part must still open.
+        return sniffed
+    }
+
+    /// Strips parameters and folds the "we don't know" spellings to `nil`.
+    public static func normalize(_ type: String?) -> String? {
+        guard let type else { return nil }
+        let base = type.prefix { $0 != ";" }.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !base.isEmpty, base != unknownType, base != "binary/octet-stream", base != "application/unknown" else {
+            return nil
+        }
+        return base
     }
 }

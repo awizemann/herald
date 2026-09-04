@@ -40,15 +40,51 @@ struct UsagePrivacySettingsTests {
     /// as the switch's hint and once as the caption beneath it.
     @Test("The switch's hint covers loading only, and never duplicates the caption")
     func hintIsLoadingOnlyAndNeverDuplicatesTheExplanation() {
-        #expect(PrivacySettingsPane.accessibilityHint(isEnabled: nil) == "Loading current setting")
-        #expect(PrivacySettingsPane.accessibilityHint(isEnabled: true).isEmpty)
-        #expect(PrivacySettingsPane.accessibilityHint(isEnabled: false).isEmpty)
+        #expect(
+            PrivacySettingsPane.accessibilityHint(isEnabled: nil, isAvailable: true)
+                == "Loading current setting"
+        )
+        #expect(PrivacySettingsPane.accessibilityHint(isEnabled: true, isAvailable: true).isEmpty)
+        #expect(PrivacySettingsPane.accessibilityHint(isEnabled: false, isAvailable: true).isEmpty)
         for state in [true, false, nil] as [Bool?] {
             #expect(
-                PrivacySettingsPane.accessibilityHint(isEnabled: state)
-                    != PrivacySettingsPane.explanation
+                PrivacySettingsPane.accessibilityHint(isEnabled: state, isAvailable: true)
+                    != PrivacySettingsPane.explanation(isAvailable: true)
             )
         }
+    }
+
+    @Test("An unavailable build disables the switch and says why, in both the hint and the caption")
+    func unavailableBuildDisablesAndExplains() async {
+        let tracker = RecordingUsageTracker()
+        await tracker.makeUnavailable()
+        let model = UsagePrivacyModel(usage: tracker)
+
+        #expect(model.isAvailable == false)
+        await model.load()
+        #expect(
+            PrivacySettingsPane.accessibilityHint(isEnabled: model.isEnabled, isAvailable: false)
+                == "Usage analytics aren't included in this build"
+        )
+        #expect(PrivacySettingsPane.explanation(isAvailable: false) == PrivacySettingsPane.unavailableExplanation)
+
+        // Writing through an unavailable tracker is inert, and never manufactures
+        // a "Saved" confirmation the build cannot back up.
+        await model.setEnabled(true)
+        #expect(model.confirmation == nil)
+    }
+
+    @Test("A keyed build confirms a successful write, unobtrusively")
+    func keyedBuildConfirmsWrites() async {
+        let tracker = RecordingUsageTracker()
+        let model = UsagePrivacyModel(usage: tracker)
+        await model.load()
+
+        await model.setEnabled(false)
+        #expect(model.confirmation == "Analytics are off — nothing is sent.")
+
+        await model.setEnabled(true)
+        #expect(model.confirmation == "Saved.")
     }
 
     @Test("Opting out is never itself reported")

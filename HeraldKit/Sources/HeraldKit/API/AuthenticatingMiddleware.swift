@@ -83,6 +83,24 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
         case 404:
             logger.warning("not found on \(operationID, privacy: .public)")
             return .notFound
+        // Verified against the live 1.3.4 server: a cursor that is malformed,
+        // FOREIGN (the journal was rebuilt, or the account moved servers) or
+        // beyond the journal answers 400 `INVALID_CHANGE_CURSOR` — 410 is
+        // reserved for a retention policy that does not exist yet. Both mean the
+        // same thing to a client: this cursor can never work again, re-bootstrap.
+        // Left as a generic failure it is unrecoverable — the checkpoint keeps
+        // the dead cursor, every pass fails on it, and the account sits in
+        // backoff behind a sync error forever.
+        //
+        // The DRAFT journal's equivalents (`INVALID_DRAFT_CHANGE_CURSOR`,
+        // `DRAFT_CHANGE_CURSOR_EXPIRED`) are deliberately NOT mapped: Herald has
+        // no draft cursor (drafts are a whole-list read — see task t-85cfa329),
+        // so mapping them would translate a drafts failure into "discard the
+        // MESSAGE checkpoint and re-list every mailbox", which is the wrong
+        // recovery for the wrong surface. Add them WITH the draft journal.
+        case 400 where payload?.code == "INVALID_CHANGE_CURSOR":
+            logger.warning("change cursor rejected on \(operationID, privacy: .public); re-bootstrap required")
+            return .cursorExpired
         case 410 where payload?.code == "CHANGE_CURSOR_EXPIRED":
             logger.warning("change cursor expired on \(operationID, privacy: .public); re-bootstrap required")
             return .cursorExpired

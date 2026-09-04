@@ -10,11 +10,16 @@ import Testing
 private actor FakeSync: MailSyncing {
     private(set) var refreshCount = 0
     private(set) var draftRefreshCount = 0
+    private(set) var labelRefreshCount = 0
+    /// Every value the view-model pushed for the label surface, in order.
+    private(set) var labelSurfaceVisibility: [Bool] = []
     private(set) var cadences: [SyncCadence] = []
 
     func refreshNow() { refreshCount += 1 }
     func refreshDraftsNow() { draftRefreshCount += 1 }
+    func refreshLabelsNow() { labelRefreshCount += 1 }
     func setCadence(_ cadence: SyncCadence) { cadences.append(cadence) }
+    func setLabelSurfaceVisible(_ visible: Bool) { labelSurfaceVisibility.append(visible) }
 }
 
 /// A drafts-shaped view-model plus the handles the tests drive it with.

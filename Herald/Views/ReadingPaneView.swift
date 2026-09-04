@@ -32,7 +32,7 @@ struct ReadingPaneView: View {
             // its rendered body changes.
             if let message = model.selectedMessage {
                 Divider()
-                SelectedMessageHeader(message: message)
+                SelectedMessageHeader(message: message, labels: model.selectedMessageLabels)
             }
             Divider()
             MessageBodySection(model: model)
@@ -55,19 +55,54 @@ private struct ThreadHeader: View {
                     .iconButtonStyle("Reply")
             }
             .buttonStyle(.plain)
-            Button { Task { await model.performOnSelection(.archive) } } label: {
-                Image(systemName: "archivebox")
-                    .iconButtonStyle("Archive")
-            }
-            .buttonStyle(.plain)
-            Button { Task { await model.performOnSelection(.trash) } } label: {
-                Image(systemName: "trash")
-                    .iconButtonStyle("Move to Trash")
-            }
-            .buttonStyle(.plain)
+            MessageLabelMenu(model: model)
+            // Same rule as the toolbar's, from the same place: in the Trash this
+            // header used to offer an Archive that the server ignored and a
+            // Move to Trash that did nothing (issue #8).
+            TriageButtons(model: model)
+                .buttonStyle(.plain)
         }
         .padding(.horizontal, MailTheme.Spacing.lg)
         .padding(.vertical, MailTheme.Spacing.md)
+    }
+}
+
+/// Labels for the MESSAGE being read.
+///
+/// Message-level, where the conversation list's menu is thread-level, and on
+/// purpose: this pane shows exactly one message and draws that message's chips,
+/// so the control beside them has to change the same thing they show. The server
+/// keeps both — `PUT /messages/{id}/labels/{labelId}` and its conversation
+/// sibling, which fans the change out over every accessible message of the thread.
+private struct MessageLabelMenu: View {
+    @Bindable var model: MailViewModel
+
+    var body: some View {
+        if !model.labels.isEmpty, let messageID = model.selectedMessageID {
+            Menu {
+                ForEach(model.labels) { label in
+                    // Same rule as the list's menu: the getter reads the model, so an
+                    // open menu shows the checkmark move.
+                    Toggle(label.name, isOn: Binding(
+                        get: { model.selectedMessageLabelIDs.contains(label.id) },
+                        set: { newValue in
+                            Task { await model.setLabel(label.id, onMessage: messageID, assigned: newValue) }
+                        }
+                    ))
+                }
+            } label: {
+                Image(systemName: MailTheme.labelSymbol)
+                    .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            // On the MENU, not on its label image: a `Menu`'s label view is not
+            // the accessibility element (see the sidebar's account menu).
+            .help("Labels")
+            .accessibilityLabel("Labels")
+        }
     }
 }
 
@@ -75,6 +110,10 @@ private struct ThreadHeader: View {
 /// the middle column's job, so this is a header, not a control.
 private struct SelectedMessageHeader: View {
     let message: MessageSummary
+    /// The labels on THIS message — not on its thread. The two differ: a
+    /// conversation carries the union across its messages, and the reading pane
+    /// is showing exactly one of them.
+    var labels: [MailLabel] = []
 
     /// Hoisted: building a `Date.FormatStyle` per render is pure waste.
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
@@ -95,6 +134,9 @@ private struct SelectedMessageHeader: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                // Every label, not the list's first three: there is room here and
+                // this is where the reader asks "what is this filed under".
+                LabelChipRow(labels: labels, limit: labels.count)
             }
             Spacer()
             Text(message.displayDate, format: Self.dateFormat)
@@ -104,11 +146,17 @@ private struct SelectedMessageHeader: View {
         .padding(.horizontal, MailTheme.Spacing.lg)
         .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(message.isUnread ? "Unread" : "")
+        .accessibilityValue(
+            [message.isUnread ? "Unread" : nil, LabelChipRow.accessibilityPhrase(for: labels)]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+        )
     }
 }
 
-private struct MessageBodySection: View {
+/// Internal rather than `private` so its banner strings — one source for what is
+/// drawn and what VoiceOver announces — are assertable from the test target.
+struct MessageBodySection: View {
     @Bindable var model: MailViewModel
 
     var body: some View {
@@ -117,7 +165,7 @@ private struct MessageBodySection: View {
                 BannerView(
                     systemImage: "photo",
                     tint: .secondary,
-                    text: "Remote images in this message were blocked."
+                    text: Self.remoteConsentText(quotedHistoryOnly: body.remoteConsentIsForQuotedHistoryOnly)
                 ) {
                     Button("Load Remote Images") { Task { await model.trustRemoteMedia() } }
                 }
@@ -129,11 +177,54 @@ private struct MessageBodySection: View {
             } else {
                 Color.clear
             }
+            if model.inlineImagesUnavailable > 0 {
+                BannerView(
+                    systemImage: "photo.badge.exclamationmark",
+                    tint: .secondary,
+                    text: Self.inlineImageFailureText(count: model.inlineImagesUnavailable)
+                ) { EmptyView() }
+            }
             if let attachments = model.detail?.downloadableAttachments, !attachments.isEmpty {
                 Divider()
                 AttachmentBar(model: model, attachments: attachments)
             }
         }
+        // Both banners appear underneath the message, after the reader has moved
+        // on — silently, until now. They are announced when they arrive (and only
+        // then: the `onChange` fires on the transition, so re-reading the same
+        // message does not repeat them).
+        .onChange(of: activeRemoteConsentText) { _, text in announce(text) }
+        .onChange(of: activeInlineFailureText) { _, text in announce(text) }
+    }
+
+    /// The consent banner's text while it is showing, `nil` while it is not.
+    private var activeRemoteConsentText: String? {
+        guard let body = model.body, body.offersRemoteConsent else { return nil }
+        return Self.remoteConsentText(quotedHistoryOnly: body.remoteConsentIsForQuotedHistoryOnly)
+    }
+
+    private var activeInlineFailureText: String? {
+        guard model.inlineImagesUnavailable > 0 else { return nil }
+        return Self.inlineImageFailureText(count: model.inlineImagesUnavailable)
+    }
+
+    private func announce(_ text: String?) {
+        guard let text else { return }
+        AccessibilityNotification.Announcement(text).post()
+    }
+
+    /// Banner strings as pure statics: one source for what is drawn and what is
+    /// announced, and assertable without a rendered pane.
+    nonisolated static func remoteConsentText(quotedHistoryOnly: Bool) -> String {
+        quotedHistoryOnly
+            ? "Remote images in this message's quoted history were blocked."
+            : "Remote images in this message were blocked."
+    }
+
+    nonisolated static func inlineImageFailureText(count: Int) -> String {
+        count == 1
+            ? "An image embedded in this message could not be loaded."
+            : "\(count) images embedded in this message could not be loaded."
     }
 }
 
@@ -143,6 +234,8 @@ private struct AttachmentBar: View {
 
     /// The file Quick Look is showing. Set on the way in, cleared by the panel.
     @State private var previewURL: URL?
+    /// The attachment whose staged file the open Quick Look panel is holding.
+    @State private var pinnedPreviewID: String?
     /// Attachments whose download Quick Look is waiting on, so each chip can say
     /// so instead of looking like a click that did nothing.
     @State private var loadingIDs: Set<String> = []
@@ -158,6 +251,19 @@ private struct AttachmentBar: View {
             .padding(.vertical, MailTheme.Spacing.sm)
         }
         .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { _, url in
+            if url == nil { releasePin() }
+        }
+        // Selecting another message must close a panel showing the old message's
+        // file, and must not leave its pin behind.
+        .onChange(of: attachments.map(\.id)) { _, _ in
+            previewURL = nil
+            releasePin()
+        }
+        .onDisappear {
+            previewURL = nil
+            releasePin()
+        }
     }
 
     private func chip(for attachment: Attachment) -> some View {
@@ -193,15 +299,34 @@ private struct AttachmentBar: View {
         Task {
             defer { loadingIDs.remove(attachment.id) }
             do {
-                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api)
+                // Pinned inside the actor, in the same step that stages it.
+                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api, pinned: true)
                 // The user may have moved to another message while this
                 // downloaded; opening Quick Look on the previous message's file
-                // would be a panel they never asked for.
-                guard attachments.contains(where: { $0.id == attachment.id }) else { return }
+                // would be a panel they never asked for. `attachments` is the
+                // CURRENT list — the closure captured the old view value before,
+                // so the check passed for a message no longer on screen.
+                guard model.detail?.downloadableAttachments.contains(where: { $0.id == attachment.id }) == true
+                else { return }
+                // The pin is held for as long as the panel shows the file and
+                // released in `previewURL`'s change handler. The hand-over of
+                // `pinnedPreviewID` happens with NO await in between, so a
+                // concurrent `releasePin()` cannot drop the same pin twice.
+                let previous = pinnedPreviewID
+                pinnedPreviewID = attachment.id
                 previewURL = url
+                if let previous { await AttachmentFile.shared.unpin(previous) }
             } catch {
                 model.actionError = error.localizedDescription
             }
         }
+    }
+
+    /// Drops the pin when Quick Look closes (it writes `nil` back through the
+    /// binding) or when the preview moves to another attachment.
+    private func releasePin() {
+        guard let pinned = pinnedPreviewID else { return }
+        pinnedPreviewID = nil
+        Task { await AttachmentFile.shared.unpin(pinned) }
     }
 }

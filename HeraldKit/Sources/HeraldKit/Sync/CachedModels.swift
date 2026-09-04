@@ -169,13 +169,25 @@ public nonisolated final class CachedMessageBody {
     public var accountID: String = ""
     public var textBody: String = ""
     public var html: String?
+    /// The message's attachment metadata, cached with the body so the attachment
+    /// bar still renders when `GET /messages/{id}` is unavailable. Metadata only —
+    /// the bytes are never cached here.
+    public var attachments: [Attachment] = []
     public var fetchedAt: Date = Date.distantPast
 
-    public init(messageID: String, accountID: String, textBody: String, html: String?, fetchedAt: Date) {
+    public init(
+        messageID: String,
+        accountID: String,
+        textBody: String,
+        html: String?,
+        attachments: [Attachment] = [],
+        fetchedAt: Date
+    ) {
         self.messageID = messageID
         self.accountID = accountID
         self.textBody = textBody
         self.html = html
+        self.attachments = attachments
         self.fetchedAt = fetchedAt
     }
 }
@@ -221,10 +233,71 @@ public nonisolated final class CachedDraft {
     public var textBody: String = ""
     public var htmlBody: String = ""
     public var attachments: [DraftAttachment] = []
+    /// The signature the server resolved for this draft. Cached because opening a
+    /// draft from the Drafts folder builds its composer from THIS row: without it
+    /// the composer would reopen as "no signature" and the next autosave would
+    /// send `{"mode":"none"}`, quietly dropping the signature the draft had.
+    public var signature: SignatureSnapshot = SignatureSnapshot.empty
 
     public init(id: String, accountID: String) {
         self.id = id
         self.accountID = accountID
+    }
+}
+
+/// One workspace label, cached so the sidebar and the row chips draw offline.
+@Model
+public nonisolated final class CachedLabel {
+    #Unique<CachedLabel>([\.accountID, \.id])
+    // The list is always read whole for an account, sorted by name.
+    #Index<CachedLabel>([\.accountID, \.sortName])
+
+    public var id: String = ""
+    public var accountID: String = ""
+    public var name: String = ""
+    /// Raw ``LabelColor``; an unknown value maps to the fallback on read.
+    public var colorRaw: String = ""
+    /// Lowercased `name`, so the sidebar's case-insensitive order (the server's
+    /// own `COLLATE NOCASE`) comes out of the index instead of a Swift sort.
+    public var sortName: String = ""
+    public var createdAt: Date = Date.distantPast
+    public var updatedAt: Date = Date.distantPast
+
+    public init(id: String, accountID: String) {
+        self.id = id
+        self.accountID = accountID
+    }
+}
+
+/// One (label, message) assignment.
+///
+/// A join row rather than a `[String]` column on ``CachedMessage``, because the
+/// sweep that keeps this current is per-LABEL (`GET /messages?labelId=…` — the
+/// only membership source v1 offers) and has to be able to replace one label's
+/// whole set without rewriting every message row.
+///
+/// `threadID` is denormalized onto the row so a conversation's chips and the
+/// sidebar's by-label listing are one indexed fetch rather than a join against
+/// ``CachedMessage`` per row.
+@Model
+public nonisolated final class CachedLabelAssignment {
+    #Unique<CachedLabelAssignment>([\.accountID, \.labelID, \.messageID])
+    #Index<CachedLabelAssignment>(
+        [\.accountID, \.labelID],
+        [\.accountID, \.messageID],
+        [\.accountID, \.threadID]
+    )
+
+    public var accountID: String = ""
+    public var labelID: String = ""
+    public var messageID: String = ""
+    public var threadID: String = ""
+
+    public init(accountID: String, labelID: String, messageID: String, threadID: String) {
+        self.accountID = accountID
+        self.labelID = labelID
+        self.messageID = messageID
+        self.threadID = threadID
     }
 }
 
@@ -284,12 +357,20 @@ public nonisolated struct CachedBody: Sendable, Hashable {
     public let messageID: String
     public let textBody: String
     public let html: String?
+    public let attachments: [Attachment]
     public let fetchedAt: Date
 
-    public init(messageID: String, textBody: String, html: String?, fetchedAt: Date) {
+    public init(
+        messageID: String,
+        textBody: String,
+        html: String?,
+        attachments: [Attachment] = [],
+        fetchedAt: Date
+    ) {
         self.messageID = messageID
         self.textBody = textBody
         self.html = html
+        self.attachments = attachments
         self.fetchedAt = fetchedAt
     }
 }

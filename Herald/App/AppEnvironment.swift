@@ -21,19 +21,23 @@ final class AccountGraph {
     /// Per-account: its "already announced" history dies with the graph, so a
     /// sign-out and a fresh sign-in cannot silence the new account's first mail.
     let notifier: NewMailNotifier
+    /// This account's `GET /events` wake socket, when it has one.
+    let wake: MailEventSocket?
 
     init(
         account: Account,
         sync: SyncEngine,
         mail: MailViewModel,
         outbox: OutboxService,
-        notifier: NewMailNotifier
+        notifier: NewMailNotifier,
+        wake: MailEventSocket? = nil
     ) {
         self.account = account
         self.sync = sync
         self.mail = mail
         self.outbox = outbox
         self.notifier = notifier
+        self.wake = wake
     }
 
     /// `stopAndWait`, not `stop`: sign-out purges this account's rows immediately
@@ -41,6 +45,12 @@ final class AccountGraph {
     /// purge.
     func stop() async {
         mail.stop()
+        // Before the engine: a socket still up would keep asking a stopping
+        // engine for passes, and a superseded graph's socket left running is a
+        // second connection against the server's three-per-user limit — the
+        // server closes the OLDEST to make room, so a leak here would evict the
+        // live account's socket.
+        await wake?.stop()
         await sync.stopAndWait()
     }
 }
@@ -86,6 +96,9 @@ final class AppEnvironment {
             } else {
                 defaults.removeObject(forKey: Self.selectedAccountKey)
             }
+            // The account now in the window may be one whose expiry was deferred
+            // because it was syncing behind it.
+            Task { [weak self] in await self?.retryAutomaticReauthentication() }
             // A switch is what the USER did: launch restore, an install picking
             // up the window and a sign-out falling back all assign this too, and
             // none of them is somebody choosing an account. `nil` on either side
@@ -134,6 +147,17 @@ final class AppEnvironment {
 
     private let auth: AuthCoordinator
     private let defaults: UserDefaults
+    /// Whether Herald is the frontmost app. Injected so a test can drive the
+    /// automatic re-auth gate without an `NSApplication` it cannot activate.
+    private let isApplicationActive: @MainActor @Sendable () -> Bool
+    /// The rules for re-running consent by ourselves. Observed (not
+    /// `@ObservationIgnored`): the banner renders its "signing you back in…"
+    /// state straight off it.
+    private var autoReauth = AutoReauthPolicy()
+    /// The live automatic attempts, so a sign-out can cancel one instead of
+    /// letting its `install` resurrect the account behind it. Observation-ignored:
+    /// the banner reads ``autoReauth``, not this.
+    @ObservationIgnored private var automaticReauthTasks: [Account.ID: Task<Bool, Never>] = [:]
     /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
     /// so every test — and any caller that does not opt in — collects nothing.
     let usage: any UsageTracking
@@ -161,12 +185,14 @@ final class AppEnvironment {
         auth: AuthCoordinator = AuthCoordinator(),
         defaults: UserDefaults = .standard,
         notificationPoster: any NewMailNotificationPosting = UserNotificationCenterAdapter(),
-        usage: any UsageTracking = NoopUsageTracker()
+        usage: any UsageTracking = NoopUsageTracker(),
+        isApplicationActive: @escaping @MainActor @Sendable () -> Bool = { NSApplication.shared.isActive }
     ) {
         self.auth = auth
         self.defaults = defaults
         self.notificationPoster = notificationPoster
         self.usage = usage
+        self.isApplicationActive = isApplicationActive
     }
 
     // MARK: - Usage analytics
@@ -319,16 +345,26 @@ final class AppEnvironment {
     ///
     /// `select: false` is for the accounts a restore brings up behind whatever
     /// the window is already showing.
-    private func activate(_ account: Account, select: Bool = true) async {
-        guard let store else { return }
+    /// - Parameter isAutomatic: whether this is Herald repairing an account by
+    ///   itself. Its failures stay off `signInError`, which belongs to the
+    ///   onboarding sheet nobody opened.
+    /// - Returns: whether the account came up.
+    @discardableResult
+    private func activate(_ account: Account, select: Bool = true, isAutomatic: Bool = false) async -> Bool {
+        guard let store else { return false }
         do {
             let tokens = try await auth.tokenProvider(for: account)
             await install(
                 account: account,
                 api: HQBaseAPIClient(origin: account.origin, tokens: tokens),
                 store: store,
-                select: select
+                select: select,
+                // The wake socket authenticates with the SAME provider as the
+                // REST client, so one refresh serves both and the two can never
+                // race each other into spending the rotating grant twice.
+                wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens)
             )
+            return true
         } catch {
             logger.error("Account activation failed: \(error.localizedDescription, privacy: .private)")
             // One unreachable account must not take the whole app down when
@@ -338,9 +374,10 @@ final class AppEnvironment {
                 // Nothing came up at all: the launch failed, for a reason that is
                 // neither the cache nor the account list.
                 record(.launchFailed(kind: .other))
-            } else {
+            } else if !isAutomatic {
                 signInError = error.localizedDescription
             }
+            return false
         }
     }
 
@@ -358,11 +395,16 @@ final class AppEnvironment {
     /// overlapping installs of the same account (a double-tapped "Sign In" on the
     /// re-auth banner) would otherwise both survive, one of them unreachable from
     /// ``graphs`` and polling forever with nothing able to stop it.
+    /// - Parameter wake: how to open this account's `GET /events` socket, and the
+    ///   provider that authenticates it. `nil` in tests (and on any account
+    ///   brought up without one), which leaves the poll loop at its full cadence
+    ///   — the socket is an accelerator, never a dependency.
     func install(
         account: Account,
         api: any MailAPIClient,
         store: MailStore,
-        select: Bool = true
+        select: Bool = true,
+        wake: (channels: any MailEventChannelOpening, tokens: any BearerTokenProvider)? = nil
     ) async {
         // All accounts share the one container; keeping the reference here is
         // what lets sign-out purge THIS account's rows out of it.
@@ -386,12 +428,40 @@ final class AppEnvironment {
         viewModel.unreadCountDidChange = { [weak self] _ in
             self?.applyDockBadge()
         }
+        // One expiry event, one automatic attempt: the view-model fires this on
+        // the TRANSITION into `.needsReauth`, and the policy decides from there.
+        viewModel.reauthenticationRequired = { [weak self] id in
+            Task { await self?.attemptAutomaticReauthentication(accountID: id) }
+        }
+        // Built here, not in `activate`, because every one of its callbacks
+        // points back at the engine and the view-model that were just created.
+        let socket = wake.map { wake in
+            MailEventSocket(
+                channels: wake.channels,
+                tokens: wake.tokens,
+                // Awaited, never fired into a detached `Task`: two unordered
+                // tasks can deliver a connected/disconnected pair BACKWARDS, and
+                // the engine's flag is a latch — it would then hold the poll at
+                // the stretched interval behind a socket that is already dead.
+                healthChanged: { [weak engine] connected in
+                    await engine?.setWakeSocketConnected(connected)
+                },
+                reauthenticationRequired: { [weak viewModel] in
+                    await MainActor.run { viewModel?.wakeSocketRequiresReauthentication() }
+                },
+                signal: { [weak viewModel] signal in
+                    await viewModel?.handleWakeSignal(signal)
+                }
+            )
+        }
+        viewModel.wake = socket
         let graph = AccountGraph(
             account: account,
             sync: engine,
             mail: viewModel,
             outbox: OutboxService(api: api),
-            notifier: notifier
+            notifier: notifier,
+            wake: socket
         )
         // Published synchronously, so no second install can slip in and be
         // forgotten.
@@ -413,7 +483,7 @@ final class AppEnvironment {
         await viewModel.start()
         // Seed the cadence from the app's CURRENT activation; the notifications
         // only report changes, and a launch into the foreground fires neither.
-        await viewModel.setActive(NSApplication.shared.isActive)
+        await viewModel.setActive(isApplicationActive())
         // Re-checked because starting a graph that has already been superseded
         // is exactly how an unowned polling loop is born.
         guard isCurrent(graph) else { return await graph.stop() }
@@ -533,38 +603,67 @@ final class AppEnvironment {
     }
 
     func signIn(originText: String) async {
-        let outcome = await performSignIn(originText: originText)
-        record(.accountAdded(outcome: outcome.0, kind: outcome.1))
+        let result = await performSignIn(originText: originText)
+        record(.accountAdded(outcome: result.outcome, kind: result.kind))
+    }
+
+    /// What one sign-in round trip produced. The ACCOUNT matters to re-auth: the
+    /// same origin can come back under a different id, and only the returned
+    /// account says so.
+    private struct SignInResult {
+        var outcome: UsageAccountOutcome
+        var kind: UsageOAuthErrorKind?
+        var account: Account?
     }
 
     /// The sign-in flow itself, reduced to the two values an event may carry.
     /// Shared by ``signIn(originText:)`` and ``reauthenticate(accountID:)`` so the
     /// same round trip is never reported as both an add AND a re-auth.
+    /// - Parameter isAutomatic: whether Herald started this round trip by itself.
+    ///   An automatic attempt leaves `isSigningIn`, `signInError` and
+    ///   `presentsAddAccount` alone: nothing asked for the onboarding sheet, and
+    ///   a failure must land on the re-auth banner that is already up rather than
+    ///   raising sheet state over the mail the user is reading.
     private func performSignIn(
-        originText: String
-    ) async -> (UsageAccountOutcome, UsageOAuthErrorKind?) {
+        originText: String,
+        isAutomatic: Bool = false
+    ) async -> SignInResult {
         guard let origin = Self.normalizedOrigin(from: originText) else {
-            signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
+            if !isAutomatic {
+                signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
+            }
             // A typo in the address field, not an OAuth fault: there is no kind
             // to report, and the text the user typed is never one.
-            return (.failed, nil)
+            return SignInResult(outcome: .failed)
         }
-        isSigningIn = true
-        signInError = nil
-        defer { isSigningIn = false }
+        if !isAutomatic {
+            isSigningIn = true
+            signInError = nil
+        }
+        defer { if !isAutomatic { isSigningIn = false } }
         do {
             let account = try await auth.addAccount(origin: origin)
-            presentsAddAccount = false
-            await activate(account)
-            return (.success, nil)
+            if !isAutomatic { presentsAddAccount = false }
+            // Consent alone is not a signed-in account: an activation that fails
+            // (unreachable server, unreadable tokens) leaves the user exactly as
+            // stuck as before, and reporting it as a success would also clear the
+            // automatic attempt's cooldown for a repair that did not happen.
+            let activated = await activate(account, isAutomatic: isAutomatic)
+            return SignInResult(
+                outcome: activated ? .success : .failed,
+                kind: activated ? nil : .other,
+                account: activated ? account : nil
+            )
         } catch {
             logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
-            signInError = error.localizedDescription
+            if !isAutomatic { signInError = error.localizedDescription }
             // A failure that is not an `OAuthError` still failed: it counts as
             // `other` rather than being dropped, and carries nothing of itself.
             let kind = UsageOAuthErrorKind(anyError: error)
             // Closing the browser window is a choice, not a failure.
-            return kind == .cancelled ? (.cancelled, nil) : (.failed, kind)
+            return kind == .cancelled
+                ? SignInResult(outcome: .cancelled)
+                : SignInResult(outcome: .failed, kind: kind)
         }
     }
 
@@ -575,15 +674,96 @@ final class AppEnvironment {
             if graphs.isEmpty { phase = .signedOut }
             return
         }
-        let outcome = await performSignIn(originText: account.origin.absoluteString)
-        record(.accountReauthenticated(outcome: outcome.0, kind: outcome.1))
+        // A button press outranks the frontmost rule and the cooldown — the user
+        // is standing there — but not the one-window rule: clicking while an
+        // automatic attempt is running would open a second consent window over
+        // the first.
+        guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
+        let succeeded = await runReauthentication(account: account, isAutomatic: false)
+        autoReauth.finish(accountID: accountID, succeeded: succeeded)
+    }
+
+    /// Whether a re-auth round trip is running for this account. The banner stays
+    /// up and says so, rather than offering a button that would open a second
+    /// authorization window over the first.
+    func isReauthenticating(accountID: Account.ID) -> Bool {
+        autoReauth.isAttempting(accountID: accountID)
+    }
+
+    /// Re-runs consent WITHOUT waiting for the banner to be clicked, when the
+    /// rules in ``AutoReauthPolicy`` allow it.
+    ///
+    /// HQBase binds Herald's tokens to the user's web session (7-day sliding), so
+    /// tokens die on a schedule that has nothing to do with anything the user
+    /// did. While that web session is still alive the consent page completes on
+    /// its own, so the whole repair is a window that flashes — worth doing for
+    /// the user, and only when they are actually here to see it.
+    ///
+    /// Scoped to the account the window is SHOWING. An account syncing behind the
+    /// window would have its sign-in select it (`install(select:)` follows a
+    /// sign-in), pulling the user off the mail they are reading; the others keep
+    /// the banner until ``retryAutomaticReauthentication()`` picks them up —
+    /// which is also how a session that died while Herald was in the background
+    /// (the common case: the binding expires on a 7-day timer) is repaired the
+    /// moment the user comes back.
+    func attemptAutomaticReauthentication(accountID: Account.ID) async {
+        guard accountID == selectedAccountID, let account = graphs[accountID]?.account else { return }
+        guard graphs[accountID]?.mail.status == .needsReauth else { return }
+        guard autoReauth.begin(
+            accountID: accountID,
+            isApplicationActive: isApplicationActive()
+        ) else { return }
+        // Held so a sign-out can CANCEL the attempt: its `install` would
+        // otherwise land after the account was removed and bring it — and its
+        // window selection — straight back.
+        let task = Task { [weak self] in
+            guard let self else { return false }
+            return await self.runReauthentication(account: account, isAutomatic: true)
+        }
+        automaticReauthTasks[accountID] = task
+        let succeeded = await task.value
+        automaticReauthTasks[accountID] = nil
+        autoReauth.finish(accountID: accountID, succeeded: succeeded)
+    }
+
+    /// Re-offers the automatic repair for whatever the window is showing.
+    ///
+    /// The gates in ``attemptAutomaticReauthentication(accountID:)`` DEFER, they
+    /// do not consume: the expiry is announced once, by the sync pass that found
+    /// it, and that pass usually runs while Herald is in the background or on an
+    /// account the window is not showing. Herald becoming frontmost and the user
+    /// switching accounts are the two moments a deferred repair becomes possible.
+    func retryAutomaticReauthentication() async {
+        guard let accountID = selectedAccountID else { return }
+        await attemptAutomaticReauthentication(accountID: accountID)
+    }
+
+    /// The re-auth round trip both entry points share. Returns whether the
+    /// account is signed in again.
+    private func runReauthentication(account: Account, isAutomatic: Bool) async -> Bool {
+        let accountID = account.id
+        let result = await performSignIn(
+            originText: account.origin.absoluteString,
+            isAutomatic: isAutomatic
+        )
+        record(.accountReauthenticated(
+            outcome: result.outcome,
+            kind: result.kind,
+            automatic: isAutomatic
+        ))
         // The same origin can come back under a DIFFERENT id (a different user
         // signed in). `install` then keys the new graph elsewhere and the dead
-        // one would be left polling with a token nothing can refresh.
-        if let current = selectedAccountID, current != accountID {
+        // one would be left polling with a token nothing can refresh. Decided on
+        // the id the sign-in actually returned — the selection can move for
+        // reasons that have nothing to do with this round trip (the user clicking
+        // another account while an automatic attempt runs), and tearing an account
+        // down for that would drop a healthy account out of the switcher.
+        if let signedIn = result.account, signedIn.id != accountID {
             await stopGraph(accountID: accountID)
             accountIDs.removeAll { $0 == accountID }
+            autoReauth.forget(accountID: accountID)
         }
+        return result.outcome == .success
     }
 
     /// Signs ONE account out: its graph stops, its cached rows are purged, and
@@ -596,7 +776,16 @@ final class AppEnvironment {
         guard let account = graphs[accountID]?.account
             ?? (try? auth.accounts())?.first(where: { $0.id == accountID })
         else { return }
+        // An automatic attempt still running would `install` this account again —
+        // selecting it — right after the sign-out removed it. Cancelled AND
+        // waited for, so nothing of it can land behind the removal.
+        if let attempt = automaticReauthTasks.removeValue(forKey: accountID) {
+            attempt.cancel()
+            _ = await attempt.value
+        }
         record(.accountRemoved)
+        // Signing back in later must not inherit the dead session's cooldown.
+        autoReauth.forget(accountID: accountID)
         await stopGraph(accountID: accountID)
         accountIDs.removeAll { $0 == accountID }
         // The window settles BEFORE the slow half. Revocation is a network round
@@ -702,6 +891,10 @@ final class AppEnvironment {
         // cadence change on a stopped engine, and one installed mid-loop seeds
         // its own cadence in `install`.
         for graph in Array(graphs.values) { await graph.mail.setActive(active) }
+        // Herald coming to the front is the moment a deferred automatic re-auth
+        // becomes allowed: the session almost always dies while the user is
+        // somewhere else, and the sync pass that noticed announced it once.
+        if active { await retryAutomaticReauthentication() }
     }
 
     // MARK: - Activation

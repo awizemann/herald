@@ -36,6 +36,19 @@ struct SidebarView: View {
                 )
             }
             DraftsRow(count: model.draftCount)
+            // Only when the workspace HAS labels: an empty section is a header
+            // with nothing under it, and most instances start with none.
+            if !model.labels.isEmpty {
+                Section(MailTheme.labelsSectionTitle) {
+                    ForEach(model.labels) { label in
+                        // `threadCount` is a dictionary lookup into a structure
+                        // built once per index reload. It used to walk every
+                        // indexed thread PER LABEL, here in the body, on every
+                        // render pass the sidebar took.
+                        LabelRow(label: label, count: model.threadCount(forLabel: label.id))
+                    }
+                }
+            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -255,6 +268,34 @@ private struct DraftsRow: View {
             .accessibilityLabel(
                 count > 0 ? "\(MailTheme.draftsTitle), \(count) drafts" : MailTheme.draftsTitle
             )
+    }
+}
+
+/// One workspace label. It lists across folders, so it carries no unread badge:
+/// the counts the sidebar shows are per (mailbox, folder) scope and a label is
+/// neither.
+///
+/// The tag glyph is drawn in the label's colour, and the NAME is always there —
+/// the colour is never the only way to tell two labels apart.
+private struct LabelRow: View {
+    let label: MailLabel
+    /// Cached threads carrying the label — the ones opening it will actually
+    /// list, not the raw assignment rows. A TOTAL, like the Drafts row's badge
+    /// and unlike the folders' unread counts — see `threadCount(forLabel:)`.
+    let count: Int
+
+    var body: some View {
+        Label {
+            Text(label.name).lineLimit(1)
+        } icon: {
+            Image(systemName: MailTheme.labelSymbol)
+                .foregroundStyle(MailTheme.labelTint(for: label.color))
+        }
+        .badge(count)
+        .tag(MailViewModel.SidebarItem.label(label.id))
+        .accessibilityLabel(
+            count > 0 ? "\(label.name) label, \(count) conversations" : "\(label.name) label"
+        )
     }
 }
 

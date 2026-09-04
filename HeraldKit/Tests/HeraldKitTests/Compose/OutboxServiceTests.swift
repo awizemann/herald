@@ -275,7 +275,11 @@ import Testing
         let calls = await api.calls
         #expect(calls.count == 2)
         if case .createDraft = calls[0] {} else { Issue.record("expected create first, got \(calls[0])") }
-        #expect(calls[1] == .addAttachment(draftID: "drf_1", filename: "notes.txt", bytes: 12))
+        // The MIME type is derived from the extension and handed to the upload:
+        // upstream 1.3.4 honours the per-part Content-Type (their #45).
+        #expect(calls[1] == .addAttachment(
+            draftID: "drf_1", filename: "notes.txt", mimeType: "text/plain", bytes: 12
+        ))
         #expect(draft.uploadedAttachments.map(\.id) == ["att_1"])
         #expect(draft.uploadedAttachments.first?.contentType == "text/plain")
     }

@@ -21,10 +21,17 @@ actor FakeMailAPIClient: MailAPIClient {
         case fetchDraft(String)
         case updateDraft(id: String, version: Int?)
         case deleteDraft(String)
-        case addAttachment(draftID: String, filename: String, bytes: Int)
+        case addAttachment(draftID: String, filename: String, mimeType: String, bytes: Int)
         case removeAttachment(draftID: String, attachmentID: String)
         case sendMessage(SendInput)
         case replyToMessage(ReplyInput)
+        case forwardMessage(ForwardInput)
+        case listSignatures(from: String)
+        // Labels (P8).
+        case listLabels
+        case listMessagesByLabel(labelID: String, cursor: String?)
+        case setMessageLabel(labelID: String, messageID: String, assigned: Bool)
+        case setConversationLabel(labelID: String, messageID: String, assigned: Bool)
     }
 
     private(set) var calls: [Call] = []
@@ -324,6 +331,79 @@ actor FakeMailAPIClient: MailAPIClient {
         return draftListing ?? Array(storedDrafts.values)
     }
 
+    // MARK: - Labels (P8)
+
+    private var labels: [MailLabel] = []
+    private var labelFailure: MailAPIError?
+    /// Membership pages keyed by (labelID, cursor). A label with no scripted page
+    /// answers an empty first page and no Link header — a real, EMPTY label.
+    private var labelMessagePages: [LabelPageKey: MessagePage] = [:]
+    private var labelAssignmentFailure: MailAPIError?
+    /// What `PUT`/`DELETE` answers with, keyed by label id. `nil` means "echo the
+    /// request": assigned → that one label, unassigned → none.
+    private var labelAssignmentResult: LabelAssignment?
+
+    struct LabelPageKey: Hashable, Sendable {
+        var labelID: String
+        var cursor: String?
+    }
+
+    func setLabels(_ labels: [MailLabel]) { self.labels = labels }
+    func setLabelFailure(_ failure: MailAPIError?) { labelFailure = failure }
+    func setLabelMessages(_ page: MessagePage, forLabel labelID: String, cursor: String? = nil) {
+        labelMessagePages[LabelPageKey(labelID: labelID, cursor: cursor)] = page
+    }
+    func setLabelAssignmentFailure(_ failure: MailAPIError?) { labelAssignmentFailure = failure }
+    func setLabelAssignmentResult(_ result: LabelAssignment?) { labelAssignmentResult = result }
+
+    func listLabels() async throws -> [MailLabel] {
+        calls.append(.listLabels)
+        await awaitGate()
+        if let labelFailure { throw labelFailure }
+        return labels
+    }
+
+    func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        calls.append(.listMessagesByLabel(labelID: labelID, cursor: cursor))
+        await awaitGate()
+        if let labelFailure { throw labelFailure }
+        return labelMessagePages[LabelPageKey(labelID: labelID, cursor: cursor)]
+            ?? MessagePage(messages: [], nextCursor: nil)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        calls.append(.setMessageLabel(labelID: labelID, messageID: id, assigned: assigned))
+        // Gated like the listing calls, so a test can hold the request open and
+        // prove the CACHE moved before the server answered — the whole claim of
+        // the optimistic path.
+        await awaitGate()
+        if let labelAssignmentFailure { throw labelAssignmentFailure }
+        return labelAssignmentResult ?? echoedAssignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        calls.append(.setConversationLabel(labelID: labelID, messageID: id, assigned: assigned))
+        await awaitGate()
+        if let labelAssignmentFailure { throw labelAssignmentFailure }
+        return labelAssignmentResult ?? echoedAssignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    private func echoedAssignment(
+        _ labelID: String, assigned: Bool, messageID: String
+    ) -> LabelAssignment {
+        let label = labels.first { $0.id == labelID }
+            ?? MailLabel(id: labelID, name: labelID, color: .gray)
+        return LabelAssignment(
+            affected: 1,
+            assigned: assigned,
+            labelID: labelID,
+            messageID: messageID,
+            labels: assigned ? [label] : []
+        )
+    }
+
     // MARK: - Compose surface (P0.5)
     //
     // A small in-memory drafts server: ids, version stamps and 404s behave the
@@ -353,6 +433,7 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version + 1,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments,
+            signature: draft.signature,
             content: draft.content
         )
     }
@@ -374,6 +455,9 @@ actor FakeMailAPIClient: MailAPIClient {
             version: 1,
             updatedAt: Date(timeIntervalSince1970: 3_000),
             attachments: [],
+            // No selection on create means no signature, exactly as upstream's
+            // `resolveDraftSignature` does with neither selection nor current.
+            signature: try snapshot(for: input.signature ?? .noSignature, from: input.from),
             content: input
         )
         storedDrafts[draft.id] = draft
@@ -395,6 +479,9 @@ actor FakeMailAPIClient: MailAPIClient {
             version: existing.version + 1,
             updatedAt: Date(timeIntervalSince1970: 3_100),
             attachments: existing.attachments,
+            // An omitted selection keeps what the draft already had.
+            signature: try input.signature.map { try snapshot(for: $0, from: input.from) }
+                ?? existing.signature,
             content: input
         )
         storedDrafts[id] = updated
@@ -412,7 +499,9 @@ actor FakeMailAPIClient: MailAPIClient {
         mimeType: String,
         data: Data
     ) async throws -> DraftAttachment {
-        calls.append(.addAttachment(draftID: draftID, filename: filename, bytes: data.count))
+        calls.append(.addAttachment(
+            draftID: draftID, filename: filename, mimeType: mimeType, bytes: data.count
+        ))
         if let attachmentFailure { throw attachmentFailure }
         guard let draft = storedDrafts[draftID] else { throw MailAPIError.notFound }
         let attachment = DraftAttachment(
@@ -426,6 +515,7 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments + [attachment],
+            signature: draft.signature,
             content: draft.content
         )
         return attachment
@@ -441,20 +531,108 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments.filter { $0.id != attachmentID },
+            signature: draft.signature,
             content: draft.content
         )
     }
 
+    // MARK: - Signatures (upstream 1.3.4)
+    //
+    // Modelled on `worker/features/signatures/service.ts`: the selection is
+    // RESOLVED server-side into the snapshot stored on the draft, an unusable id
+    // is a 400, and a send that names a draft uses that draft's snapshot.
+
+    private var signaturesByAddress: [String: SignatureCandidates] = [:]
+    private var signatureFailure: MailAPIError?
+
+    func setSignatures(_ candidates: SignatureCandidates, from address: String) {
+        signaturesByAddress[address.lowercased()] = candidates
+    }
+
+    /// A server older than 1.3.4 has no route: `.notFound`.
+    func setSignatureFailure(_ failure: MailAPIError?) { signatureFailure = failure }
+
+    func signatures(from address: String) async throws -> SignatureCandidates {
+        calls.append(.listSignatures(from: address))
+        if let signatureFailure { throw signatureFailure }
+        return signaturesByAddress[address.lowercased()] ?? .empty
+    }
+
+    /// The server's `resolveSignatureSelection`, minus the access checks.
+    private func snapshot(for selection: SignatureSelection, from address: String) throws -> SignatureSnapshot {
+        let candidates = signaturesByAddress[address.lowercased()] ?? .empty
+        switch selection {
+        case .noSignature:
+            return .empty
+        case .automatic:
+            guard let signature = candidates.resolved(.automatic) else {
+                return SignatureSnapshot(mode: .automatic, id: nil, name: "", html: "", text: "")
+            }
+            return SignatureSnapshot(
+                mode: .automatic,
+                id: signature.id,
+                name: signature.name,
+                html: signature.html,
+                text: signature.text
+            )
+        case .selected(let id):
+            guard let signature = candidates.resolved(.selected(id: id)) else {
+                throw MailAPIError.server(
+                    code: "SIGNATURE_NOT_AVAILABLE",
+                    message: "This signature is not available for the selected From address."
+                )
+            }
+            return SignatureSnapshot(
+                mode: .selected,
+                id: signature.id,
+                name: signature.name,
+                html: signature.html,
+                text: signature.text
+            )
+        }
+    }
+
+    /// The snapshot a send actually uses: the draft's when one is named, else the
+    /// body's selection, else nothing (`resolveSendSignature`).
+    private func sentSignature(
+        draftID: String?,
+        selection: SignatureSelection?,
+        from address: String
+    ) throws -> SignatureSnapshot {
+        if let draftID, let draft = storedDrafts[draftID] { return draft.signature }
+        guard let selection else { return .empty }
+        return try snapshot(for: selection, from: address)
+    }
+
+    /// What the last send/reply/forward would have appended.
+    private(set) var lastSentSignature: SignatureSnapshot = .empty
+
     func send(_ input: SendInput) async throws -> MessageSummary {
         calls.append(.sendMessage(input))
+        lastSentSignature = try sentSignature(
+            draftID: input.draftID, selection: input.signature, from: input.from
+        )
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_sent", folder: .sent)
     }
 
     func reply(_ input: ReplyInput) async throws -> MessageSummary {
         calls.append(.replyToMessage(input))
+        lastSentSignature = try sentSignature(
+            draftID: input.draftID, selection: input.signature, from: input.from
+        )
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_reply", folder: .sent)
+    }
+
+    func forward(_ input: ForwardInput) async throws -> MessageSummary {
+        calls.append(.forwardMessage(input))
+        // `POST /forward` takes no draft id, so the body's selection is all there is.
+        lastSentSignature = try sentSignature(
+            draftID: nil, selection: input.signature, from: input.from
+        )
+        if let sendFailure { throw sendFailure }
+        return sentSummary ?? SyncFixtures.message("msg_forward", folder: .sent)
     }
 }
 
@@ -481,6 +659,7 @@ nonisolated enum SyncFixtures {
         threadID: String = "thr_1",
         mailboxID: String? = "mbx_a",
         folder: MailFolder = .inbox,
+        direction: MessageDirection = .inbound,
         readAt: Date? = nil,
         starredAt: Date? = nil,
         subject: String = "Subject"
@@ -489,7 +668,7 @@ nonisolated enum SyncFixtures {
             id: id,
             threadID: threadID,
             mailboxID: mailboxID,
-            direction: .inbound,
+            direction: direction,
             folder: folder,
             fromAddress: "ada@example.net",
             to: ["support@example.com"],

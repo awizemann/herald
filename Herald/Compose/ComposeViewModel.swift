@@ -50,6 +50,10 @@ final class ComposeViewModel {
     // MARK: Derived / published state
 
     private(set) var draft: ComposeDraft
+    /// Read-only preview of the quoted original the server will append below
+    /// the authored text on send. `nil` for a new message or a reopened draft.
+    /// DISPLAY ONLY — never concatenated into ``bodyText``/``draft/body``.
+    let quotedPreview: String?
     private(set) var status: Status = .idle {
         didSet {
             guard status != oldValue, let message = status.message else { return }
@@ -92,6 +96,7 @@ final class ComposeViewModel {
         let draft = context.makeDraft()
         self.draft = draft
         self.initialDraft = draft
+        self.quotedPreview = context.quotedPreview
         self.outbox = outbox
         self.record = record
         self.autosaveDelay = autosaveDelay
@@ -127,6 +132,14 @@ final class ComposeViewModel {
     /// message without the files still on their way up.
     var isBusy: Bool { status == .saving || status == .sending || !pendingUploads.isEmpty }
 
+    /// What the header's spinner is for, in words — its accessibility label.
+    /// Sending wins over the rest: it is the state the user is waiting on.
+    var busyDescription: String {
+        if status == .sending { return "Sending" }
+        if !pendingUploads.isEmpty { return "Uploading attachments" }
+        return "Saving draft"
+    }
+
     /// Whether closing would lose work the server has not seen.
     var hasUnsavedChanges: Bool {
         // A sent or discarded composer owns nothing anymore: the programmatic
@@ -150,6 +163,152 @@ final class ComposeViewModel {
         return bad.count == 1
             ? "“\(bad[0])” is not a valid email address."
             : "\(bad.count) addresses are not valid email addresses."
+    }
+
+    // MARK: - Signature
+
+    /// One row of the signature picker.
+    struct SignatureOption: Identifiable, Hashable {
+        /// The picker tag: `"automatic"`, `"none"`, `"selected:<id>"`, or
+        /// `"snapshot"` (the draft's saved copy of a signature that is gone).
+        let id: String
+        let label: String
+        /// False for the draft's saved copy of a signature this address can no
+        /// longer use — shown so the user knows what will be appended, but not
+        /// selectable, because the server would answer `SIGNATURE_NOT_AVAILABLE`.
+        let isSelectable: Bool
+    }
+
+    /// What `GET /signatures?from=…` said for this window's From address.
+    private(set) var signatureCandidates: SignatureCandidates = .empty
+    private(set) var signaturesLoaded = false
+
+    /// Whether the picker has anything to offer. Hidden on a server that has no
+    /// signatures route (404) or none defined for this address.
+    var showsSignaturePicker: Bool {
+        !signatureCandidates.signatures.isEmpty || draft.signatureSnapshot?.isEmpty == false
+    }
+
+    /// Read-only preview of the signature the SERVER will append below the
+    /// authored text. DISPLAY ONLY — never concatenated into ``bodyText``, the
+    /// same invariant as ``quotedPreview``.
+    var signaturePreview: String? {
+        if let candidate = signatureCandidates.resolved(draft.signature) {
+            return candidate.text.isEmpty ? nil : candidate.text
+        }
+        guard let snapshot = draft.signatureSnapshot, !snapshot.isEmpty else { return nil }
+        // The saved copy is the truth for a signature the list no longer carries,
+        // and the only thing to show at all before the list has arrived.
+        switch draft.signature {
+        case .noSignature: return nil
+        case .selected(let id): return snapshot.id == id ? snapshot.text : nil
+        case .automatic: return signaturesLoaded ? nil : snapshot.text
+        }
+    }
+
+    /// The picker's current tag. Setting it changes the selection and schedules a
+    /// save, so the draft the server holds always matches what the window shows.
+    ///
+    /// `.automatic` gets its OWN row rather than being drawn as the signature it
+    /// resolves to: re-picking that row would turn "follow the address's default"
+    /// into a pin on today's default, silently and with nothing on screen to say
+    /// so — and when the address has no default at all, drawing automatic as "No
+    /// signature" would claim a decision the draft has not made.
+    var signatureTag: String {
+        get {
+            switch draft.signature {
+            case .noSignature: return "none"
+            case .automatic: return "automatic"
+            case .selected(let id): return "selected:\(id)"
+            }
+        }
+        set { select(signatureTag: newValue) }
+    }
+
+    var signatureOptions: [SignatureOption] {
+        var options = [SignatureOption(
+            id: "automatic",
+            label: signatureCandidates.resolved(.automatic).map { "Default · \($0.name)" }
+                ?? (signaturesLoaded ? "Default · none set" : "Default"),
+            isSelectable: true
+        )]
+        options += signatureCandidates.signatures.map { signature in
+            SignatureOption(
+                id: "selected:\(signature.id)",
+                label: "\(signature.name) · \(Self.scopeLabel(of: signature))",
+                isSelectable: true
+            )
+        }
+        // The draft's own signature, when the list no longer carries it: shown so
+        // the user can see what will be appended, unselectable because asking for
+        // it again would be a 400. Only once the list has actually arrived — before
+        // that, calling a perfectly good signature a "saved copy" is just wrong.
+        let tag = signatureTag
+        if signaturesLoaded, tag.hasPrefix("selected:"), !options.contains(where: { $0.id == tag }) {
+            let name = draft.signatureSnapshot?.name ?? ""
+            options.append(SignatureOption(
+                id: tag,
+                // The suffix is the REASON the row is disabled: a greyed-out row
+                // with no explanation is invisible to VoiceOver, which announces
+                // "dimmed" without ever saying why.
+                label: name.isEmpty
+                    ? "Saved signature (no longer available)"
+                    : "\(name) · Saved copy (no longer available)",
+                isSelectable: false
+            ))
+        }
+        options.append(SignatureOption(id: "none", label: "No signature", isSelectable: true))
+        return options
+    }
+
+    /// What the closed menu reads, and what VoiceOver reports as its value.
+    var signatureMenuLabel: String {
+        let tag = signatureTag
+        return signatureOptions.first { $0.id == tag }?.label ?? "No signature"
+    }
+
+    private static func scopeLabel(of signature: Signature) -> String {
+        switch signature.scope {
+        case .user: return "Personal"
+        case .mailbox: return signature.scopeLabel
+        case .domain: return "Domain \(signature.scopeLabel)"
+        }
+    }
+
+    private func select(signatureTag tag: String) {
+        let selection: SignatureSelection
+        if tag == "none" {
+            selection = .noSignature
+        } else if tag == "automatic" {
+            selection = .automatic
+        } else if tag.hasPrefix("selected:"), tag.count > "selected:".count {
+            selection = .selected(id: String(tag.dropFirst("selected:".count)))
+        } else {
+            return // "snapshot": the saved copy is not selectable.
+        }
+        guard selection != draft.signature else { return }
+        draft.signature = selection
+        // Same path as any other edit: the debounced autosave persists the
+        // selection, and a send before it lands saves first (`OutboxService.send`).
+        edited(true)
+    }
+
+    /// Loads the signatures usable from this window's From address.
+    ///
+    /// Failures are silent by design: a server older than upstream 1.3.4 has no
+    /// such route, and a compose window that cannot list signatures must still be
+    /// able to send. `.automatic` then means "whatever the server decides", which
+    /// is exactly right.
+    ///
+    /// Safe to call again — the view re-runs it if the From address arrives late.
+    func loadSignatures() async {
+        guard !draft.fromAddress.isEmpty else { return }
+        do {
+            signatureCandidates = try await outbox.signatures(from: draft.fromAddress)
+            signaturesLoaded = true
+        } catch {
+            logger.warning("Signatures unavailable: \(error.logCode, privacy: .public)")
+        }
     }
 
     // MARK: - Recipients

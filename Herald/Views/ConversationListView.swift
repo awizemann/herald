@@ -68,9 +68,15 @@ struct ConversationListView: View {
                 mailboxTint: model.selection.mailboxID == nil
                     ? model.mailboxTint(for: row.latest.mailboxID)
                     : nil,
+                labels: model.labels(forThread: row.id),
                 toggleStar: { Task { await model.toggleStar(row) } },
-                archiveTitle: model.archiveActionTitle,
-                archive: { Task { await model.perform(.archive, onThread: row.id) } },
+                archive: model.offersArchiveAction
+                    ? { Task { await model.perform(.archive, onThread: row.id) } }
+                    : nil,
+                restoreTitle: model.restoreActionTitle,
+                restore: model.restoreAction.map { action in
+                    { Task { await model.perform(action, onThread: row.id) } }
+                },
                 // In the Trash there is nothing to trash: the rotor action goes
                 // away rather than offering a no-op.
                 trash: model.offersTrashAction
@@ -94,7 +100,10 @@ struct ConversationListView: View {
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or
         // menu shortcut these are window-global and fire while the user is typing
         // in the search field — which is how a bare ⌫ deletes the wrong thing.
-        .onKeyPress("e") { act(.archive) }
+        // `e` follows the same folder rule ⌘⇧A does: archive where archiving
+        // means something, put back in the Trash and the Archive where it does
+        // not (the server would ignore an archive there).
+        .onKeyPress("e") { act(model.restoreAction ?? .archive) }
         .onKeyPress(.delete) { act(.trash) }
         // Re-entering a thread the user already backed out of: the selection is
         // unchanged, so nothing else would fire.
@@ -166,16 +175,22 @@ struct ConversationListView: View {
                 }
                 Button(row.isStarred ? "Unstar" : "Star") { Task { await model.toggleStar(row) } }
                 Divider()
-                // "Move to Archive" in the Trash: it is a per-message archive,
-                // the only way back out the v1 API has (issue #8).
-                Button(model.archiveActionTitle) {
-                    Task { await model.perform(.archive, onThread: id) }
+                if model.offersArchiveAction {
+                    Button("Archive") { Task { await model.perform(.archive, onThread: id) } }
+                }
+                // "Put Back" in the Trash, "Move to Inbox" in the Archive —
+                // upstream 1.3.4's restore/unarchive (issue #7, #8).
+                if let restore = model.restoreAction {
+                    Button(model.restoreActionTitle) {
+                        Task { await model.perform(restore, onThread: id) }
+                    }
                 }
                 if model.offersTrashAction {
                     Button("Move to Trash", role: .destructive) {
                         Task { await model.perform(.trash, onThread: id) }
                     }
                 }
+                LabelMenu(model: model, threadID: id)
             }
         }
     }
@@ -186,6 +201,36 @@ struct ConversationListView: View {
         guard model.selectedThreadID != nil else { return .ignored }
         Task { await model.performOnSelection(action) }
         return .handled
+    }
+}
+
+/// The "Labels" submenu of a conversation's context menu.
+///
+/// A toggle per label rather than an add list and a remove list: assignment is a
+/// membership, so a checkmark says the current state and one click flips it.
+/// Renders nothing when the workspace has no labels — an empty submenu is a dead
+/// end the user has to open to discover.
+struct LabelMenu: View {
+    @Bindable var model: MailViewModel
+    let threadID: String
+
+    var body: some View {
+        if !model.labels.isEmpty {
+            Divider()
+            Menu(MailTheme.labelsSectionTitle) {
+                ForEach(model.labels) { label in
+                    // Read through the model in the GETTER, never a value snapshotted
+                    // at body-evaluation time: an open menu has to show the checkmark
+                    // move when the toggle is flipped.
+                    Toggle(label.name, isOn: Binding(
+                        get: { model.threadHasLabel(label.id, threadID: threadID) },
+                        set: { newValue in
+                            Task { await model.setLabel(label.id, onThread: threadID, assigned: newValue) }
+                        }
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -228,6 +273,25 @@ struct SearchStatusBar: View {
         // count without the user hunting for a bar that appears and vanishes.
         .accessibilityElement(children: .combine)
         .accessibilityLabel(description)
+        // Announce the RESULT, never the "Searching…" step: the bar's text
+        // changes on every debounced keystroke while a search runs, and speaking
+        // each one would talk over the user typing. Settled states only.
+        // Keyed on the STATE, not on the text: two different searches can settle
+        // on the same sentence ("No additional results"), and a text-keyed
+        // `onChange` would stay silent for the second one.
+        .onChange(of: state) { _, newState in
+            guard SearchStatusBar.announces(newState) else { return }
+            AccessibilityNotification.Announcement(description).post()
+        }
+    }
+
+    /// Whether a server-search state is worth interrupting the user for: what the
+    /// server found, or that it failed. Pure and static so it is assertable.
+    nonisolated static func announces(_ state: MailViewModel.ServerSearchState) -> Bool {
+        switch state {
+        case .idle, .searching: false
+        case .completed, .failed: true
+        }
     }
 }
 
@@ -414,11 +478,21 @@ struct MailboxChip: View {
         Text(name)
             .font(.caption2)
             .fontWeight(.medium)
-            .foregroundStyle(tint?.color ?? MailTheme.attributionForeground)
+            // A tinted chip draws its name in the text colour, not in the tint:
+            // caption2 systemYellow/orange/teal over an 18% wash of itself misses
+            // AA in light mode. The tint lives on the fill and the border. The
+            // untinted fallback keeps the neutral attribution colour, which is
+            // already contrast-safe on the neutral chip surface.
+            .foregroundStyle(tint == nil ? MailTheme.attributionForeground : MailTheme.chipLabelForeground)
             .lineLimit(1)
             .padding(.horizontal, MailTheme.Spacing.xs)
             .padding(.vertical, MailTheme.Spacing.xxs)
             .background(background, in: Capsule())
+            .overlay {
+                if let tint {
+                    Capsule().strokeBorder(tint.color.opacity(MailTheme.chipBorderOpacity))
+                }
+            }
             .accessibilityHidden(true)
     }
 
@@ -457,11 +531,17 @@ struct ConversationRow: View {
     let mailboxName: String?
     /// The mailbox's resolved palette tint, resolved by the view-model.
     let mailboxTint: MailboxTint?
+    /// The labels on ANY message of the thread, in sidebar order. Empty for most
+    /// rows, and the chip row renders nothing at all then.
+    var labels: [MailLabel] = []
     let toggleStar: () -> Void
-    /// "Archive", or "Move to Archive" in the Trash — the same verb the context
-    /// menu shows, so VoiceOver and the menu cannot drift apart.
-    let archiveTitle: String
-    let archive: () -> Void
+    /// `nil` in Trash and Archive, where archiving is a server no-op.
+    let archive: (() -> Void)?
+    /// The put-back verb and its action, non-nil only in Trash and Archive. The
+    /// title is the one the context menu shows, so VoiceOver and the menu cannot
+    /// drift apart.
+    let restoreTitle: String
+    let restore: (() -> Void)?
     /// `nil` in the Trash, where trashing is a no-op.
     let trash: (() -> Void)?
     /// Non-nil when the conversation has more than one message.
@@ -510,12 +590,17 @@ struct ConversationRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 }
+                // Last line, under the snippet: labels are metadata about the
+                // thread, not part of what it says.
+                LabelChipRow(labels: labels)
             }
             // COMBINE, not the row's old `contain`: as a container VoiceOver
             // stopped on each Text separately and the row's own label — the only
             // place unread/starred/attachments were spoken — was never read.
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilitySummary(for: row, mailboxName: mailboxName))
+            .accessibilityLabel(
+                Self.accessibilitySummary(for: row, mailboxName: mailboxName, labels: labels)
+            )
             // The full date, not the "Tue" on screen: the short form is not a date.
             .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
 
@@ -574,10 +659,11 @@ struct ConversationRow: View {
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
-        .accessibilityAction(named: archiveTitle, archive)
-        // A container, so the Trash scope offers no trash action at all rather
-        // than a rotor entry that does nothing.
+        // A container, so a scope that cannot archive (or trash, or put back)
+        // offers no rotor entry at all rather than one that does nothing.
         .accessibilityActions {
+            if let archive { Button("Archive", action: archive) }
+            if let restore { Button(restoreTitle, action: restore) }
             if let trash { Button("Move to Trash", action: trash) }
         }
     }
@@ -611,7 +697,8 @@ struct ConversationRow: View {
     /// primary label on screen and has to be the first thing spoken too.
     nonisolated static func accessibilitySummary(
         for row: ConversationSummary,
-        mailboxName: String? = nil
+        mailboxName: String? = nil,
+        labels: [MailLabel] = []
     ) -> String {
         var parts: [String] = []
         if let mailboxName { parts.append(mailboxName) }
@@ -621,6 +708,9 @@ struct ConversationRow: View {
         if row.isUnread { parts.append("unread") }
         if row.isStarred { parts.append("starred") }
         if row.latest.hasAttachments { parts.append("has attachments") }
+        // The chips are `accessibilityHidden`, so this is the ONLY place a
+        // VoiceOver user hears which labels a row carries.
+        if let phrase = LabelChipRow.accessibilityPhrase(for: labels) { parts.append(phrase) }
         parts.append(row.latest.snippet)
         return parts.joined(separator: ", ")
     }

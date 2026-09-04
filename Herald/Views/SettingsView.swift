@@ -36,17 +36,28 @@ struct PrivacySettingsPane: View {
                 ))
                 // Until the snapshot has been read there is nothing truthful to
                 // show, so the switch is inert rather than guessing a position.
-                .disabled(model.isEnabled == nil)
-                // While loading, the hint says why the switch is inert. Once
-                // loaded there is NO hint: the explanation below is a sibling
-                // element VoiceOver reads in its own right, and repeating it as
-                // the switch's hint reads the whole paragraph twice.
-                .accessibilityHint(Self.accessibilityHint(isEnabled: model.isEnabled))
+                // Likewise inert when this build has no tracker at all — flipping
+                // it would silently do nothing, which is the exact bug this fixes.
+                .disabled(model.isEnabled == nil || !model.isAvailable)
+                // While loading or unavailable, the hint says why the switch is
+                // inert. Once loaded and available there is NO hint: the
+                // explanation below is a sibling element VoiceOver reads in its
+                // own right, and repeating it as the switch's hint reads the
+                // whole paragraph twice.
+                .accessibilityHint(Self.accessibilityHint(
+                    isEnabled: model.isEnabled, isAvailable: model.isAvailable
+                ))
 
-                Text(Self.explanation)
+                Text(Self.explanation(isAvailable: model.isAvailable))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let confirmation = model.confirmation {
+                    Text(confirmation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -54,23 +65,32 @@ struct PrivacySettingsPane: View {
         .task { await model.load() }
     }
 
-    /// The switch's VoiceOver hint. Only while the tracker's answer is still on
-    /// its way, where the disabled switch would otherwise be unexplained; once
-    /// loaded the hint is empty, because the visible explanation is its own
-    /// element and a hint repeating it makes VoiceOver read the paragraph twice.
-    static func accessibilityHint(isEnabled: Bool?) -> String {
-        isEnabled == nil ? "Loading current setting" : ""
+    /// The switch's VoiceOver hint. While the tracker's answer is still on its
+    /// way, or when this build has no tracker to toggle, the disabled switch
+    /// would otherwise be unexplained; once loaded and available the hint is
+    /// empty, because the visible explanation is its own element and a hint
+    /// repeating it makes VoiceOver read the paragraph twice.
+    static func accessibilityHint(isEnabled: Bool?, isAvailable: Bool) -> String {
+        guard isAvailable else { return "Usage analytics aren't included in this build" }
+        return isEnabled == nil ? "Loading current setting" : ""
     }
 
     /// Verbatim from the approved plan's "Opt-out copy". Every clause of the
     /// "never sent" list is enforced by the privacy contract in `UsageEvent.swift`.
-    static let explanation = """
-        Sends which features you use (e.g. “archived a message”, “opened search”) and basic \
-        app/OS version info to Herald’s developer, tagged with a random per-install identifier \
-        so active installs can be counted. Never sent: your mail, subjects, addresses, search \
-        text, mailbox names, account details, file names, or anything you type. Turn this off \
-        and nothing further is sent, including anything queued.
-        """
+    /// Swapped out entirely — not appended to — when this build has no tracker:
+    /// the privacy promises below are moot if nothing can be sent either way.
+    static func explanation(isAvailable: Bool) -> String {
+        guard isAvailable else { return unavailableExplanation }
+        return """
+            Sends which features you use (e.g. “archived a message”, “opened search”) and basic \
+            app/OS version info to Herald’s developer, tagged with a random per-install identifier \
+            so active installs can be counted. Never sent: your mail, subjects, addresses, search \
+            text, mailbox names, account details, file names, or anything you type. Turn this off \
+            and nothing further is sent, including anything queued.
+            """
+    }
+
+    static let unavailableExplanation = "Usage analytics aren’t included in this build."
 }
 
 /// The toggle's whole behaviour, out of the view so it can be tested.
@@ -83,6 +103,17 @@ struct PrivacySettingsPane: View {
 final class UsagePrivacyModel {
     private let usage: any UsageTracking
     private(set) var isEnabled: Bool?
+    /// A brief, unobtrusive confirmation shown after a successful write in a
+    /// build where the tracker is actually available — there is no change
+    /// notification from the SDK otherwise, so this is the only feedback a
+    /// keyed build gives that the toggle did something. `nil` the rest of the
+    /// time, including always in an unavailable build.
+    private(set) var confirmation: String?
+
+    /// `false` on a build with no usable write key — the seam's
+    /// ``UsageTracking/isAvailable``, mirrored here so the view never talks to
+    /// `usage` directly.
+    var isAvailable: Bool { usage.isAvailable }
 
     init(usage: any UsageTracking) {
         self.usage = usage
@@ -95,6 +126,9 @@ final class UsagePrivacyModel {
     func setEnabled(_ enabled: Bool) async {
         await usage.setEnabled(enabled)
         await load()
+        confirmation = isAvailable
+            ? (enabled ? "Saved." : "Analytics are off — nothing is sent.")
+            : nil
     }
 }
 

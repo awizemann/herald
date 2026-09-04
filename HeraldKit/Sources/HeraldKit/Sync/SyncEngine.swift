@@ -13,6 +13,11 @@ public nonisolated enum SyncEvent: Sendable {
     /// against the message cache by the view-model, and a draft id would resolve
     /// to nothing and be mistaken for a brand-new mailbox.
     case draftsChanged(ChangeSet)
+    /// The LABELS table (or its assignments) changed. Its own case for the same
+    /// reason as `draftsChanged`: label ids and assignment rows are not message
+    /// ids, so folding them into a ``ChangeSet`` would have the view-model
+    /// resolving them against the message cache and reloading the wrong slices.
+    case labelsChanged
     case finished
     case failed(any Error)
 }
@@ -59,9 +64,13 @@ public nonisolated struct SyncScope: Sendable, Hashable {
     )
 }
 
-/// Polling cadence. There is no push (the server's only push is browser Web
-/// Push), so the client polls — cheaply in journal mode, by re-listing on an
-/// older server: 15s while a window is key, 60s when idle.
+/// Polling cadence: 15s while a window is key, 60s when idle.
+///
+/// Polling is the FLOOR, not the mechanism. Upstream 1.3.4 added a wake socket
+/// (`GET /events`), and while it is connected the interval stretches — but it
+/// never goes away, because the server documents those frames as wake-only and
+/// explicitly not reliable delivery, and because a socket that dies silently
+/// must not take mail delivery with it.
 public nonisolated enum SyncCadence: Sendable, Hashable {
     case active
     case idle
@@ -70,6 +79,20 @@ public nonisolated enum SyncCadence: Sendable, Hashable {
         switch self {
         case .active: .seconds(15)
         case .idle: .seconds(60)
+        }
+    }
+
+    /// The interval used while the wake socket is connected.
+    ///
+    /// Not "never": these are the safety net for a frame the server dropped, a
+    /// socket that is half-open without knowing it, and the two surfaces whose
+    /// staleness a frame cannot fix (label MEMBERSHIP arrives as a `messages`
+    /// frame that identifies nothing, and the drafts/labels sweeps only run
+    /// inside a pass). Active stays at two minutes for exactly that reason.
+    var stretchedInterval: Duration {
+        switch self {
+        case .active: .seconds(120)
+        case .idle: .seconds(300)
         }
     }
 }
@@ -96,16 +119,90 @@ public actor SyncEngine {
     /// never waiting on this; it only catches drafts written elsewhere.
     public static let defaultDraftPollInterval: Duration = .seconds(60)
 
+    /// How rarely the label sweep runs. Labels are the OTHER surface with no
+    /// delta: the v1 change journal reports a label-only edit as an upsert of the
+    /// message (the server bumps `messages.updated_at`), but the v1 message
+    /// payload carries no `labels` field, so the journal entry says "something
+    /// about this message changed" and nothing about which labels it now has.
+    /// Membership therefore has to be re-derived by listing each label, which is
+    /// one request per label — far too much for the 15s message cadence.
+    ///
+    /// The user's OWN assignments never wait for this: they are written straight
+    /// into the cache and reconciled from the server's `LabelAssignmentResult`.
+    public static let defaultLabelPollInterval: Duration = .seconds(120)
+
+    /// The label sweep's interval while NOTHING on screen shows labels.
+    ///
+    /// 120s buys freshness for chips and badges the user can actually see. When
+    /// the app is not frontmost — or the account has no labels at all — that
+    /// freshness is bought for nobody, and the sweep is the single most expensive
+    /// idle thing Herald does: one `GET /messages?labelId=` page-walk PER label,
+    /// forever, whatever else is happening. Twelve and a half minutes is still
+    /// far inside any session and cuts the idle request rate by ~6×.
+    ///
+    /// Deliberately not "never": the surface has no delta (see
+    /// ``defaultLabelPollInterval``), so a sweep that stops entirely is a cache
+    /// that diverges silently until the user next opens a label. And the moment
+    /// the user DOES ask about labels, ``refreshLabelsNow()`` sweeps immediately
+    /// regardless of either interval.
+    public static let defaultIdleLabelPollInterval: Duration = .seconds(750)
+
+    /// How rarely a rejected change cursor may be answered with a full
+    /// re-bootstrap. See ``journalSync(accountID:)`` — the recovery looks like a
+    /// SUCCESSFUL pass, so without a limit a persistently rejected cursor is an
+    /// invisible re-listing loop.
+    public static let defaultRebootstrapCooldown: Duration = .seconds(300)
+
     private let api: any MailAPIClient
     private let store: MailStore
     private let scope: SyncScope
     private let maxConversationPages: Int
     private let maxMessagePages: Int
     private let draftPollInterval: Duration
+    private let labelPollInterval: Duration
+    private let idleLabelPollInterval: Duration
+    private let rebootstrapCooldown: Duration
 
     /// When the drafts list was last read. `nil` means "never", which is what
     /// makes the first pass of a session always poll them.
     private var lastDraftPoll: ContinuousClock.Instant?
+    /// Same, for the label sweep.
+    private var lastLabelPoll: ContinuousClock.Instant?
+
+    /// Whether anything on screen currently shows labels. Drives which of the two
+    /// label intervals applies — see ``setLabelSurfaceVisible(_:)``.
+    private var isLabelSurfaceVisible = false
+
+    /// What the last COMPLETED sweep wrote for each label, as a digest.
+    ///
+    /// `replaceAssignments` is a fetch, a dictionary build and a diff per label;
+    /// on a membership that did not move it is all of that to write nothing. The
+    /// digest turns the common case (a label nobody touched between two sweeps)
+    /// into an integer compare.
+    ///
+    /// SAFE because it only ever suppresses a write that would have been a no-op
+    /// AGAINST THE PREVIOUS SWEEP'S OWN OUTPUT. Two ways the store can hold
+    /// something else: a local optimistic toggle, and the server's authoritative
+    /// per-message answer — both of which are what the user just asked for, and
+    /// both of which the NEXT sweep whose membership actually differs writes
+    /// through. ``refreshLabelsNow()`` drops the digests outright, so the paths
+    /// that mean "the user is asking about labels right now" (opening a label,
+    /// Refresh inside one) always do the full authoritative write.
+    private var lastSweepDigests: [String: SweepDigest] = [:]
+
+    /// A membership row set, cheaply. Order-independent (the server does not
+    /// promise one) and carries the count alongside the hash so a hash collision
+    /// alone cannot suppress a write.
+    private struct SweepDigest: Hashable {
+        let count: Int
+        let hash: Int
+
+        init(_ rows: [LabelRowKey]) {
+            let unique = Set(rows)
+            self.count = unique.count
+            self.hash = unique.hashValue
+        }
+    }
 
     private let eventStream: AsyncStream<SyncEvent>
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
@@ -113,6 +210,8 @@ public actor SyncEngine {
     private var accountID: String?
     private var loopTask: Task<Void, Never>?
     private var cadence: SyncCadence = .active
+    /// Whether the wake socket is delivering. Stretches the poll while true.
+    private var isWakeSocketConnected = false
     private var consecutiveFailures = 0
 
     /// Coalescing state: a refresh asked for while a pass is in flight becomes
@@ -144,7 +243,10 @@ public actor SyncEngine {
         scope: SyncScope = .default,
         maxConversationPages: Int = SyncEngine.defaultMaxConversationPages,
         maxMessagePages: Int = SyncEngine.defaultMaxMessagePages,
-        draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval
+        draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval,
+        labelPollInterval: Duration = SyncEngine.defaultLabelPollInterval,
+        idleLabelPollInterval: Duration = SyncEngine.defaultIdleLabelPollInterval,
+        rebootstrapCooldown: Duration = SyncEngine.defaultRebootstrapCooldown
     ) {
         self.api = api
         self.store = store
@@ -152,6 +254,12 @@ public actor SyncEngine {
         self.maxConversationPages = max(1, maxConversationPages)
         self.maxMessagePages = max(1, maxMessagePages)
         self.draftPollInterval = draftPollInterval
+        self.labelPollInterval = labelPollInterval
+        // A caller that shortens the visible interval past the idle one means the
+        // shorter number; the idle interval is a FLOOR on rarity, never a way to
+        // sweep more often than the visible surface asked for.
+        self.idleLabelPollInterval = max(idleLabelPollInterval, labelPollInterval)
+        self.rebootstrapCooldown = rebootstrapCooldown
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
         self.eventContinuation = continuation
@@ -177,6 +285,10 @@ public actor SyncEngine {
         wakeSignalled = false
         // A different account (or a restarted engine) has never polled ITS drafts.
         lastDraftPoll = nil
+        lastLabelPoll = nil
+        // The digests describe the PREVIOUS account's membership; keeping them
+        // would let the first sweep of a new account skip a write it must make.
+        lastSweepDigests.removeAll()
         loopTask = Task { [weak self] in
             await self?.runLoop(accountID: accountID)
         }
@@ -225,12 +337,64 @@ public actor SyncEngine {
         refreshNow()
     }
 
+    /// Asks for a pass that also re-sweeps label membership, whatever the label
+    /// interval says. For the moments the user is actually asking about labels —
+    /// opening a label in the sidebar, or pressing Refresh while inside one.
+    public func refreshLabelsNow() {
+        lastLabelPoll = nil
+        // This is the "the user is asking about labels RIGHT NOW" path, so it is
+        // also the one that must not trust a digest: it forces the full
+        // authoritative `replaceAssignments` for every label, which is how a
+        // cache that drifted out of step with the server (a local write the
+        // server never took, a sweep skipped over a race) is put right.
+        lastSweepDigests.removeAll()
+        refreshNow()
+    }
+
+    /// Tells the loop whether anything on screen is showing labels.
+    ///
+    /// The sweep is one request PER LABEL and it is the dominant idle cost, so it
+    /// runs at ``defaultLabelPollInterval`` only while the answer is worth having
+    /// promptly and at ``defaultIdleLabelPollInterval`` otherwise.
+    ///
+    /// Deliberately NOT wired to wake the loop when it flips true, unlike
+    /// ``setWakeSocketConnected(_:)``: waking costs a whole mail pass, and the
+    /// two moments that genuinely need labels NOW (opening a label listing,
+    /// Refresh inside one) already call ``refreshLabelsNow()``, which wakes the
+    /// loop AND forces the sweep. Turning the surface on merely shortens the
+    /// interval the next wait computes.
+    public func setLabelSurfaceVisible(_ visible: Bool) {
+        isLabelSurfaceVisible = visible
+    }
+
     /// Switches the poll interval. Takes effect on the next wait, and wakes the
     /// loop when speeding up so the change is not delayed by a full idle period.
     public func setCadence(_ cadence: SyncCadence) {
         guard cadence != self.cadence else { return }
         self.cadence = cadence
         if cadence == .active { signalWake() }
+    }
+
+    /// Tells the loop whether the wake socket is currently delivering.
+    ///
+    /// Healthy → the poll stretches to ``SyncCadence/stretchedInterval``, because
+    /// the socket is what makes a change visible now and the poll is only the
+    /// backstop. Unhealthy → back to the full cadence IMMEDIATELY: the loop is
+    /// woken so a socket that dropped during a two-minute wait does not leave the
+    /// user waiting out the rest of it with nothing watching the server.
+    ///
+    /// Deliberately NOT a "stop polling" switch. The frames are wake-only and
+    /// undelivered ones are never replayed, so a poll that never runs is a cache
+    /// that silently diverges the first time a frame is missed.
+    public func setWakeSocketConnected(_ connected: Bool) {
+        guard connected != isWakeSocketConnected else { return }
+        isWakeSocketConnected = connected
+        if !connected { signalWake() }
+    }
+
+    /// Test seam: the interval the NEXT wait will use.
+    var currentPollInterval: Duration {
+        backoffInterval ?? (isWakeSocketConnected ? cadence.stretchedInterval : cadence.interval)
     }
 
     // MARK: - Loop
@@ -253,7 +417,7 @@ public actor SyncEngine {
     private func waitForNextTick() async {
         waitGeneration &+= 1
         let generation = waitGeneration
-        let interval = backoffInterval ?? cadence.interval
+        let interval = currentPollInterval
         let timer = Task { [weak self] in
             // A cancelled timer must NOT signal: swallowing the cancellation and
             // waking anyway leaves `wakeSignalled` latched, and the next wait
@@ -335,6 +499,9 @@ public actor SyncEngine {
             // a separate surface on a separate cadence, and their own failure
             // mode must not decide whether the mail pass succeeded.
             await syncDraftsIfDue(accountID: accountID)
+            // Same contract as the drafts poll: its own cadence, its own failure
+            // mode, and never able to fail the mail pass.
+            await syncLabelsIfDue(accountID: accountID)
             emit(.finished)
         } catch let error as MailAPIError where error == .unauthorized {
             // Nothing the loop can do: the UI has to re-authenticate. Stop
@@ -413,6 +580,176 @@ public actor SyncEngine {
     /// Test seam: how many passes actually reached `GET /drafts`. It is what makes
     /// "the second pass did NOT re-poll drafts" assertable without a clock.
     var lastDraftPollInstant: ContinuousClock.Instant? { lastDraftPoll }
+
+    // MARK: - Labels
+
+    /// Accounts whose token cannot read labels at all — or whose server predates
+    /// them (a 404 on `GET /labels`). Same reasoning as ``draftlessAccounts``: a
+    /// permanent refusal must not park a healthy mailbox in backoff. Probed again
+    /// when the engine restarts, which is what makes a server upgrade take effect.
+    private var labellessAccounts: Set<String> = []
+
+    /// Accounts whose server has already answered `GET /labels` successfully.
+    ///
+    /// A 404 means "no such route" ONLY before that: once an account has read its
+    /// labels, a later 404 is a transient server fault (a bad deploy, a proxy) and
+    /// treating it as "this server has no labels" would silently drop the feature
+    /// for the rest of the session. Exactly the rule ``fetchChanges`` follows for
+    /// the change journal.
+    private var labelCapableAccounts: Set<String> = []
+
+    /// Re-derives label membership.
+    ///
+    /// Two halves, in order:
+    /// 1. `GET /labels` — the workspace's labels (shared, not per-user), replacing
+    ///    the cached list wholesale.
+    /// 2. one `GET /messages?labelId=…` page-walk PER label — the only membership
+    ///    source the v1 API has (see ``defaultLabelPollInterval``). A walk that
+    ///    hits the page cap does NOT write: `replaceAssignments` is authoritative
+    ///    by construction, so a truncated listing would erase the assignments the
+    ///    server had not got round to returning.
+    ///
+    /// Never throws: a label failure is not a sync failure, and `lastLabelPoll` is
+    /// only advanced on success so a transient error retries next pass.
+    private func syncLabelsIfDue(accountID: String) async {
+        guard !labellessAccounts.contains(accountID), isLabelPollDue else { return }
+        // The CAPABILITY probe is `GET /labels` and nothing else. A refusal from
+        // one label's message listing says something about that listing, not
+        // about whether this server has labels at all — folding the two together
+        // let a single 403 disable the whole feature for the session.
+        let labels: [MailLabel]
+        do {
+            labels = try await api.listLabels()
+            labelCapableAccounts.insert(accountID)
+        } catch let error as MailAPIError
+            where error == .unauthorized
+            || Self.isScopeRefusal(error)
+            || (error == .notFound && !labelCapableAccounts.contains(accountID)) {
+            logger.warning("Labels unavailable for this account (\(error.logCode, privacy: .public)); not sweeping them again this session")
+            labellessAccounts.insert(accountID)
+            return
+        } catch is CancellationError {
+            return
+        } catch {
+            logger.warning("Label list failed: \(((error as? MailAPIError)?.logCode ?? "unknown"), privacy: .public)")
+            return
+        }
+
+        // Whatever happens to the membership walks below, the writes that DID
+        // land have to be announced — a later label throwing must not make the
+        // earlier ones invisible until the next sweep.
+        var changed = false
+        defer { if changed { emit(.labelsChanged) } }
+        do {
+            try checkPassIsCurrent()
+            changed = try await store.replaceLabels(labels, accountID: accountID)
+        } catch {
+            logger.warning("Label list could not be cached: \(error.localizedDescription, privacy: .private)")
+            return
+        }
+
+        var swept = 0
+        for label in labels {
+            do {
+                try checkPassIsCurrent()
+                // A nil walk is a deliberate SKIP, not a failure: it still counts
+                // as swept, or a label that is permanently page-capped would keep
+                // the interval from ever restarting and re-sweep every pass. A
+                // walk (or write) that THROWS must not count — counting it would
+                // restart the interval on a partial sweep and sit the failed
+                // label out instead of retrying it next pass.
+                guard let rows = try await labelMembership(label.id, accountID: accountID) else {
+                    swept += 1
+                    continue
+                }
+                // The walk already cost its requests; what this skips is the
+                // store work — a fetch, a dictionary build and a row diff per
+                // label — for a membership identical to the one this engine last
+                // wrote. See ``lastSweepDigests`` for why that is safe.
+                let digest = SweepDigest(rows)
+                guard lastSweepDigests[label.id] != digest else {
+                    swept += 1
+                    continue
+                }
+                labelAssignmentWrites += 1
+                changed = try await store.replaceAssignments(
+                    labelID: label.id, messages: rows, accountID: accountID
+                ) || changed
+                // Only after the write actually landed: a throw above must leave
+                // the digest as it was, or the retry would skip the write too.
+                lastSweepDigests[label.id] = digest
+                swept += 1
+            } catch is CancellationError {
+                return
+            } catch {
+                // Transient for THIS label; the others are still worth sweeping.
+                logger.warning(
+                    "Label membership failed for one label (\(((error as? MailAPIError)?.logCode ?? "unknown"), privacy: .public))"
+                )
+            }
+        }
+        // A label the workspace deleted takes its assignments with it
+        // (`replaceLabels`), so its digest would otherwise describe rows that no
+        // longer exist if the id were ever reused.
+        let live = Set(labels.map(\.id))
+        lastSweepDigests = lastSweepDigests.filter { live.contains($0.key) }
+        // The interval only restarts on a sweep that actually covered every
+        // label; a partial one is retried on the next pass rather than sat out.
+        if swept == labels.count { lastLabelPoll = .now }
+    }
+
+    /// Every message carrying one label, or `nil` when the walk could not be
+    /// completed and the caller must not treat it as a full listing.
+    private func labelMembership(_ labelID: String, accountID: String) async throws -> [LabelRowKey]? {
+        var rows: [LabelRowKey] = []
+        var cursor: String?
+        var pages = 0
+        while pages < maxMessagePages {
+            try checkPassIsCurrent()
+            let page = try await api.listMessages(
+                labelID: labelID, limit: Self.messagePageLimit, cursor: cursor
+            )
+            pages += 1
+            rows.append(contentsOf: page.messages.map {
+                LabelRowKey(messageID: $0.id, threadID: $0.threadID)
+            })
+            guard let next = page.nextCursor else {
+                // A pre-pagination server has no `Link` header at all and caps the
+                // response silently, so a full-cap page may be truncated — the same
+                // rule `syncMessages` follows before it tombstones.
+                guard page.messages.count < Self.serverMessageListCap || paginatingAccounts.contains(accountID) else {
+                    logger.warning("Label membership hit the pre-pagination server cap; leaving the cached assignments alone")
+                    return nil
+                }
+                return rows
+            }
+            cursor = next
+        }
+        logger.warning(
+            "Label membership page cap (\(self.maxMessagePages, privacy: .public)) hit for one label; leaving its cached assignments alone"
+        )
+        return nil
+    }
+
+    private var isLabelPollDue: Bool {
+        guard let lastLabelPoll else { return true }
+        return lastLabelPoll.duration(to: .now) >= currentLabelPollInterval
+    }
+
+    /// The interval the label sweep is currently held to. Also the test seam for
+    /// the gating, mirroring ``currentPollInterval``.
+    var currentLabelPollInterval: Duration {
+        isLabelSurfaceVisible ? labelPollInterval : idleLabelPollInterval
+    }
+
+    /// Test seam, same purpose as ``lastDraftPollInstant``.
+    var lastLabelPollInstant: ContinuousClock.Instant? { lastLabelPoll }
+
+    /// Test seam: how many times a sweep has reached `replaceAssignments`, which
+    /// is what makes "the second sweep of an unchanged membership skipped the
+    /// store write" assertable — the store's own return value cannot, because a
+    /// no-op write and a skipped write both report `false`.
+    private(set) var labelAssignmentWrites = 0
 
     // MARK: - Mode selection
 
@@ -510,11 +847,27 @@ public actor SyncEngine {
         do {
             return try await steadyState(accountID: accountID, cursor: cursor, bootstrappedAt: checkpoint.bootstrappedAt)
         } catch let error as MailAPIError where error == .cursorExpired {
-            logger.warning("Change cursor expired; discarding the checkpoint and re-bootstrapping")
+            // Rate-limited, because a re-bootstrap reports SUCCESS: it re-lists
+            // every mailbox and flags the result as a bootstrap, so
+            // notifications stay silent, no failure is counted, no backoff
+            // starts and no banner appears. A server that keeps rejecting the
+            // cursor it just issued would therefore have Herald re-listing
+            // everything on every single tick, invisibly and forever. Once per
+            // cooldown; anything sooner is an ordinary failure the user can see
+            // and the backoff can slow down.
+            if let last = lastRebootstrapAt[accountID], last.duration(to: .now) < rebootstrapCooldown {
+                logger.error("Change cursor rejected again right after a re-bootstrap; reporting it as a failure")
+                throw error
+            }
+            lastRebootstrapAt[accountID] = .now
+            logger.warning("Change cursor rejected; discarding the checkpoint and re-bootstrapping")
             try await store.clearSyncCheckpoint(accountID: accountID)
             return try await bootstrap(accountID: accountID)
         }
     }
+
+    /// When this account last recovered from a rejected cursor.
+    private var lastRebootstrapAt: [String: ContinuousClock.Instant] = [:]
 
     /// Checkpoint FIRST, then the full listing, then the changes that landed
     /// while the listing ran. Taking the checkpoint afterwards would silently

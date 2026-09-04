@@ -73,7 +73,7 @@ nonisolated enum UsageSyncTrigger: String, Sendable, Hashable, CaseIterable {
 }
 
 nonisolated enum UsageMessageAction: String, Sendable, Hashable, CaseIterable {
-    case read, unread, star, unstar, archive, trash
+    case read, unread, star, unstar, archive, unarchive, trash, restore
 }
 
 nonisolated enum UsageActionScope: String, Sendable, Hashable, CaseIterable {
@@ -280,7 +280,11 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case attachmentSaved
     case remoteMediaLoaded
     case accountAdded(outcome: UsageAccountOutcome, kind: UsageOAuthErrorKind?)
-    case accountReauthenticated(outcome: UsageAccountOutcome, kind: UsageOAuthErrorKind?)
+    /// - Parameter automatic: whether Herald ran consent by itself (see
+    ///   ``AutoReauthPolicy``) rather than the user pressing the banner's button.
+    ///   Without it the two are indistinguishable and the metric mixes machine
+    ///   attempts into a human funnel.
+    case accountReauthenticated(outcome: UsageAccountOutcome, kind: UsageOAuthErrorKind?, automatic: Bool)
     case accountRemoved
     case accountSwitched(accounts: UsageBucket)
     case notificationsToggled(enabled: Bool)
@@ -355,11 +359,23 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .composeDiscarded, .draftDeleted, .attachmentSaved, .remoteMediaLoaded,
             .accountRemoved, .mailboxColorChanged, .updateCheckRequested:
             [:]
-        case .accountAdded(let outcome, let kind), .accountReauthenticated(let outcome, let kind):
+        case .accountAdded(let outcome, let kind):
             {
                 var props: [String: UsageValue] = ["outcome": .string(outcome.rawValue)]
                 // `kind` is present only on `.failed` — a success has no error to
                 // classify, and a cancellation is a person's choice, not a fault.
+                if outcome == .failed, let kind { props["kind"] = .string(kind.rawValue) }
+                return props
+            }()
+        case .accountReauthenticated(let outcome, let kind, let automatic):
+            {
+                var props: [String: UsageValue] = [
+                    "outcome": .string(outcome.rawValue),
+                    // What the funnel needs: an automatic attempt is Herald's
+                    // doing, and counting it as a user re-auth would misreport
+                    // both rates.
+                    "automatic": .bool(automatic),
+                ]
                 if outcome == .failed, let kind { props["kind"] = .string(kind.rawValue) }
                 return props
             }()

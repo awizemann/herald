@@ -2,8 +2,9 @@ import Foundation
 
 /// What the user is composing, and what the server needs to know about it.
 ///
-/// `.forward` maps to `DraftInput.forwardOfMessageID` (the v1 spec has the field)
-/// but sends through `POST /send` — v1 has no forward route.
+/// `.forward` maps to `DraftInput.forwardOfMessageID` while it is a draft, and
+/// sends through `POST /forward` (upstream 1.3.4+), which names the forwarded
+/// message in the request rather than relying on the draft row.
 public nonisolated enum ComposeMode: Sendable, Hashable {
     case new(mailboxID: String?)
     case reply(toMessageID: String, replyAll: Bool)
@@ -39,6 +40,14 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     public var subject: String { didSet { markDirty(oldValue != subject) } }
     /// Plain-text body. Herald composes text only; the server derives HTML.
     public var body: String { didSet { markDirty(oldValue != body) } }
+    /// Which signature the message goes out with. Sent to the server on every
+    /// draft save and on send; the SERVER appends the signature text, so this is
+    /// never folded into ``body``.
+    public var signature: SignatureSelection { didSet { markDirty(oldValue != signature) } }
+    /// The server's resolved signature for this draft, as of the last save.
+    /// DISPLAY ONLY — the compose preview reads it when the candidate list has
+    /// nothing to say (a signature that was deleted after the draft was written).
+    public private(set) var signatureSnapshot: SignatureSnapshot?
     /// Files the user picked that are not uploaded yet.
     public private(set) var pendingAttachments: [URL]
     /// Files already uploaded to the server draft.
@@ -57,6 +66,8 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
         bcc: [String] = [],
         subject: String = "",
         body: String = "",
+        signature: SignatureSelection = .automatic,
+        signatureSnapshot: SignatureSnapshot? = nil,
         pendingAttachments: [URL] = [],
         uploadedAttachments: [DraftAttachment] = [],
         serverDraft: Draft? = nil,
@@ -71,6 +82,8 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
         self.bcc = bcc
         self.subject = subject
         self.body = body
+        self.signature = signature
+        self.signatureSnapshot = signatureSnapshot
         self.pendingAttachments = pendingAttachments
         self.uploadedAttachments = uploadedAttachments
         self.serverDraft = serverDraft
@@ -102,6 +115,7 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
             subject: subject,
             text: body,
             html: "",
+            signature: signature,
             version: serverDraft?.version
         )
     }
@@ -117,6 +131,7 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     mutating func applySaved(_ draft: Draft) {
         serverDraft = draft
         uploadedAttachments = draft.attachments
+        signatureSnapshot = draft.signature
         isDirty = false
     }
 
@@ -147,6 +162,7 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
             && bcc == other.bcc
             && subject == other.subject
             && body == other.body
+            && signature == other.signature
     }
 
     /// Merges a server response into the draft the window is still editing,
@@ -166,6 +182,11 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     public mutating func adoptServerState(from saved: ComposeDraft, sent: ComposeDraft) {
         serverDraft = saved.serverDraft
         uploadedAttachments = saved.uploadedAttachments
+        // The snapshot describes the selection that was SENT. Adopting it after
+        // the user switched signature mid-flight would show a preview of the
+        // wrong signature; the mismatch keeps the draft dirty, so the next save
+        // brings back a snapshot that matches.
+        if signature == sent.signature { signatureSnapshot = saved.signatureSnapshot }
         // Keep a pending file only if the server still calls it pending, or if it
         // was picked after `sent` was taken (this response says nothing about it).
         pendingAttachments = pendingAttachments.filter { url in

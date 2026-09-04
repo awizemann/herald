@@ -120,6 +120,25 @@ import WebKit
         #expect(!MailViewModel.isRenderableInlineMedia("image/"))
     }
 
+    /// The mime type is embedded verbatim into a `data:` URL. Fails if a
+    /// subtype carrying `data:`-breaking characters (a comma, which ends the
+    /// `data:` header early, or embedded whitespace/control characters) is
+    /// accepted on the strength of an `image/`/`video/`/`audio/` prefix alone —
+    /// the shape guard has to reject it independently of what upstream parsing
+    /// happens to have already sanitized.
+    @Test func malformedMimeTypeShapeIsRejectedDespiteMediaPrefix() {
+        #expect(!MailViewModel.isRenderableInlineMedia("image/png,data:text/html;base64,x"))
+        #expect(!MailViewModel.isRenderableInlineMedia("image/pn g"))
+        #expect(!MailViewModel.isRenderableInlineMedia("image//png"))
+        #expect(!MailViewModel.isRenderableInlineMedia("image/png/extra"))
+        #expect(!MailViewModel.isRenderableInlineMedia("/png"))
+        #expect(MailViewModel.hasValidMIMETypeShape("image/svg+xml"))
+        #expect(MailViewModel.hasValidMIMETypeShape("video/mp4"))
+        #expect(!MailViewModel.hasValidMIMETypeShape("image/png,evil"))
+        #expect(!MailViewModel.hasValidMIMETypeShape(""))
+        #expect(!MailViewModel.hasValidMIMETypeShape("image"))
+    }
+
     /// The reading pane is a web area, and VoiceOver names it from the document's
     /// own `<title>`; without one it announces "HTML content" and the user cannot
     /// tell which message they are in. Fails if the title or `lang` is dropped —

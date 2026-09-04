@@ -21,7 +21,9 @@ extension MailViewModel {
     /// The title the window subtitle and the empty state use for whatever the
     /// middle column is currently listing.
     var scopeTitle: String {
-        isShowingDrafts ? MailTheme.draftsTitle : MailTheme.title(for: selection.folder)
+        if isShowingDrafts { return MailTheme.draftsTitle }
+        if let label = selectedLabel { return label.name }
+        return MailTheme.title(for: selection.folder)
     }
 
     /// The sidebar's selection, mapped onto the two pieces of state that actually
@@ -29,14 +31,29 @@ extension MailViewModel {
     /// ``selection`` stays the single source of the conversation scope and nothing
     /// downstream has to learn about drafts.
     var sidebarItem: SidebarItem {
-        get { isShowingDrafts ? .drafts : .folder(selection) }
+        get {
+            if isShowingDrafts { return .drafts }
+            if let selectedLabelID { return .label(selectedLabelID) }
+            return .folder(selection)
+        }
         set {
             // Every write to this comes from the sidebar's `List(selection:)`.
             pendingNavigationSource = .sidebar
             switch newValue {
             case .drafts:
+                showLabel(nil)
+                pendingNavigationSource = .sidebar
                 showDrafts(true)
+            case .label(let labelID):
+                showLabel(labelID)
             case .folder(let scope):
+                // FIRST, and unconditionally: leaving a label listing for the
+                // folder that is ALREADY in `selection` changes nothing below —
+                // the `didSet` sees no change and never reloads — so the label's
+                // rows would stay on screen under a folder row. `showLabel(nil)`
+                // reloads the folder scope itself, and is a no-op otherwise.
+                showLabel(nil)
+                pendingNavigationSource = .sidebar
                 // Leaving Drafts for the folder that is ALREADY selected is a
                 // real navigation and reports itself here; `selection` then sees
                 // no change and stays quiet. Leaving it for a DIFFERENT folder

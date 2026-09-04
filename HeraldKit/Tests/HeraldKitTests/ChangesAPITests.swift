@@ -156,6 +156,38 @@ import Testing
         #expect(mailboxID == "mbx_support")
     }
 
+    /// Upstream 1.3.4 made the tombstone's `mailboxId` NULLABLE (owner-only
+    /// unassigned mail). Before this, `MessageChange.delete` carried a
+    /// non-optional String and the whole page failed to decode — the journal
+    /// would have stalled on the first such deletion.
+    @Test("A delete tombstone with a null mailboxId still decodes")
+    func deleteTombstoneAcceptsNullMailbox() async throws {
+        let server = FakeServer()
+        server.route(
+            "GET",
+            "/api/v1/changes",
+            .json(
+                200,
+                """
+                {
+                  "changes": [{"type":"delete","messageId":"msg_gone","mailboxId":null}],
+                  "nextCursor": "c1:2",
+                  "hasMore": false
+                }
+                """
+            )
+        )
+
+        let page = try await makeClient(server).changes(cursor: "c1:1", limit: 100)
+
+        guard case .delete(let messageID, let mailboxID) = page.changes.first else {
+            Issue.record("expected a delete, got \(String(describing: page.changes.first))")
+            return
+        }
+        #expect(messageID == "msg_gone")
+        #expect(mailboxID == nil)
+    }
+
     /// A checkpoint is "no cursor at all". Sending `cursor=` (or any value) makes
     /// the server replay history instead of handing back the high-water mark, so
     /// the absence of the parameter is the contract. Fails if it appears.
@@ -186,6 +218,40 @@ import Testing
 
         await #expect(throws: MailAPIError.cursorExpired) {
             _ = try await makeClient(server).changes(cursor: "ancient", limit: nil)
+        }
+    }
+
+    /// 410 is documented but not yet reachable: the LIVE 1.3.4 server answers a
+    /// foreign or out-of-range cursor with **400 INVALID_CHANGE_CURSOR** (410 is
+    /// reserved for a retention policy it does not have yet). Verified by hand
+    /// against localhost:8787 on 2026-09-04.
+    ///
+    /// Fails if that 400 goes back to being a generic server error: the cursor is
+    /// persisted in the cache, so an unrecoverable one is UNRECOVERABLE — every
+    /// pass fails on it, forever, and only deleting the cache would fix it.
+    @Test(
+        "A rejected cursor maps to .cursorExpired whichever status the server used",
+        arguments: [(400, "INVALID_CHANGE_CURSOR"), (410, "CHANGE_CURSOR_EXPIRED")]
+    )
+    func rejectedCursorsAllRebootstrap(status: Int, code: String) async throws {
+        let server = FakeServer()
+        server.route("GET", "/api/v1/changes", .error(status, code: code, message: "no good"))
+
+        await #expect(throws: MailAPIError.cursorExpired) {
+            _ = try await makeClient(server).changes(cursor: "foreign", limit: nil)
+        }
+    }
+
+    /// …but a 400 that is NOT about the cursor must stay an ordinary failure:
+    /// re-bootstrapping the whole account on a bad `limit` would turn a client
+    /// bug into a full re-listing on every pass.
+    @Test("A 400 that is not about the cursor is not a re-bootstrap")
+    func otherBadRequestsAreOrdinaryFailures() async throws {
+        let server = FakeServer()
+        server.route("GET", "/api/v1/changes", .error(400, code: "INVALID_LIMIT", message: "bad limit"))
+
+        await #expect(throws: MailAPIError.server(code: "INVALID_LIMIT", message: "bad limit")) {
+            _ = try await makeClient(server).changes(cursor: "c1", limit: 9_000)
         }
     }
 

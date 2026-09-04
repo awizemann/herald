@@ -127,6 +127,53 @@ enum MailTheme {
     /// in the full-strength tint on top, so the chip is never colour-only.
     nonisolated static let mailboxChipFillOpacity: Double = 0.18
 
+    /// Strength of a chip's hairline border, drawn in the same tint as the fill.
+    /// The border is what keeps two chips of different colours distinguishable
+    /// now that the NAME is drawn in the text colour rather than the tint.
+    nonisolated static let chipBorderOpacity: Double = 0.55
+
+    /// The colour a tinted chip's NAME is drawn in.
+    ///
+    /// `.primary`, deliberately, NOT the chip's own tint: a name drawn in
+    /// systemYellow/systemOrange/systemTeal over an 18%-opacity wash of the same
+    /// tint fails WCAG AA in light mode. The tint stays on the fill and the
+    /// border, where it is a second cue on top of readable text — the chip rule.
+    nonisolated static let chipLabelForeground: Color = .primary
+
+    // MARK: Label colours
+
+    /// The label palette, keyed by the SERVER's colour name.
+    ///
+    /// Unlike ``mailboxPalette`` this is not an assignment order Herald owns: the
+    /// ten names are the server's closed `labelColors` set and the web app draws
+    /// the same ten, so this is a translation table, not a policy. `NSColor.system*`
+    /// for the same reason as the mailbox tints — they are the colours that adapt
+    /// to dark mode and Increase Contrast. `amber` has no AppKit twin and maps to
+    /// systemYellow, `gray` to systemGray.
+    nonisolated static func labelTint(for color: LabelColor) -> Color {
+        switch color {
+        case .gray: Color(nsColor: .systemGray)
+        case .red: Color(nsColor: .systemRed)
+        case .orange: Color(nsColor: .systemOrange)
+        case .amber: Color(nsColor: .systemYellow)
+        case .green: Color(nsColor: .systemGreen)
+        case .teal: Color(nsColor: .systemTeal)
+        case .blue: Color(nsColor: .systemBlue)
+        case .indigo: Color(nsColor: .systemIndigo)
+        case .purple: Color(nsColor: .systemPurple)
+        case .pink: Color(nsColor: .systemPink)
+        }
+    }
+
+    /// The sidebar's Labels section header and its row symbol.
+    static let labelsSectionTitle = "Labels"
+    static let labelSymbol = "tag"
+
+    /// How many label chips a conversation row draws before it collapses the rest
+    /// into a "+n" chip. A row that carries six labels must not push the sender
+    /// and the subject off their lines.
+    static let maxRowLabelChips = 3
+
     // MARK: Metrics
 
     /// Width of a row's trailing date slot. FIXED, and sized for the longest form
@@ -207,6 +254,61 @@ enum MailTheme {
         static let heroGlyph = Font.system(size: 44, weight: .light)
         /// 40pt light — the empty-state glyph on the root pane.
         static let largeGlyph = Font.system(size: 40, weight: .light)
+    }
+
+    // MARK: Web (reading pane)
+
+    /// The reading pane is a `WKWebView`, so its colours cannot be SwiftUI
+    /// `Color`s — they have to be literal CSS. They still belong to the design
+    /// system, so they live here as the one source, mirrored into CSS custom
+    /// properties by the document wrapper, rather than being spelled inline in a
+    /// stylesheet string.
+    ///
+    /// Values are the sRGB hex of the AppKit system colours the rest of the app
+    /// uses (label / secondaryLabel / textBackground / systemBlue, and the first
+    /// three ``mailboxPalette`` tints for the quote-level bars) in each
+    /// appearance. They are deliberately CONSERVATIVE: only unstyled regions of a
+    /// message pick them up. Herald never inverts a sender's own colours.
+    enum Web {
+        nonisolated struct Palette: Sendable {
+            let foreground: String
+            let secondary: String
+            let background: String
+            let link: String
+            /// Border colours for nesting levels 1, 2 and 3 of a blockquote.
+            let quoteBars: [String]
+            /// Very light wash behind a quoted block, distinct per level.
+            let quoteSurface: String
+            /// `secondary` and `link` under System Settings → Accessibility →
+            /// Increase Contrast (`prefers-contrast: more`), pushed toward
+            /// `foreground`. Only these two: the base palette already clears AA,
+            /// and the rest of the pane is the sender's own colours, which Herald
+            /// does not touch at any contrast setting.
+            let secondaryIncreasedContrast: String
+            let linkIncreasedContrast: String
+        }
+
+        nonisolated static let light = Palette(
+            foreground: "#1d1d1f",
+            secondary: "#6e6e73",
+            background: "#ffffff",
+            link: "#0066cc",
+            quoteBars: ["#007aff", "#30b0c7", "#34c759"],
+            quoteSurface: "rgba(127,127,127,0.06)",
+            secondaryIncreasedContrast: "#3a3a3c",
+            linkIncreasedContrast: "#0040a0"
+        )
+
+        nonisolated static let dark = Palette(
+            foreground: "#f2f2f7",
+            secondary: "#98989d",
+            background: "#1e1e1e",
+            link: "#6cb6ff",
+            quoteBars: ["#0a84ff", "#40c8e0", "#30d158"],
+            quoteSurface: "rgba(127,127,127,0.12)",
+            secondaryIncreasedContrast: "#d1d1d6",
+            linkIncreasedContrast: "#9fd0ff"
+        )
     }
 
     // MARK: Animation

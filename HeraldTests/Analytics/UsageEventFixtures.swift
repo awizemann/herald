@@ -32,7 +32,7 @@ nonisolated enum UsageEventFixtures {
         .attachmentSaved,
         .remoteMediaLoaded,
         .accountAdded(outcome: .failed, kind: .stateMismatch),
-        .accountReauthenticated(outcome: .success, kind: nil),
+        .accountReauthenticated(outcome: .success, kind: nil, automatic: true),
         .accountRemoved,
         .accountSwitched(accounts: .twentyPlus),
         .notificationsToggled(enabled: true),

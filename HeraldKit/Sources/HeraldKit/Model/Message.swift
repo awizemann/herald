@@ -61,15 +61,40 @@ public nonisolated struct MessageSummary: Sendable, Hashable, Codable, Identifia
     public var displayDate: Date { receivedAt ?? sentAt ?? createdAt }
 }
 
+/// MIME presentation intent for an attachment part.
+///
+/// The server decides this (upstream 1.3.4): "a content ID does not make a part
+/// inline by itself" — a PDF can carry a Content-ID and still be a download, and
+/// a body image can be inline without one. Herald must never re-derive it.
+public nonisolated enum AttachmentDisposition: String, Sendable, Hashable, Codable, CaseIterable {
+    case attachment
+    case inline
+}
+
 /// A file attached to a stored message.
+/// CACHE-BLOB CONVENTION — this type is stored VERBATIM in a SwiftData column
+/// (`CachedMessageBody.attachments`): an opaque blob with no
+/// migration hook, so every row an older build wrote is decoded by today's code.
+///
+/// SwiftData decodes such a column with `try!` (verified: a missing key faults in
+/// `DefaultStore.swift`), so a shape change is NOT a recoverable error — it is a
+/// hard crash inside the fetch, repeated on every launch, until the store file is
+/// deleted. That is why `init(from:)` below is TOTAL: every field is defaulted
+/// and no missing, renamed or retyped key can make decoding throw.
+///
+/// A new field is therefore added in THREE places — the property, `CodingKeys`,
+/// and the decode below — and must have a sensible default. Defaulting is safe
+/// precisely because this is a cache: the next fetch from the server corrects it.
 public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable {
     public let id: String
     public let messageID: String
     public let filename: String
     public let contentType: String
     public let sizeBytes: Int
-    /// RFC 2392 Content-ID, present for inline (referenced by `cid:`) parts.
+    /// RFC 2392 Content-ID. Present on many parts that are NOT inline.
     public let contentID: String?
+    /// The server's presentation intent; the only thing that decides inline-ness.
+    public let disposition: AttachmentDisposition
     public let createdAt: Date
 
     public init(
@@ -79,6 +104,7 @@ public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable 
         contentType: String,
         sizeBytes: Int,
         contentID: String?,
+        disposition: AttachmentDisposition,
         createdAt: Date
     ) {
         self.id = id
@@ -87,11 +113,15 @@ public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable 
         self.contentType = contentType
         self.sizeBytes = sizeBytes
         self.contentID = contentID
+        self.disposition = disposition
         self.createdAt = createdAt
     }
 
     /// Inline parts are rendered inside the body rather than listed as downloads.
-    public var isInline: Bool { contentID != nil }
+    ///
+    /// Server-declared, NOT inferred from `contentID`: inferring listed inline
+    /// PDFs as body images and hid real attachments from the attachment bar.
+    public var isInline: Bool { disposition == .inline }
 }
 
 /// A full message, including body text, recipients and attachments.
@@ -139,21 +169,81 @@ public nonisolated struct MessageDetail: Sendable, Hashable, Codable, Identifiab
     public var downloadableAttachments: [Attachment] { attachments.filter { !$0.isInline } }
 }
 
+nonisolated extension Attachment {
+    // Explicit so the cache-blob convention above has something to point at: a
+    // new field MUST be listed here or it silently stops being persisted.
+    enum CodingKeys: String, CodingKey {
+        case id, messageID, filename, contentType, sizeBytes, contentID, disposition, createdAt
+    }
+
+    /// Total decode — see the cache-blob convention on ``Attachment``. Every
+    /// field falls back rather than throwing, because a throw here is a `try!`
+    /// crash inside SwiftData, not an error anyone can catch.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)).flatMap { $0 } ?? fallback
+        }
+        self.id = value(.id, "")
+        self.messageID = value(.messageID, "")
+        self.filename = value(.filename, "")
+        self.contentType = value(.contentType, "application/octet-stream")
+        self.sizeBytes = value(.sizeBytes, 0)
+        self.contentID = (try? container.decodeIfPresent(String.self, forKey: .contentID)) ?? nil
+        self.disposition = value(.disposition, AttachmentDisposition.attachment)
+        self.createdAt = value(.createdAt, Date.distantPast)
+    }
+}
+
 /// Sanitized HTML body plus its remote-media state.
 public nonisolated struct MessageHTML: Sendable, Hashable, Codable {
     public let html: String
     /// Trailing quoted history, split out by the server so the UI can collapse it.
     public let quotedHTML: String?
+    /// Authored content BELOW the quoted history ("bottom posting"). Dropping it
+    /// silently loses part of what the sender wrote.
+    public let afterQuotedHTML: String?
+    /// Whether ANY of the three fragments carries remote images.
     public let hasRemoteImages: Bool
+    /// Per-fragment remote-image flags, so the consent banner can key off the
+    /// fragments that are actually on screen.
+    public let htmlHasRemoteImages: Bool
+    public let quotedHTMLHasRemoteImages: Bool
+    public let afterQuotedHTMLHasRemoteImages: Bool
     public let remoteMediaTrusted: Bool
 
-    public init(html: String, quotedHTML: String?, hasRemoteImages: Bool, remoteMediaTrusted: Bool) {
+    public init(
+        html: String,
+        quotedHTML: String?,
+        afterQuotedHTML: String? = nil,
+        hasRemoteImages: Bool,
+        htmlHasRemoteImages: Bool? = nil,
+        quotedHTMLHasRemoteImages: Bool = false,
+        afterQuotedHTMLHasRemoteImages: Bool = false,
+        remoteMediaTrusted: Bool
+    ) {
         self.html = html
         self.quotedHTML = quotedHTML
+        self.afterQuotedHTML = afterQuotedHTML
         self.hasRemoteImages = hasRemoteImages
+        // An instance that predates the per-fragment flags reports only the
+        // aggregate; attributing it to the main fragment keeps the banner honest
+        // rather than silently never offering it.
+        self.htmlHasRemoteImages = htmlHasRemoteImages ?? hasRemoteImages
+        self.quotedHTMLHasRemoteImages = quotedHTMLHasRemoteImages
+        self.afterQuotedHTMLHasRemoteImages = afterQuotedHTMLHasRemoteImages
         self.remoteMediaTrusted = remoteMediaTrusted
     }
 
     /// True when the UI should offer a "load remote images" affordance.
     public var needsRemoteMediaConsent: Bool { hasRemoteImages && !remoteMediaTrusted }
+
+    /// Whether the remote images are ONLY in the quoted history — which the
+    /// reading pane collapses by default. The consent affordance is still
+    /// offered (the reader can expand that history, and the only path to trusting
+    /// the sender runs through it); this just says the banner is talking about
+    /// something not currently on screen.
+    public var remoteImagesAreOnlyInQuotedHistory: Bool {
+        hasRemoteImages && !htmlHasRemoteImages && !afterQuotedHTMLHasRemoteImages
+    }
 }

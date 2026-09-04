@@ -9,6 +9,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-openapi-generator", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-openapi-runtime", from: "1.8.0"),
         .package(url: "https://github.com/apple/swift-openapi-urlsession", from: "1.1.0"),
+        // Declared explicitly rather than leaned on transitively: HeraldKit
+        // imports HTTPTypes directly (AuthenticatingMiddleware, and the raw
+        // multipart part in HQBaseAPIClient).
+        .package(url: "https://github.com/apple/swift-http-types", from: "1.0.0"),
     ],
     targets: [
         // Leaf: generated client only. Nonisolated by default (see HeraldAPI.swift).
@@ -27,6 +31,7 @@ let package = Package(
                 "HeraldAPI",
                 .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
             ],
             swiftSettings: [.defaultIsolation(MainActor.self), .swiftLanguageMode(.v6)]
         ),

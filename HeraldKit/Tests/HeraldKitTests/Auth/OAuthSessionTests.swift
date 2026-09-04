@@ -162,6 +162,24 @@ import Testing
         }
     }
 
+    /// `OAuthHTTP.send` streams the body via `session.bytes(for:)`, so a response
+    /// past `maxResponseBytes` must be caught mid-download rather than after it
+    /// has already been buffered whole. Fails if the cap were only checked
+    /// against a fully-buffered `Data` (the pre-fix behavior), which this test
+    /// cannot distinguish from a streamed abort by outcome alone — the streaming
+    /// is exercised directly by feeding a body just over the cap and confirming
+    /// it still throws rather than being accepted.
+    @Test("a token response over maxResponseBytes throws .malformedTokenResponse")
+    func oversizedTokenResponseIsRejected() async {
+        let server = FakeServer()
+        let oversized = String(repeating: "a", count: OAuthHTTP.maxResponseBytes + 1)
+        server.route("POST", AuthFixtures.tokenPath, .json(200, #"{"access_token":"\#(oversized)"}"#))
+
+        await #expect(throws: OAuthError.malformedTokenResponse) {
+            _ = try await session(server).refresh(refreshToken: "r")
+        }
+    }
+
     /// `+` is a legal base64url-adjacent character in some server-issued values and
     /// means "space" to a form decoder. Fails if encoding is left to URLComponents.
     @Test("form encoding percent-escapes + and & rather than letting them decode as separators")

@@ -36,7 +36,8 @@ struct DraftSyncTests {
           "bcc": [],
           "subject": "\(subject)",
           "text": "\(text)",
-          "html": ""
+          "html": "",
+          \(Fixtures.draftSignatureAndLabelsJSON)
         }
         """
     }
@@ -272,6 +273,26 @@ struct DraftSyncTests {
 
     // MARK: - Helpers
 
+    /// The cache is what a reopened composer is built from, so a snapshot that
+    /// does not survive the SwiftData round trip means the composer reopens as
+    /// "no signature" and the next autosave drops the user's choice.
+    @Test("A draft's signature snapshot survives the cache round trip")
+    func signatureSnapshotSurvivesTheCache() async throws {
+        let store = try MailStore.inMemory()
+        let snapshot = SignatureSnapshot(
+            mode: .selected, id: "sig_personal", name: "Ada", html: "<p>Ada</p>", text: "Ada Lovelace"
+        )
+
+        try await store.storeLocalDraft(
+            Self.draft(id: "dft_1", version: 1, signature: snapshot),
+            accountID: Self.account
+        )
+
+        let cached = try #require(try await store.draft(id: "dft_1", accountID: Self.account))
+        #expect(cached.signature == snapshot)
+        #expect(cached.editableContent.signature == .selected(id: "sig_personal"))
+    }
+
     static func draft(
         id: String,
         version: Int,
@@ -280,13 +301,15 @@ struct DraftSyncTests {
         subject: String = "Quote",
         text: String = "Here it is.",
         replyToMessageID: String? = nil,
-        attachments: [DraftAttachment] = []
+        attachments: [DraftAttachment] = [],
+        signature: SignatureSnapshot = .empty
     ) -> Draft {
         Draft(
             id: id,
             version: version,
             updatedAt: updatedAt,
             attachments: attachments,
+            signature: signature,
             content: DraftInput(
                 mailboxID: "mbx_support",
                 replyToMessageID: replyToMessageID,

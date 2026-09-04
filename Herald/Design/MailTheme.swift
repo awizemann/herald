@@ -209,6 +209,50 @@ enum MailTheme {
         static let largeGlyph = Font.system(size: 40, weight: .light)
     }
 
+    // MARK: Web (reading pane)
+
+    /// The reading pane is a `WKWebView`, so its colours cannot be SwiftUI
+    /// `Color`s — they have to be literal CSS. They still belong to the design
+    /// system, so they live here as the one source, mirrored into CSS custom
+    /// properties by the document wrapper, rather than being spelled inline in a
+    /// stylesheet string.
+    ///
+    /// Values are the sRGB hex of the AppKit system colours the rest of the app
+    /// uses (label / secondaryLabel / textBackground / systemBlue, and the first
+    /// three ``mailboxPalette`` tints for the quote-level bars) in each
+    /// appearance. They are deliberately CONSERVATIVE: only unstyled regions of a
+    /// message pick them up. Herald never inverts a sender's own colours.
+    enum Web {
+        nonisolated struct Palette: Sendable {
+            let foreground: String
+            let secondary: String
+            let background: String
+            let link: String
+            /// Border colours for nesting levels 1, 2 and 3 of a blockquote.
+            let quoteBars: [String]
+            /// Very light wash behind a quoted block, distinct per level.
+            let quoteSurface: String
+        }
+
+        nonisolated static let light = Palette(
+            foreground: "#1d1d1f",
+            secondary: "#6e6e73",
+            background: "#ffffff",
+            link: "#0066cc",
+            quoteBars: ["#007aff", "#30b0c7", "#34c759"],
+            quoteSurface: "rgba(127,127,127,0.06)"
+        )
+
+        nonisolated static let dark = Palette(
+            foreground: "#f2f2f7",
+            secondary: "#98989d",
+            background: "#1e1e1e",
+            link: "#6cb6ff",
+            quoteBars: ["#0a84ff", "#40c8e0", "#30d158"],
+            quoteSurface: "rgba(127,127,127,0.12)"
+        )
+    }
+
     // MARK: Animation
 
     /// Motion tokens. The token is ONLY the `Animation` value — the reduce-motion

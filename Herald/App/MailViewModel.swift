@@ -41,6 +41,9 @@ nonisolated struct RenderedBody: Sendable, Equatable {
     var blocksRemote: Bool
     /// Whether the "Load remote images" banner should be offered.
     var offersRemoteConsent: Bool
+    /// Whether the blocked images live only in the collapsed quoted history, so
+    /// the banner can say which part of the message it is about.
+    var remoteConsentIsForQuotedHistoryOnly: Bool = false
 }
 
 /// The single owner of UI state.
@@ -1523,11 +1526,18 @@ final class MailViewModel {
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             let inline = await inlineImages(for: detail)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
-            let raw = payload.html
+            // All three authored fragments, not just the first: `afterQuotedHTML`
+            // is text the sender wrote BELOW the quote, and rendering only `html`
+            // silently dropped it.
+            let composed = Self.composeBody(
+                html: payload.html,
+                quotedHTML: payload.quotedHTML,
+                afterQuotedHTML: payload.afterQuotedHTML
+            )
             // Substitution walks the whole body; never on the main actor.
             let substituted = await Task.detached(priority: .userInitiated) { @Sendable in
                 Self.document(
-                    wrapping: Self.substituteInlineImages(in: raw, with: inline),
+                    wrapping: Self.substituteInlineImages(in: composed, with: inline),
                     title: title,
                     allowsRemote: allowRemote
                 )
@@ -1537,12 +1547,21 @@ final class MailViewModel {
                 messageID: messageID,
                 html: substituted,
                 blocksRemote: !allowRemote,
-                offersRemoteConsent: payload.needsRemoteMediaConsent && !allowRemote
+                offersRemoteConsent: payload.needsRemoteMediaConsent && !allowRemote,
+                // Quoted history is collapsed by default: when that is the only
+                // place the blocked images live, the banner says so rather than
+                // pointing at a body with no pictures in it. It is still OFFERED —
+                // expanding the history is one click, and this banner is the only
+                // route to trusting the sender.
+                remoteConsentIsForQuotedHistoryOnly: payload.remoteImagesAreOnlyInQuotedHistory
             )
             await cacheBody(
                 messageID: messageID,
                 text: detail.textBody,
-                html: payload.html,
+                // The COMPOSED fragment is what the cache holds: the sidecar has
+                // one HTML column, and caching `payload.html` alone would lose the
+                // quoted history and the after-quote text on every offline read.
+                html: composed,
                 attachments: detail.attachments
             )
         } catch {
@@ -1557,10 +1576,20 @@ final class MailViewModel {
                 let inline = await inlineImages(for: detail)
                 guard !Task.isCancelled, selectedMessageID == messageID else { return }
                 let wrapped = await Task.detached(priority: .userInitiated) { @Sendable in
-                    Self.document(wrapping: Self.substituteInlineImages(in: html, with: inline), title: title)
+                    // `allowsRemote` was dropped here: a reader who had already
+                    // trusted the sender got the strict CSP back on the offline
+                    // render, with every remote image broken.
+                    Self.document(
+                        wrapping: Self.substituteInlineImages(in: html, with: inline),
+                        title: title,
+                        allowsRemote: allowRemote
+                    )
                 }.value
                 guard selectedMessageID == messageID else { return }
-                body = RenderedBody(messageID: messageID, html: wrapped, blocksRemote: true, offersRemoteConsent: false)
+                body = RenderedBody(
+                    messageID: messageID, html: wrapped,
+                    blocksRemote: !allowRemote, offersRemoteConsent: false
+                )
             } else {
                 actionError = error.localizedDescription
             }

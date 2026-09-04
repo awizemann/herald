@@ -161,16 +161,50 @@ public nonisolated struct MessageHTML: Sendable, Hashable, Codable {
     public let html: String
     /// Trailing quoted history, split out by the server so the UI can collapse it.
     public let quotedHTML: String?
+    /// Authored content BELOW the quoted history ("bottom posting"). Dropping it
+    /// silently loses part of what the sender wrote.
+    public let afterQuotedHTML: String?
+    /// Whether ANY of the three fragments carries remote images.
     public let hasRemoteImages: Bool
+    /// Per-fragment remote-image flags, so the consent banner can key off the
+    /// fragments that are actually on screen.
+    public let htmlHasRemoteImages: Bool
+    public let quotedHTMLHasRemoteImages: Bool
+    public let afterQuotedHTMLHasRemoteImages: Bool
     public let remoteMediaTrusted: Bool
 
-    public init(html: String, quotedHTML: String?, hasRemoteImages: Bool, remoteMediaTrusted: Bool) {
+    public init(
+        html: String,
+        quotedHTML: String?,
+        afterQuotedHTML: String? = nil,
+        hasRemoteImages: Bool,
+        htmlHasRemoteImages: Bool? = nil,
+        quotedHTMLHasRemoteImages: Bool = false,
+        afterQuotedHTMLHasRemoteImages: Bool = false,
+        remoteMediaTrusted: Bool
+    ) {
         self.html = html
         self.quotedHTML = quotedHTML
+        self.afterQuotedHTML = afterQuotedHTML
         self.hasRemoteImages = hasRemoteImages
+        // An instance that predates the per-fragment flags reports only the
+        // aggregate; attributing it to the main fragment keeps the banner honest
+        // rather than silently never offering it.
+        self.htmlHasRemoteImages = htmlHasRemoteImages ?? hasRemoteImages
+        self.quotedHTMLHasRemoteImages = quotedHTMLHasRemoteImages
+        self.afterQuotedHTMLHasRemoteImages = afterQuotedHTMLHasRemoteImages
         self.remoteMediaTrusted = remoteMediaTrusted
     }
 
     /// True when the UI should offer a "load remote images" affordance.
     public var needsRemoteMediaConsent: Bool { hasRemoteImages && !remoteMediaTrusted }
+
+    /// Whether the remote images are ONLY in the quoted history — which the
+    /// reading pane collapses by default. The consent affordance is still
+    /// offered (the reader can expand that history, and the only path to trusting
+    /// the sender runs through it); this just says the banner is talking about
+    /// something not currently on screen.
+    public var remoteImagesAreOnlyInQuotedHistory: Bool {
+        hasRemoteImages && !htmlHasRemoteImages && !afterQuotedHTMLHasRemoteImages
+    }
 }

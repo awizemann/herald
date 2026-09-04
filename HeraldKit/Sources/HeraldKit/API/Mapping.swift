@@ -122,7 +122,11 @@ nonisolated extension MessageHTML {
         self.init(
             html: generated.html,
             quotedHTML: generated.quotedHtml,
+            afterQuotedHTML: generated.afterQuotedHtml,
             hasRemoteImages: generated.hasRemoteImages,
+            htmlHasRemoteImages: generated.htmlHasRemoteImages,
+            quotedHTMLHasRemoteImages: generated.quotedHtmlHasRemoteImages,
+            afterQuotedHTMLHasRemoteImages: generated.afterQuotedHtmlHasRemoteImages,
             remoteMediaTrusted: generated.remoteMediaTrusted
         )
     }

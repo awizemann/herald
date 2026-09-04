@@ -112,7 +112,9 @@ private struct MessageBodySection: View {
                 BannerView(
                     systemImage: "photo",
                     tint: .secondary,
-                    text: "Remote images in this message were blocked."
+                    text: body.remoteConsentIsForQuotedHistoryOnly
+                        ? "Remote images in this message's quoted history were blocked."
+                        : "Remote images in this message were blocked."
                 ) {
                     Button("Load Remote Images") { Task { await model.trustRemoteMedia() } }
                 }

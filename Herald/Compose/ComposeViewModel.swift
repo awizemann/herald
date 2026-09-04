@@ -132,6 +132,14 @@ final class ComposeViewModel {
     /// message without the files still on their way up.
     var isBusy: Bool { status == .saving || status == .sending || !pendingUploads.isEmpty }
 
+    /// What the header's spinner is for, in words — its accessibility label.
+    /// Sending wins over the rest: it is the state the user is waiting on.
+    var busyDescription: String {
+        if status == .sending { return "Sending" }
+        if !pendingUploads.isEmpty { return "Uploading attachments" }
+        return "Saving draft"
+    }
+
     /// Whether closing would lose work the server has not seen.
     var hasUnsavedChanges: Bool {
         // A sent or discarded composer owns nothing anymore: the programmatic
@@ -240,7 +248,12 @@ final class ComposeViewModel {
             let name = draft.signatureSnapshot?.name ?? ""
             options.append(SignatureOption(
                 id: tag,
-                label: name.isEmpty ? "Saved signature (unavailable)" : "\(name) · Saved copy (unavailable)",
+                // The suffix is the REASON the row is disabled: a greyed-out row
+                // with no explanation is invisible to VoiceOver, which announces
+                // "dimmed" without ever saying why.
+                label: name.isEmpty
+                    ? "Saved signature (no longer available)"
+                    : "\(name) · Saved copy (no longer available)",
                 isSelectable: false
             ))
         }

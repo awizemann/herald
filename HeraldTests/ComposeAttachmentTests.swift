@@ -113,6 +113,28 @@ actor GatedOutbox: Outboxing {
         await attaching.value
     }
 
+    /// The header's spinner is the only sign the window is working, and as a bare
+    /// `ProgressView` it was an unlabelled element. Its label has to say WHICH
+    /// wait this is, so a paused upload is not mistaken for a stuck send.
+    @Test func theBusySpinnerSaysWhatItIsWaitingOn() async throws {
+        let outbox = GatedOutbox()
+        await outbox.arm()
+        let model = Self.model(outbox)
+        let url = try Self.file(named: "big.bin")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let attaching = Task { await model.attach(url) }
+        await outbox.waitForAttach()
+
+        #expect(model.isBusy)
+        #expect(model.busyDescription == "Uploading attachments")
+
+        await outbox.open()
+        await attaching.value
+        // Idle never shows the spinner; the fallback still has to be words.
+        #expect(model.busyDescription == "Saving draft")
+    }
+
     /// The per-draft byte total is only correct if uploads are serialized: two
     /// concurrent ones each measure the total against the same pre-upload draft,
     /// so a pair that fits only individually would both pass and the server would

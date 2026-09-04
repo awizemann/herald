@@ -294,6 +294,12 @@ extension MailViewModel {
         """
     }
 
+    /// The Increase Contrast overrides for one appearance: only the two tokens
+    /// Herald actually dims (`--secondary`, `--link`), pushed toward `--fg`.
+    private nonisolated static func contrastVariables(_ palette: MailTheme.Web.Palette) -> String {
+        "--secondary: \(palette.secondaryIncreasedContrast); --link: \(palette.linkIncreasedContrast);"
+    }
+
     /// Deliberately CONSERVATIVE about dark mode: it styles the document's own
     /// unstyled regions (body text, links, quote bars, the disclosure) and never
     /// touches a colour the sender set. Inverting a designed HTML email wrecks it
@@ -302,6 +308,12 @@ extension MailViewModel {
         """
         :root { color-scheme: light dark; \(variables(MailTheme.Web.light)) }
         @media (prefers-color-scheme: dark) { :root { \(variables(MailTheme.Web.dark)) } }
+        /* Increase Contrast (System Settings → Accessibility). Ordered AFTER the
+           appearance blocks so it wins at equal specificity, and split per
+           appearance because the dark override has to beat the dark palette. */
+        @media (prefers-contrast: more) { :root { \(contrastVariables(MailTheme.Web.light)) } }
+        @media (prefers-color-scheme: dark) and (prefers-contrast: more) {
+            :root { \(contrastVariables(MailTheme.Web.dark)) } }
         body { font: -apple-system-body; font-family: -apple-system, system-ui, sans-serif;
                margin: 16px; word-break: break-word; color: var(--fg); background: var(--bg); }
         a { color: var(--link); }
@@ -318,7 +330,9 @@ extension MailViewModel {
         blockquote blockquote blockquote { border-left-color: var(--quote-3); }
         blockquote blockquote blockquote blockquote { border-left-color: var(--quote-1); }
         details.quoted { margin-top: 12px; }
-        details.quoted > summary { cursor: default; color: var(--secondary); font-size: 0.9em;
+        /* `pointer`, not `default`: the summary IS a control (it opens the quoted
+           history), and a cursor that never changes said otherwise. */
+        details.quoted > summary { cursor: pointer; color: var(--secondary); font-size: 0.9em;
                                    padding: 4px 0; list-style: none; }
         details.quoted > summary::-webkit-details-marker { display: none; }
         details.quoted > summary::before { content: "\\2026\\00a0\\00a0"; }

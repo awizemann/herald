@@ -7,21 +7,25 @@ import SwiftUI
 /// second cue on top of it, never the label itself — so the chip survives
 /// greyscale, Increase Contrast and a reader who cannot tell teal from green.
 /// VoiceOver reads labels from the row's combined summary, hence the hidden flag.
+///
+/// The name is drawn in ``MailTheme/chipLabelForeground`` and the tint carries the
+/// FILL and the border only: a caption2 name in systemYellow/orange/teal over an
+/// 18% wash of the same tint misses AA in light mode.
 struct LabelChip: View {
     let label: MailLabel
+
+    private var tint: Color { MailTheme.labelTint(for: label.color) }
 
     var body: some View {
         Text(label.name)
             .font(.caption2)
             .fontWeight(.medium)
-            .foregroundStyle(MailTheme.labelTint(for: label.color))
+            .foregroundStyle(MailTheme.chipLabelForeground)
             .lineLimit(1)
             .padding(.horizontal, MailTheme.Spacing.xs)
             .padding(.vertical, MailTheme.Spacing.xxs)
-            .background(
-                MailTheme.labelTint(for: label.color).opacity(MailTheme.mailboxChipFillOpacity),
-                in: Capsule()
-            )
+            .background(tint.opacity(MailTheme.mailboxChipFillOpacity), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(MailTheme.chipBorderOpacity)))
             .accessibilityHidden(true)
     }
 }

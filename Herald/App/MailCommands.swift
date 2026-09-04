@@ -142,6 +142,18 @@ struct MailCommands: Commands {
             Button(starTitle) { toggleStar() }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
                 .disabled(!hasSelection)
+
+            // House rule: every mail action has a menu item. Labelling was
+            // reachable only from the row's context menu, so a keyboard-only or
+            // Full-Keyboard-Access user could not file a thread at all.
+            //
+            // The context menu's own view, reused rather than re-spelled: one
+            // source for the toggle rows, their state and their writes. It draws
+            // its own leading Divider and renders nothing when the workspace has
+            // no labels.
+            if let model, let selectedThreadID {
+                LabelMenu(model: model, threadID: selectedThreadID)
+            }
         }
 
         CommandGroup(replacing: .appSettings) {

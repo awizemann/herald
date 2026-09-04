@@ -273,6 +273,25 @@ struct SearchStatusBar: View {
         // count without the user hunting for a bar that appears and vanishes.
         .accessibilityElement(children: .combine)
         .accessibilityLabel(description)
+        // Announce the RESULT, never the "Searching…" step: the bar's text
+        // changes on every debounced keystroke while a search runs, and speaking
+        // each one would talk over the user typing. Settled states only.
+        // Keyed on the STATE, not on the text: two different searches can settle
+        // on the same sentence ("No additional results"), and a text-keyed
+        // `onChange` would stay silent for the second one.
+        .onChange(of: state) { _, newState in
+            guard SearchStatusBar.announces(newState) else { return }
+            AccessibilityNotification.Announcement(description).post()
+        }
+    }
+
+    /// Whether a server-search state is worth interrupting the user for: what the
+    /// server found, or that it failed. Pure and static so it is assertable.
+    nonisolated static func announces(_ state: MailViewModel.ServerSearchState) -> Bool {
+        switch state {
+        case .idle, .searching: false
+        case .completed, .failed: true
+        }
     }
 }
 
@@ -459,11 +478,21 @@ struct MailboxChip: View {
         Text(name)
             .font(.caption2)
             .fontWeight(.medium)
-            .foregroundStyle(tint?.color ?? MailTheme.attributionForeground)
+            // A tinted chip draws its name in the text colour, not in the tint:
+            // caption2 systemYellow/orange/teal over an 18% wash of itself misses
+            // AA in light mode. The tint lives on the fill and the border. The
+            // untinted fallback keeps the neutral attribution colour, which is
+            // already contrast-safe on the neutral chip surface.
+            .foregroundStyle(tint == nil ? MailTheme.attributionForeground : MailTheme.chipLabelForeground)
             .lineLimit(1)
             .padding(.horizontal, MailTheme.Spacing.xs)
             .padding(.vertical, MailTheme.Spacing.xxs)
             .background(background, in: Capsule())
+            .overlay {
+                if let tint {
+                    Capsule().strokeBorder(tint.color.opacity(MailTheme.chipBorderOpacity))
+                }
+            }
             .accessibilityHidden(true)
     }
 

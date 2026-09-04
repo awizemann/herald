@@ -154,7 +154,9 @@ private struct SelectedMessageHeader: View {
     }
 }
 
-private struct MessageBodySection: View {
+/// Internal rather than `private` so its banner strings — one source for what is
+/// drawn and what VoiceOver announces — are assertable from the test target.
+struct MessageBodySection: View {
     @Bindable var model: MailViewModel
 
     var body: some View {
@@ -163,9 +165,7 @@ private struct MessageBodySection: View {
                 BannerView(
                     systemImage: "photo",
                     tint: .secondary,
-                    text: body.remoteConsentIsForQuotedHistoryOnly
-                        ? "Remote images in this message's quoted history were blocked."
-                        : "Remote images in this message were blocked."
+                    text: Self.remoteConsentText(quotedHistoryOnly: body.remoteConsentIsForQuotedHistoryOnly)
                 ) {
                     Button("Load Remote Images") { Task { await model.trustRemoteMedia() } }
                 }
@@ -181,9 +181,7 @@ private struct MessageBodySection: View {
                 BannerView(
                     systemImage: "photo.badge.exclamationmark",
                     tint: .secondary,
-                    text: model.inlineImagesUnavailable == 1
-                        ? "An image embedded in this message could not be loaded."
-                        : "\(model.inlineImagesUnavailable) images embedded in this message could not be loaded."
+                    text: Self.inlineImageFailureText(count: model.inlineImagesUnavailable)
                 ) { EmptyView() }
             }
             if let attachments = model.detail?.downloadableAttachments, !attachments.isEmpty {
@@ -191,6 +189,42 @@ private struct MessageBodySection: View {
                 AttachmentBar(model: model, attachments: attachments)
             }
         }
+        // Both banners appear underneath the message, after the reader has moved
+        // on — silently, until now. They are announced when they arrive (and only
+        // then: the `onChange` fires on the transition, so re-reading the same
+        // message does not repeat them).
+        .onChange(of: activeRemoteConsentText) { _, text in announce(text) }
+        .onChange(of: activeInlineFailureText) { _, text in announce(text) }
+    }
+
+    /// The consent banner's text while it is showing, `nil` while it is not.
+    private var activeRemoteConsentText: String? {
+        guard let body = model.body, body.offersRemoteConsent else { return nil }
+        return Self.remoteConsentText(quotedHistoryOnly: body.remoteConsentIsForQuotedHistoryOnly)
+    }
+
+    private var activeInlineFailureText: String? {
+        guard model.inlineImagesUnavailable > 0 else { return nil }
+        return Self.inlineImageFailureText(count: model.inlineImagesUnavailable)
+    }
+
+    private func announce(_ text: String?) {
+        guard let text else { return }
+        AccessibilityNotification.Announcement(text).post()
+    }
+
+    /// Banner strings as pure statics: one source for what is drawn and what is
+    /// announced, and assertable without a rendered pane.
+    nonisolated static func remoteConsentText(quotedHistoryOnly: Bool) -> String {
+        quotedHistoryOnly
+            ? "Remote images in this message's quoted history were blocked."
+            : "Remote images in this message were blocked."
+    }
+
+    nonisolated static func inlineImageFailureText(count: Int) -> String {
+        count == 1
+            ? "An image embedded in this message could not be loaded."
+            : "\(count) images embedded in this message could not be loaded."
     }
 }
 

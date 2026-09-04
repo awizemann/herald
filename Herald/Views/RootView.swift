@@ -171,9 +171,7 @@ struct ReauthBanner: View {
         BannerView(
             systemImage: "lock.fill",
             tint: MailTheme.failure,
-            text: isAutomatic
-                ? "Your session expired. Signing you back in…"
-                : "Your session expired. Sign in again to keep syncing."
+            text: Self.message(isAutomatic: isAutomatic)
         ) {
             if isAutomatic {
                 ProgressView()
@@ -183,6 +181,37 @@ struct ReauthBanner: View {
                 Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
             }
         }
+        // The banner appears BELOW the toolbar without taking focus, and the
+        // automatic attempt then swaps the text and withdraws the Sign In button
+        // underneath a VoiceOver cursor that may be sitting on it. Both moments
+        // are announced, so the change is heard rather than discovered: same
+        // `AccessibilityNotification.Announcement` pattern as the compose window.
+        //
+        // Announce only — no forced focus move: yanking the cursor out of the
+        // list to a banner the user did not ask for is worse than the dropped
+        // button, and the announcement carries the state that button conveyed.
+        .onAppear { announce(isAutomatic: isAutomatic) }
+        .onChange(of: isAutomatic) { _, automatic in announce(isAutomatic: automatic) }
+    }
+
+    private func announce(isAutomatic: Bool) {
+        AccessibilityNotification.Announcement(Self.announcement(isAutomatic: isAutomatic)).post()
+    }
+
+    /// The banner's own text. Pure and static so it is assertable without a
+    /// rendered banner.
+    nonisolated static func message(isAutomatic: Bool) -> String {
+        isAutomatic
+            ? "Your session expired. Signing you back in…"
+            : "Your session expired. Sign in again to keep syncing."
+    }
+
+    /// What VoiceOver hears. The manual case names the control the sighted user
+    /// can see, because the announcement is all the cursor gets.
+    nonisolated static func announcement(isAutomatic: Bool) -> String {
+        isAutomatic
+            ? "Your session expired. Signing you back in…"
+            : "Your session expired. Use the Sign In button in the banner to keep syncing."
     }
 }
 
@@ -194,7 +223,12 @@ struct BannerView<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: MailTheme.Spacing.sm) {
-            Image(systemName: systemImage).foregroundStyle(tint)
+            // Decorative: the banner's text says everything the glyph does, and
+            // as a visible element it made VoiceOver read the symbol's name
+            // ("lock", "exclamationmark triangle") ahead of the sentence.
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
             Text(text).font(.callout)
             Spacer()
             actions

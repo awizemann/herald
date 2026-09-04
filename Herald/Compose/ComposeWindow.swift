@@ -164,7 +164,11 @@ struct ComposeView: View {
             Spacer()
 
             if model.isBusy {
-                ProgressView().controlSize(.small)
+                // A bare spinner is an unlabelled "busy" element: VoiceOver said
+                // "progress indicator" and nothing about what the window is doing.
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(model.busyDescription)
             }
         }
         .padding(.horizontal, MailTheme.Spacing.md)
@@ -254,20 +258,23 @@ struct ComposeView: View {
                     .accessibilityLabel("Signature preview, added automatically when you send")
             }
             Menu {
+                // Toggle rows, exactly like `LabelMenu`/`MessageLabelMenu`: the
+                // checkmark a `Toggle` draws is also EXPOSED (VoiceOver says
+                // "selected"), where the old hand-drawn `Label(systemImage:)`
+                // check was visual only — and its empty-string symbol on the
+                // unselected rows was undefined behaviour.
+                //
+                // Still a Menu of rows rather than a Picker, for the original
+                // reason: a Picker cannot disable a single row, and the draft's
+                // saved copy of a deleted signature MUST be unpickable — asking
+                // for it again is a 400 `SIGNATURE_NOT_AVAILABLE`.
                 ForEach(model.signatureOptions) { option in
-                    Button {
-                        model.signatureTag = option.id
-                    } label: {
-                        // The check mark is what a Picker would draw; a Menu of
-                        // Buttons is used instead because a Picker cannot disable
-                        // a single row, and the draft's saved copy of a deleted
-                        // signature MUST be unpickable — asking for it again is a
-                        // 400 `SIGNATURE_NOT_AVAILABLE`.
-                        Label(
-                            option.label,
-                            systemImage: option.id == model.signatureTag ? "checkmark" : ""
-                        )
-                    }
+                    // The getter reads the model, never a value snapshotted at
+                    // body-evaluation time, so an open menu shows the checkmark move.
+                    Toggle(option.label, isOn: Binding(
+                        get: { model.signatureTag == option.id },
+                        set: { isOn in if isOn { model.signatureTag = option.id } }
+                    ))
                     .disabled(!option.isSelectable)
                 }
             } label: {
@@ -275,8 +282,12 @@ struct ComposeView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            // Label only, NO `.accessibilityValue`: a pop-up button's value is
+            // already its label view (the current signature), so spelling the
+            // same string into the value made VoiceOver say it twice. The
+            // modifier goes on the MENU, not on its label view — a Menu's label
+            // is not the accessibility element (see `MessageLabelMenu`).
             .accessibilityLabel("Signature")
-            .accessibilityValue(model.signatureMenuLabel)
             .disabled(model.isBusy)
         }
         .padding(.horizontal, MailTheme.Spacing.md)

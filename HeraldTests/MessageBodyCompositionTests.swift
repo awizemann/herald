@@ -182,6 +182,26 @@ import Testing
         #expect(!document.contains("filter: invert"))
     }
 
+    /// Increase Contrast is a system setting the pane used to ignore: the two
+    /// dimmed tokens move toward the foreground, per appearance, and the dark
+    /// override must come AFTER the dark palette or it loses at equal specificity.
+    @Test func theStyleSheetHonoursIncreaseContrast() throws {
+        let document = MailViewModel.document(wrapping: "<p>hi</p>")
+
+        #expect(document.contains("@media (prefers-contrast: more)"))
+        #expect(document.contains(MailTheme.Web.light.secondaryIncreasedContrast))
+        #expect(document.contains(MailTheme.Web.dark.linkIncreasedContrast))
+
+        let darkPalette = try #require(document.range(of: "@media (prefers-color-scheme: dark) { :root"))
+        let darkContrast = try #require(
+            document.range(of: "@media (prefers-color-scheme: dark) and (prefers-contrast: more)")
+        )
+        #expect(darkPalette.upperBound < darkContrast.lowerBound)
+
+        // The quoted-history disclosure is a control, and says so on hover.
+        #expect(document.contains("details.quoted > summary { cursor: pointer;"))
+    }
+
     /// Fragments must not be able to close Herald's own disclosure or draw a
     /// second one: that is message content impersonating app chrome.
     @Test func fragmentsCannotForgeOrEscapeTheDisclosure() {

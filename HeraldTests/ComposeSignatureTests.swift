@@ -188,7 +188,9 @@ import Testing
 
         #expect(model.signaturePreview == "Old sign-off")
         let saved = try #require(model.signatureOptions.first { $0.id == "selected:sig_gone" })
-        #expect(saved.label == "Old · Saved copy (unavailable)")
+        // The label carries the REASON the row is disabled — VoiceOver announces
+        // "dimmed" and nothing else, so the words have to be in the row itself.
+        #expect(saved.label == "Old · Saved copy (no longer available)")
         #expect(saved.isSelectable == false)
         // Choosing it is a no-op rather than a request the server would reject.
         model.signatureTag = "selected:sig_gone"

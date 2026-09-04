@@ -17,7 +17,7 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
 
     /// - Parameters:
     ///   - origin: the account's server origin, e.g. `https://mail.example.com`.
-    ///     `http`/`https` are rewritten to `ws`/`wss`.
+    ///     `https`/`wss` are rewritten to `wss`; `http`/`ws` are refused.
     ///   - configuration: injected in tests.
     public init(origin: URL, configuration: URLSessionConfiguration = .ephemeral) {
         self.origin = origin
@@ -28,16 +28,18 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
         guard let url = Self.eventsURL(origin: origin) else {
             throw MailEventChannelError.transport("the account origin is not a usable URL")
         }
-        var request = URLRequest(url: url)
-        // An EMPTY token deliberately sends no header at all. The server falls
-        // back to a browser session when `Authorization` is absent, which is the
-        // only way a test can reach a live socket without an OAuth dance — and
-        // sending `Bearer ` instead would take the bearer path and 401. Herald
-        // itself never has an empty token; if it somehow did, the 401 that
-        // follows is handled exactly like any other.
-        if !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // An empty token used to send no `Authorization` header at all, so the
+        // server would fall back to a browser session. That fallback is a
+        // silent downgrade for production callers — Herald always has a real
+        // token, and a bug that hands this an empty one must fail loudly
+        // rather than open an unauthenticated-looking socket. Anything that
+        // deliberately wants the cookie-session path (the live test) uses its
+        // own `MailEventChannelOpening` instead of going through here.
+        guard !token.isEmpty else {
+            throw MailEventChannelError.unauthorized
         }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let channel = WebSocketChannel(request: request, configuration: configuration)
         do {
             try await channel.open()
@@ -55,11 +57,16 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
 
     /// The socket URL for an origin, with any path the origin carries preserved
     /// (a Herald account may live under a prefix).
+    ///
+    /// `http`/`ws` origins are refused (`nil`) rather than upgraded to a
+    /// plaintext `ws://` socket: the bearer token in the `Authorization`
+    /// header would otherwise go out over the wire in the clear. A real
+    /// account origin is always `https`; anything else is a misconfiguration
+    /// that must surface as a transport error, not a silent downgrade.
     static func eventsURL(origin: URL) -> URL? {
         guard var components = URLComponents(url: origin, resolvingAgainstBaseURL: false) else { return nil }
         switch components.scheme?.lowercased() {
         case "https", "wss": components.scheme = "wss"
-        case "http", "ws": components.scheme = "ws"
         default: return nil
         }
         var path = components.path
@@ -80,7 +87,11 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
 /// `OSAllocatedUnfairLock` (the sanctioned primitive for a type behind a
 /// synchronous nonisolated protocol) because `URLSessionDelegate` callbacks
 /// arrive on the session's own background queue.
-private nonisolated final class WebSocketChannel: NSObject, MailEventChannel, URLSessionWebSocketDelegate, @unchecked Sendable {
+/// `internal`, not `private`: `@testable import` needs it to build a
+/// cookie-session request directly for the live-server test suite, which must
+/// not go through ``URLSessionMailEventChannels/open(token:)`` (that path now
+/// throws on an empty token by design — see ``MailEventChannelError``).
+nonisolated final class WebSocketChannel: NSObject, MailEventChannel, URLSessionWebSocketDelegate, @unchecked Sendable {
     /// Everything the delegate queue and the caller share.
     private struct State {
         var openContinuation: CheckedContinuation<Void, any Error>?

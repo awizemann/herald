@@ -60,6 +60,40 @@ struct AttachmentStagingTests {
             contentType: nil
         ) == "mystery")
     }
+
+    /// APFS's 255-byte filename limit is on UTF-8 bytes, not `Character`s. A
+    /// multi-byte name (each "é" here is 2 bytes) clamped by character count
+    /// alone can still exceed 255 bytes and fail the write. Fails if the
+    /// resulting name is over budget, or if truncation lands mid-scalar and
+    /// produces something that is not even valid UTF-8 when re-decoded.
+    @Test func multiByteFilenameIsClampedByUTF8BytesNotCharacters() {
+        let longMultiByte = String(repeating: "é", count: 300)
+        let name = AttachmentFile.filename(
+            for: part(filename: longMultiByte, contentType: "application/octet-stream"),
+            contentType: nil
+        )
+        #expect(name.utf8.count <= 255)
+        #expect(String(decoding: Array(name.utf8), as: UTF8.self) == name, "truncation must land on a scalar boundary")
+    }
+
+    /// The same clamp applies when an extension has to be appended: the
+    /// extension must still fit inside the 255-byte budget after a multi-byte
+    /// base name is truncated for it.
+    @Test func multiByteFilenameWithAppendedExtensionStaysWithinByteBudget() {
+        let longMultiByte = String(repeating: "日", count: 200) // 3 bytes each in UTF-8
+        let name = AttachmentFile.filename(
+            for: part(filename: longMultiByte, contentType: "application/octet-stream"),
+            contentType: "application/pdf"
+        )
+        #expect(name.utf8.count <= 255)
+        #expect(name.hasSuffix(".pdf"))
+    }
+
+    /// A plain-ASCII name well under the limit must be left untouched — the
+    /// byte clamp must not be an off-by-one that trims names that already fit.
+    @Test func shortAsciiFilenameIsUnaffectedByTheByteClamp() {
+        #expect(AttachmentFile.clampedToUTF8Bytes("invoice.pdf", limit: 255) == "invoice.pdf")
+    }
 }
 
 @Suite("Attachment cache eviction")

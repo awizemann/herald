@@ -6,12 +6,34 @@ extension MailViewModel {
     /// Only media types a mail body may legitimately inline. Anything else
     /// (`text/html`, `application/*`, an empty type) is skipped rather than turned
     /// into a `data:` URL.
+    ///
+    /// The type/subtype shape is validated first: this value is embedded verbatim
+    /// into a `data:` URL (`data:<mimeType>;base64,…`), so accepting anything that
+    /// merely starts with `image/`/`video/`/`audio/` would let a subtype carrying
+    /// `;`, whitespace, or other URL-breaking characters through on the strength
+    /// of that prefix check alone — safety would then rest entirely on whatever
+    /// upstream code happens to have already sanitized the value, a cross-file
+    /// agreement rather than something this function itself enforces.
     nonisolated static func isRenderableInlineMedia(_ mimeType: String) -> Bool {
         let type = mimeType
             .prefix { $0 != ";" }
             .trimmingCharacters(in: .whitespaces)
             .lowercased()
+        guard Self.hasValidMIMETypeShape(type) else { return false }
         return ["image/", "video/", "audio/"].contains { type.hasPrefix($0) && type.count > $0.count }
+    }
+
+    /// `type/subtype` where both sides are RFC 2045 `token` characters, narrowed
+    /// to the lowercase-ASCII set actually used by `UTType`-derived mime strings
+    /// (`^[a-z0-9.+-]+/[a-z0-9.+-]+$`, case-insensitive — `type` is already
+    /// lowercased by the caller, but this is also called independently in tests).
+    nonisolated static func hasValidMIMETypeShape(_ type: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.+-")
+        let parts = type.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.lowercased().unicodeScalars.allSatisfy(allowed.contains)
+        }
     }
 
     nonisolated static func normalizedContentID(_ raw: String) -> String {

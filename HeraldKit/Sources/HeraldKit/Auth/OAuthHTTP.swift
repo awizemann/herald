@@ -20,13 +20,23 @@ nonisolated enum OAuthHTTP {
 
     static func send(_ request: URLRequest, using session: URLSession) async throws -> Response {
         do {
-            let (data, response) = try await session.data(for: request)
+            // `session.bytes(for:)` streams the body, so the cap is enforced as
+            // bytes arrive rather than after `session.data(for:)` has already
+            // buffered an unbounded response in full. A malicious or
+            // misconfigured server that answers with an enormous body is
+            // stopped mid-download instead of after paying for the allocation.
+            let (stream, response) = try await session.bytes(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw OAuthError.malformedTokenResponse
             }
-            guard data.count <= maxResponseBytes else {
-                logger.error("oauth response too large from \(request.url?.path ?? "", privacy: .public)")
-                throw OAuthError.malformedTokenResponse
+            var data = Data()
+            data.reserveCapacity(min(maxResponseBytes, 16 * 1024))
+            for try await byte in stream {
+                data.append(byte)
+                guard data.count <= maxResponseBytes else {
+                    logger.error("oauth response too large from \(request.url?.path ?? "", privacy: .public)")
+                    throw OAuthError.malformedTokenResponse
+                }
             }
             return Response(status: http.statusCode, body: data)
         } catch let error as OAuthError {

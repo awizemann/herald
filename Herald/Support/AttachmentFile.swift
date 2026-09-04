@@ -141,7 +141,12 @@ actor AttachmentFile {
     /// the resolved type. The original name is never thrown away — the correct
     /// extension is appended to it, so the user still recognises the file.
     nonisolated static func filename(for attachment: Attachment, contentType: String?) -> String {
-        let sanitized = AttachmentSaver.sanitized(attachment.filename)
+        // APFS's 255-byte limit is on UTF-8 BYTES, not `Character`s: a name of
+        // 255 emoji or accented characters can be several times that many bytes
+        // and fail the write. `AttachmentSaver.sanitized` clamps by `Character`
+        // count, so its result is reclamped here by bytes before anything else
+        // touches it.
+        let sanitized = Self.clampedToUTF8Bytes(AttachmentSaver.sanitized(attachment.filename), limit: 255)
         let declared = MIMESniffer.normalize(contentType) ?? MIMESniffer.normalize(attachment.contentType)
         guard let declared, let type = UTType(mimeType: declared), let ext = type.preferredFilenameExtension else {
             return sanitized
@@ -150,10 +155,25 @@ actor AttachmentFile {
         if !existing.isEmpty, let existingType = UTType(filenameExtension: existing), existingType.conforms(to: type) {
             return sanitized
         }
-        // `sanitized` is already clamped to 255; the extension has to fit INSIDE
-        // that, or the write fails with a name longer than the filesystem allows.
-        let base = String(sanitized.prefix(255 - ext.count - 1))
-        return "\(base).\(ext)"
+        // The extension has to fit INSIDE the 255-byte budget in bytes, or the
+        // write fails with a name longer than the filesystem allows.
+        let suffix = ".\(ext)"
+        let base = Self.clampedToUTF8Bytes(sanitized, limit: 255 - suffix.utf8.count)
+        return "\(base)\(suffix)"
+    }
+
+    /// Truncates `string` to at most `limit` UTF-8 bytes, always on a scalar
+    /// boundary (never splitting a multi-byte character or emoji into invalid
+    /// bytes). `String` has no built-in byte-budgeted truncation, so this trims
+    /// one `Character` at a time from the end — filenames are short enough that
+    /// this never runs more than a couple hundred iterations.
+    nonisolated static func clampedToUTF8Bytes(_ string: String, limit: Int) -> String {
+        guard limit > 0 else { return "" }
+        var result = string
+        while result.utf8.count > limit {
+            result.removeLast()
+        }
+        return result
     }
 }
 

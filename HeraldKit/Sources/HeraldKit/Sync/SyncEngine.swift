@@ -572,12 +572,18 @@ public actor SyncEngine {
                 try checkPassIsCurrent()
                 // A nil walk is a deliberate SKIP, not a failure: it still counts
                 // as swept, or a label that is permanently page-capped would keep
-                // the interval from ever restarting and re-sweep every pass.
-                swept += 1
-                guard let rows = try await labelMembership(label.id, accountID: accountID) else { continue }
+                // the interval from ever restarting and re-sweep every pass. A
+                // walk (or write) that THROWS must not count — counting it would
+                // restart the interval on a partial sweep and sit the failed
+                // label out instead of retrying it next pass.
+                guard let rows = try await labelMembership(label.id, accountID: accountID) else {
+                    swept += 1
+                    continue
+                }
                 changed = try await store.replaceAssignments(
                     labelID: label.id, messages: rows, accountID: accountID
                 ) || changed
+                swept += 1
             } catch is CancellationError {
                 return
             } catch {

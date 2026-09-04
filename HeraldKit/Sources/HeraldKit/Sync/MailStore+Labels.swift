@@ -110,6 +110,22 @@ extension MailStore {
     /// carries the label. Only call it with a listing that reached its end —
     /// a truncated page-walk would erase assignments the server never got to
     /// return, exactly like the message tombstoning rule.
+    ///
+    /// ACCEPTED: the rows written here are NOT constrained to messages the cache
+    /// holds. The label listing is the only membership source v1 offers and it
+    /// covers the whole account, while the message cache only covers the synced
+    /// folders (and only as far back as the page-walks reached) — so a label
+    /// legitimately names messages this store has never seen, and the sweep
+    /// inserts assignments for them. That is deliberate: dropping them would make
+    /// the label's own listing lie by omission the moment the missing message is
+    /// synced, and there is no cheap way to distinguish "not cached yet" from
+    /// "not real". The cost is that a label's assignment count can exceed what
+    /// the by-label conversation listing can show — that listing joins against
+    /// cached conversations and simply skips the unknown ids — so the two
+    /// disagree until the messages arrive. Any badge built from these rows must
+    /// therefore count what the listing can RESOLVE, never `CachedLabelAssignment`
+    /// rows. Assignments for ids that turn out never to exist are collected when
+    /// their label is deleted (``replaceLabels(_:accountID:)``) or the account is.
     @discardableResult
     public func replaceAssignments(
         labelID: String,

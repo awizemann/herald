@@ -61,6 +61,30 @@ public nonisolated enum MailStoreContainer {
     /// If the file is incompatible or corrupt we delete it and retry ONCE: the
     /// server is the system of record, so a broken cache costs a re-sync and
     /// nothing more. A second failure is a real problem and is rethrown.
+    ///
+    /// THE LIMIT OF THIS VALVE (measured, 2026-09-04). It guards `open()` only,
+    /// and there is one failure it structurally cannot reach: a `Codable`-blob
+    /// column (`CachedMessageBody.attachments`, `CachedDraft.attachments` /
+    /// `.signature`, `CachedMailbox.addresses`) whose stored shape no longer
+    /// matches the DTO. The file opens fine and the schema matches; the failure
+    /// happens later, when a FETCH materialises the row — and SwiftData decodes
+    /// that column with `try!` (`SwiftData/DefaultStore.swift`), so it is a
+    /// process-fatal trap, not a `throw`. No catch, no error type and no
+    /// delete-and-retry can be reached from inside the app, and the crash repeats
+    /// on every fetch of that row until the file is deleted by hand.
+    ///
+    /// The fix therefore has to be that decoding CANNOT fail: each of those DTOs
+    /// implements a TOTAL `init(from:)` in which every field falls back to a
+    /// default, so a missing, renamed or retyped key degrades one cached value
+    /// instead of taking the app down. See the "CACHE-BLOB CONVENTION" note on
+    /// ``Attachment`` — a new field on any of them goes in the property, the
+    /// `CodingKeys` and the decode, and must have a sensible default.
+    ///
+    /// What remains uncovered is byte-level corruption of a blob column (bit rot,
+    /// a half-written page) — that fails before any of our code runs and is fatal
+    /// on any design short of storing the column as `Data` and decoding it by
+    /// hand. It is accepted: SQLite's own integrity guarantees make it far rarer
+    /// than the shape change above, which was a routine schema edit away.
     public static func make(url: URL) throws -> ModelContainer {
         do {
             try FileManager.default.createDirectory(

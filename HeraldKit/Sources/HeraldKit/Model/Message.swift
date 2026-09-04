@@ -72,6 +72,19 @@ public nonisolated enum AttachmentDisposition: String, Sendable, Hashable, Codab
 }
 
 /// A file attached to a stored message.
+/// CACHE-BLOB CONVENTION — this type is stored VERBATIM in a SwiftData column
+/// (`CachedMessageBody.attachments`): an opaque blob with no
+/// migration hook, so every row an older build wrote is decoded by today's code.
+///
+/// SwiftData decodes such a column with `try!` (verified: a missing key faults in
+/// `DefaultStore.swift`), so a shape change is NOT a recoverable error — it is a
+/// hard crash inside the fetch, repeated on every launch, until the store file is
+/// deleted. That is why `init(from:)` below is TOTAL: every field is defaulted
+/// and no missing, renamed or retyped key can make decoding throw.
+///
+/// A new field is therefore added in THREE places — the property, `CodingKeys`,
+/// and the decode below — and must have a sensible default. Defaulting is safe
+/// precisely because this is a cache: the next fetch from the server corrects it.
 public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable {
     public let id: String
     public let messageID: String
@@ -154,6 +167,32 @@ public nonisolated struct MessageDetail: Sendable, Hashable, Codable, Identifiab
     public var isStarred: Bool { summary.isStarred }
     /// Attachments the user can download (inline parts excluded).
     public var downloadableAttachments: [Attachment] { attachments.filter { !$0.isInline } }
+}
+
+nonisolated extension Attachment {
+    // Explicit so the cache-blob convention above has something to point at: a
+    // new field MUST be listed here or it silently stops being persisted.
+    enum CodingKeys: String, CodingKey {
+        case id, messageID, filename, contentType, sizeBytes, contentID, disposition, createdAt
+    }
+
+    /// Total decode — see the cache-blob convention on ``Attachment``. Every
+    /// field falls back rather than throwing, because a throw here is a `try!`
+    /// crash inside SwiftData, not an error anyone can catch.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)).flatMap { $0 } ?? fallback
+        }
+        self.id = value(.id, "")
+        self.messageID = value(.messageID, "")
+        self.filename = value(.filename, "")
+        self.contentType = value(.contentType, "application/octet-stream")
+        self.sizeBytes = value(.sizeBytes, 0)
+        self.contentID = (try? container.decodeIfPresent(String.self, forKey: .contentID)) ?? nil
+        self.disposition = value(.disposition, AttachmentDisposition.attachment)
+        self.createdAt = value(.createdAt, Date.distantPast)
+    }
 }
 
 /// Sanitized HTML body plus its remote-media state.

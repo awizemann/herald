@@ -127,6 +127,19 @@ public nonisolated enum SignatureSelection: Sendable, Hashable, Codable {
 ///
 /// Display-only on the client. `html`/`text` are the server's own rendering; a
 /// preview may show `text`, but nothing may fold it into the body.
+/// CACHE-BLOB CONVENTION — this type is stored VERBATIM in a SwiftData column
+/// (`CachedDraft.signature`): an opaque blob with no
+/// migration hook, so every row an older build wrote is decoded by today's code.
+///
+/// SwiftData decodes such a column with `try!` (verified: a missing key faults in
+/// `DefaultStore.swift`), so a shape change is NOT a recoverable error — it is a
+/// hard crash inside the fetch, repeated on every launch, until the store file is
+/// deleted. That is why `init(from:)` below is TOTAL: every field is defaulted
+/// and no missing, renamed or retyped key can make decoding throw.
+///
+/// A new field is therefore added in THREE places — the property, `CodingKeys`,
+/// and the decode below — and must have a sensible default. Defaulting is safe
+/// precisely because this is a cache: the next fetch from the server corrects it.
 public nonisolated struct SignatureSnapshot: Sendable, Hashable, Codable {
     public enum Mode: String, Sendable, Hashable, Codable {
         case automatic
@@ -157,4 +170,24 @@ public nonisolated struct SignatureSnapshot: Sendable, Hashable, Codable {
     /// Whether this snapshot would put anything in the message. The server drops a
     /// signature whose text is blank (`assembleMessageBody`).
     public var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    // Listed explicitly: see the cache-blob convention above.
+    enum CodingKeys: String, CodingKey {
+        case mode, id, name, html, text
+    }
+
+    /// Total decode — a throw here would be a `try!` crash inside SwiftData.
+    /// An unrecognised `mode` degrades to `.none`, the same fallback ``empty``
+    /// uses, rather than taking the whole draft table down.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)).flatMap { $0 } ?? fallback
+        }
+        self.mode = value(.mode, Mode.none)
+        self.id = (try? container.decodeIfPresent(String.self, forKey: .id)) ?? nil
+        self.name = value(.name, "")
+        self.html = value(.html, "")
+        self.text = value(.text, "")
+    }
 }

@@ -302,6 +302,122 @@ struct LabelCacheTests {
         )
     }
 
+    /// The badge rule `replaceAssignments` sets out, made assertable.
+    ///
+    /// The sweep stores an assignment for every message the LABEL names, which
+    /// includes messages in folders this cache has never synced — so the raw row
+    /// count legitimately exceeds what the by-label listing can show. Fails if
+    /// the badge is built from those rows: it would promise conversations that
+    /// opening the label then does not list.
+    @Test("The label badge counts what the listing can resolve, not assignment rows")
+    func badgeCountsResolvedThreads() async throws {
+        let store = try MailStore.inMemory()
+        let cached = SyncFixtures.conversation(threadID: "thr_cached")
+        try await store.upsertConversations(
+            [cached], accountID: Self.account, mailboxID: "mbx_a", folder: .inbox
+        )
+        // …and the same thread again under a second scope, which is normal and
+        // must not be counted twice.
+        try await store.upsertConversations(
+            [cached], accountID: Self.account, mailboxID: "mbx_a", folder: .archived
+        )
+        try await store.replaceLabels([LabelSyncTests.label("lbl_1", name: "Billing")], accountID: Self.account)
+        try await store.replaceAssignments(
+            labelID: "lbl_1",
+            messages: [
+                LabelRowKey(messageID: "msg_1", threadID: "thr_cached"),
+                // A message in a folder Herald has never listed. Real, assigned,
+                // and unresolvable.
+                LabelRowKey(messageID: "msg_2", threadID: "thr_unsynced"),
+            ],
+            accountID: Self.account
+        )
+
+        let index = try await store.labelIndex(accountID: Self.account)
+        #expect(
+            index.idsByThread.keys.sorted() == ["thr_cached", "thr_unsynced"],
+            "the chips index still holds every assignment — only the COUNT is narrowed"
+        )
+        #expect(
+            index.threadCounts["lbl_1"] == 1,
+            "two assignment rows over two threads, but only one the listing can show"
+        )
+        let listed = try await store.conversations(withLabel: "lbl_1", accountID: Self.account)
+        #expect(listed.count == index.threadCounts["lbl_1"], "the badge and the listing agree")
+    }
+
+    /// Fails if a label with no assignments reports a count. `nil` and `0` reach
+    /// the badge the same way, but an index that returns `.empty` early must not
+    /// skip labels that legitimately have zero.
+    @Test("A label nobody has used counts zero")
+    func unusedLabelCountsZero() async throws {
+        let store = try MailStore.inMemory()
+        try await store.replaceLabels([LabelSyncTests.label("lbl_1", name: "Billing")], accountID: Self.account)
+        let index = try await store.labelIndex(accountID: Self.account)
+        #expect(index.threadCounts["lbl_1"] == nil)
+        #expect(index.idsByThread.isEmpty)
+    }
+
+    /// Fails if the by-label listing loses rows, order or the dedup once the
+    /// thread-id filter is chunked. The chunk size is 500 ids, so this crosses it
+    /// deliberately: a single chunk comes back sorted by the STORE, several do
+    /// not, and a merge that forgot to re-sort would hand the newest threads back
+    /// in chunk order.
+    @Test("A label spanning more threads than one predicate chunk stays newest-first")
+    func chunkedListingKeepsItsOrder() async throws {
+        let store = try MailStore.inMemory()
+        let total = MailStore.labelPredicateChunkSize + 120
+        // Newest LAST in insertion order, so a listing that simply echoed the
+        // fetch order would fail this.
+        let rows = (0 ..< total).map { index in
+            ConversationSummary(
+                latest: MessageSummary(
+                    id: "msg_\(index)",
+                    threadID: "thr_\(index)",
+                    mailboxID: "mbx_a",
+                    direction: .inbound,
+                    folder: .inbox,
+                    fromAddress: "ada@example.net",
+                    to: ["support@example.com"],
+                    subject: "Subject",
+                    snippet: "…",
+                    receivedAt: Date(timeIntervalSince1970: 2_000 + Double(index)),
+                    sentAt: nil,
+                    readAt: nil,
+                    starredAt: nil,
+                    hasAttachments: false,
+                    createdAt: Date(timeIntervalSince1970: 2_000 + Double(index))
+                ),
+                isStarred: false,
+                messageCount: 1,
+                unreadCount: 1
+            )
+        }
+        try await store.upsertConversations(
+            rows, accountID: Self.account, mailboxID: "mbx_a", folder: .inbox
+        )
+        try await store.replaceLabels([LabelSyncTests.label("lbl_1", name: "Billing")], accountID: Self.account)
+        try await store.replaceAssignments(
+            labelID: "lbl_1",
+            messages: (0 ..< total).map { LabelRowKey(messageID: "msg_\($0)", threadID: "thr_\($0)") },
+            accountID: Self.account
+        )
+
+        let listed = try await store.conversations(
+            withLabel: "lbl_1", accountID: Self.account, limit: 10
+        )
+        #expect(
+            listed.map(\.id) == (0 ..< 10).map { "thr_\(total - 1 - $0)" },
+            "the ten newest threads across every chunk, newest first"
+        )
+        #expect(Set(listed.map(\.id)).count == listed.count, "no thread twice")
+
+        let all = try await store.conversations(
+            withLabel: "lbl_1", accountID: Self.account, limit: total + 10
+        )
+        #expect(all.count == total, "every thread, exactly once")
+    }
+
     /// Fails if a tombstoned message keeps its assignments: the row would go on
     /// appearing in the label's listing, and nothing would ever clean it up.
     @Test("Deleting a message drops its label assignments")

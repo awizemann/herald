@@ -13,6 +13,9 @@ nonisolated protocol MailSyncing: Sendable {
     /// A pass that also re-sweeps label membership, whatever the label interval says.
     func refreshLabelsNow() async
     func setCadence(_ cadence: SyncCadence) async
+    /// Whether anything on screen is showing labels, which decides whether the
+    /// membership sweep runs on its fast or its idle interval.
+    func setLabelSurfaceVisible(_ visible: Bool) async
 }
 
 extension SyncEngine: MailSyncing {}
@@ -298,13 +301,33 @@ final class MailViewModel {
     var labels: [MailLabel] = []
     /// thread id → the label ids on ANY of its messages, so a row's chips are a
     /// dictionary lookup rather than a store round trip per row.
-    var labelIDsByThread: [String: [String]] = [:]
+    ///
+    /// A `Set`, not an array: every read of it is a membership test (the chips,
+    /// the context menu's checkmark), and an array made each one a linear scan
+    /// inside a view body.
+    var labelIDsByThread: [String: Set<String>] = [:]
+    /// label id → how many cached conversations carry it, precomputed alongside
+    /// the index. The sidebar draws one badge per label per render pass, and
+    /// deriving each by walking the index was O(threads × labels) IN THE VIEW
+    /// BODY — the audit's P2.
+    var labelThreadCounts: [String: Int] = [:]
     /// The label ids on the message the reading pane is showing.
     var selectedMessageLabelIDs: [String] = []
     /// The label the middle column is listing, or `nil` when it is showing a
     /// folder. A label listing crosses folders, which is exactly why it cannot be
     /// expressed as a ``FolderSelection``.
     var selectedLabelID: String?
+    /// Whether the app is frontmost, as ``setActive(_:)`` last saw it. Kept
+    /// because the label surface signal needs it and the cadence it drives is
+    /// write-only from here.
+    @ObservationIgnored var isAppActive = true
+    /// What the sync engine was last told about the label surface, so a signal
+    /// recomputed from four places is only sent when it actually flips.
+    @ObservationIgnored var isLabelSurfaceVisible = false
+    /// Instrumentation, same contract as ``conversationReloadCount``: it exists
+    /// so "one label write rebuilt the index exactly once" is assertable. Not
+    /// `private(set)` only because the write lives in the labels extension file.
+    @ObservationIgnored var labelIndexReloadCount = 0
 
     /// Everything the store holds for the current scope, before search.
     private(set) var allConversations: [ConversationSummary] = [] {
@@ -1134,7 +1157,12 @@ final class MailViewModel {
     }
 
     func setActive(_ active: Bool) async {
+        isAppActive = active
         await sync?.setCadence(active ? .active : .idle)
+        // Same argument as the cadence, one surface further in: a backgrounded
+        // Herald is drawing no chips and no badges, so the label sweep's 120s is
+        // being spent on an answer nobody can see.
+        await updateLabelSurfaceVisibility()
         // The wake socket follows the app's activation, exactly like the cadence
         // — and for a blunter reason: a socket held open behind a closed lid is a
         // radio kept awake for mail nobody is looking at. A backgrounded Herald

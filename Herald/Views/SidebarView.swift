@@ -41,6 +41,10 @@ struct SidebarView: View {
             if !model.labels.isEmpty {
                 Section(MailTheme.labelsSectionTitle) {
                     ForEach(model.labels) { label in
+                        // `threadCount` is a dictionary lookup into a structure
+                        // built once per index reload. It used to walk every
+                        // indexed thread PER LABEL, here in the body, on every
+                        // render pass the sidebar took.
                         LabelRow(label: label, count: model.threadCount(forLabel: label.id))
                     }
                 }
@@ -275,7 +279,8 @@ private struct DraftsRow: View {
 /// the colour is never the only way to tell two labels apart.
 private struct LabelRow: View {
     let label: MailLabel
-    /// Cached threads carrying the label. A TOTAL, like the Drafts row's badge
+    /// Cached threads carrying the label — the ones opening it will actually
+    /// list, not the raw assignment rows. A TOTAL, like the Drafts row's badge
     /// and unlike the folders' unread counts — see `threadCount(forLabel:)`.
     let count: Int
 

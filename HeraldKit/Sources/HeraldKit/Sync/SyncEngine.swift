@@ -131,6 +131,22 @@ public actor SyncEngine {
     /// into the cache and reconciled from the server's `LabelAssignmentResult`.
     public static let defaultLabelPollInterval: Duration = .seconds(120)
 
+    /// The label sweep's interval while NOTHING on screen shows labels.
+    ///
+    /// 120s buys freshness for chips and badges the user can actually see. When
+    /// the app is not frontmost — or the account has no labels at all — that
+    /// freshness is bought for nobody, and the sweep is the single most expensive
+    /// idle thing Herald does: one `GET /messages?labelId=` page-walk PER label,
+    /// forever, whatever else is happening. Twelve and a half minutes is still
+    /// far inside any session and cuts the idle request rate by ~6×.
+    ///
+    /// Deliberately not "never": the surface has no delta (see
+    /// ``defaultLabelPollInterval``), so a sweep that stops entirely is a cache
+    /// that diverges silently until the user next opens a label. And the moment
+    /// the user DOES ask about labels, ``refreshLabelsNow()`` sweeps immediately
+    /// regardless of either interval.
+    public static let defaultIdleLabelPollInterval: Duration = .seconds(750)
+
     /// How rarely a rejected change cursor may be answered with a full
     /// re-bootstrap. See ``journalSync(accountID:)`` — the recovery looks like a
     /// SUCCESSFUL pass, so without a limit a persistently rejected cursor is an
@@ -144,6 +160,7 @@ public actor SyncEngine {
     private let maxMessagePages: Int
     private let draftPollInterval: Duration
     private let labelPollInterval: Duration
+    private let idleLabelPollInterval: Duration
     private let rebootstrapCooldown: Duration
 
     /// When the drafts list was last read. `nil` means "never", which is what
@@ -151,6 +168,41 @@ public actor SyncEngine {
     private var lastDraftPoll: ContinuousClock.Instant?
     /// Same, for the label sweep.
     private var lastLabelPoll: ContinuousClock.Instant?
+
+    /// Whether anything on screen currently shows labels. Drives which of the two
+    /// label intervals applies — see ``setLabelSurfaceVisible(_:)``.
+    private var isLabelSurfaceVisible = false
+
+    /// What the last COMPLETED sweep wrote for each label, as a digest.
+    ///
+    /// `replaceAssignments` is a fetch, a dictionary build and a diff per label;
+    /// on a membership that did not move it is all of that to write nothing. The
+    /// digest turns the common case (a label nobody touched between two sweeps)
+    /// into an integer compare.
+    ///
+    /// SAFE because it only ever suppresses a write that would have been a no-op
+    /// AGAINST THE PREVIOUS SWEEP'S OWN OUTPUT. Two ways the store can hold
+    /// something else: a local optimistic toggle, and the server's authoritative
+    /// per-message answer — both of which are what the user just asked for, and
+    /// both of which the NEXT sweep whose membership actually differs writes
+    /// through. ``refreshLabelsNow()`` drops the digests outright, so the paths
+    /// that mean "the user is asking about labels right now" (opening a label,
+    /// Refresh inside one) always do the full authoritative write.
+    private var lastSweepDigests: [String: SweepDigest] = [:]
+
+    /// A membership row set, cheaply. Order-independent (the server does not
+    /// promise one) and carries the count alongside the hash so a hash collision
+    /// alone cannot suppress a write.
+    private struct SweepDigest: Hashable {
+        let count: Int
+        let hash: Int
+
+        init(_ rows: [LabelRowKey]) {
+            let unique = Set(rows)
+            self.count = unique.count
+            self.hash = unique.hashValue
+        }
+    }
 
     private let eventStream: AsyncStream<SyncEvent>
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
@@ -193,6 +245,7 @@ public actor SyncEngine {
         maxMessagePages: Int = SyncEngine.defaultMaxMessagePages,
         draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval,
         labelPollInterval: Duration = SyncEngine.defaultLabelPollInterval,
+        idleLabelPollInterval: Duration = SyncEngine.defaultIdleLabelPollInterval,
         rebootstrapCooldown: Duration = SyncEngine.defaultRebootstrapCooldown
     ) {
         self.api = api
@@ -202,6 +255,10 @@ public actor SyncEngine {
         self.maxMessagePages = max(1, maxMessagePages)
         self.draftPollInterval = draftPollInterval
         self.labelPollInterval = labelPollInterval
+        // A caller that shortens the visible interval past the idle one means the
+        // shorter number; the idle interval is a FLOOR on rarity, never a way to
+        // sweep more often than the visible surface asked for.
+        self.idleLabelPollInterval = max(idleLabelPollInterval, labelPollInterval)
         self.rebootstrapCooldown = rebootstrapCooldown
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
@@ -229,6 +286,9 @@ public actor SyncEngine {
         // A different account (or a restarted engine) has never polled ITS drafts.
         lastDraftPoll = nil
         lastLabelPoll = nil
+        // The digests describe the PREVIOUS account's membership; keeping them
+        // would let the first sweep of a new account skip a write it must make.
+        lastSweepDigests.removeAll()
         loopTask = Task { [weak self] in
             await self?.runLoop(accountID: accountID)
         }
@@ -282,7 +342,29 @@ public actor SyncEngine {
     /// opening a label in the sidebar, or pressing Refresh while inside one.
     public func refreshLabelsNow() {
         lastLabelPoll = nil
+        // This is the "the user is asking about labels RIGHT NOW" path, so it is
+        // also the one that must not trust a digest: it forces the full
+        // authoritative `replaceAssignments` for every label, which is how a
+        // cache that drifted out of step with the server (a local write the
+        // server never took, a sweep skipped over a race) is put right.
+        lastSweepDigests.removeAll()
         refreshNow()
+    }
+
+    /// Tells the loop whether anything on screen is showing labels.
+    ///
+    /// The sweep is one request PER LABEL and it is the dominant idle cost, so it
+    /// runs at ``defaultLabelPollInterval`` only while the answer is worth having
+    /// promptly and at ``defaultIdleLabelPollInterval`` otherwise.
+    ///
+    /// Deliberately NOT wired to wake the loop when it flips true, unlike
+    /// ``setWakeSocketConnected(_:)``: waking costs a whole mail pass, and the
+    /// two moments that genuinely need labels NOW (opening a label listing,
+    /// Refresh inside one) already call ``refreshLabelsNow()``, which wakes the
+    /// loop AND forces the sweep. Turning the surface on merely shortens the
+    /// interval the next wait computes.
+    public func setLabelSurfaceVisible(_ visible: Bool) {
+        isLabelSurfaceVisible = visible
     }
 
     /// Switches the poll interval. Takes effect on the next wait, and wakes the
@@ -580,9 +662,22 @@ public actor SyncEngine {
                     swept += 1
                     continue
                 }
+                // The walk already cost its requests; what this skips is the
+                // store work — a fetch, a dictionary build and a row diff per
+                // label — for a membership identical to the one this engine last
+                // wrote. See ``lastSweepDigests`` for why that is safe.
+                let digest = SweepDigest(rows)
+                guard lastSweepDigests[label.id] != digest else {
+                    swept += 1
+                    continue
+                }
+                labelAssignmentWrites += 1
                 changed = try await store.replaceAssignments(
                     labelID: label.id, messages: rows, accountID: accountID
                 ) || changed
+                // Only after the write actually landed: a throw above must leave
+                // the digest as it was, or the retry would skip the write too.
+                lastSweepDigests[label.id] = digest
                 swept += 1
             } catch is CancellationError {
                 return
@@ -593,6 +688,11 @@ public actor SyncEngine {
                 )
             }
         }
+        // A label the workspace deleted takes its assignments with it
+        // (`replaceLabels`), so its digest would otherwise describe rows that no
+        // longer exist if the id were ever reused.
+        let live = Set(labels.map(\.id))
+        lastSweepDigests = lastSweepDigests.filter { live.contains($0.key) }
         // The interval only restarts on a sweep that actually covered every
         // label; a partial one is retried on the next pass rather than sat out.
         if swept == labels.count { lastLabelPoll = .now }
@@ -633,11 +733,23 @@ public actor SyncEngine {
 
     private var isLabelPollDue: Bool {
         guard let lastLabelPoll else { return true }
-        return lastLabelPoll.duration(to: .now) >= labelPollInterval
+        return lastLabelPoll.duration(to: .now) >= currentLabelPollInterval
+    }
+
+    /// The interval the label sweep is currently held to. Also the test seam for
+    /// the gating, mirroring ``currentPollInterval``.
+    var currentLabelPollInterval: Duration {
+        isLabelSurfaceVisible ? labelPollInterval : idleLabelPollInterval
     }
 
     /// Test seam, same purpose as ``lastDraftPollInstant``.
     var lastLabelPollInstant: ContinuousClock.Instant? { lastLabelPoll }
+
+    /// Test seam: how many times a sweep has reached `replaceAssignments`, which
+    /// is what makes "the second sweep of an unchanged membership skipped the
+    /// store write" assertable — the store's own return value cannot, because a
+    /// no-op write and a skipped write both report `false`.
+    private(set) var labelAssignmentWrites = 0
 
     // MARK: - Mode selection
 

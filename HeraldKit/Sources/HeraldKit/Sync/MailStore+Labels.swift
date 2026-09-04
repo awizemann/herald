@@ -170,28 +170,98 @@ extension MailStore {
         }
     }
 
-    /// label id → the thread ids carrying it, for every label of the account.
+    /// Everything the sidebar and the row chips read off one fetch of the
+    /// assignment table.
+    public nonisolated struct LabelIndex: Sendable {
+        /// thread id → the label ids on any of its messages.
+        public let idsByThread: [String: Set<String>]
+        /// label id → how many CACHED conversations carry it. See
+        /// ``MailStore/labelIndex(accountID:)`` for why it is not a row count.
+        public let threadCounts: [String: Int]
+
+        public static let empty = LabelIndex(idsByThread: [:], threadCounts: [:])
+
+        public init(idsByThread: [String: Set<String>], threadCounts: [String: Int]) {
+            self.idsByThread = idsByThread
+            self.threadCounts = threadCounts
+        }
+    }
+
+    /// The thread → labels index AND the per-label thread counts, in one pass.
     ///
     /// One fetch for the whole account rather than one per row: the conversation
     /// list draws chips on every visible row, and a per-row query would be a
     /// round trip per row per reload.
-    public func labelIDsByThread(accountID: String) throws -> [String: [String]] {
+    ///
+    /// The counts are computed HERE rather than by the view walking the index,
+    /// because they must agree with what the by-label listing can actually show.
+    /// ``replaceAssignments(labelID:messages:accountID:)`` documents why: the
+    /// sweep stores assignments for every message the LABEL names, including
+    /// messages in folders this cache has never synced, while
+    /// ``conversations(withLabel:accountID:limit:)`` can only resolve threads the
+    /// conversation cache holds. Counting distinct assignment thread ids would
+    /// therefore promise rows the listing then does not show. So the count is
+    /// intersected against the cached conversation thread ids — the badge counts
+    /// what opening the label will actually list.
+    ///
+    /// Both walks ask for the columns they read and nothing else
+    /// (`propertiesToFetch`) and go through `ModelContext.enumerate`, which pages
+    /// the result set instead of materialising the whole table at once. Nothing
+    /// here touches a property outside the fetched set, which is the condition
+    /// for a partially-materialised model to stay cheap: reading one that was NOT
+    /// fetched faults the row in individually and turns the saving into an N+1.
+    public func labelIndex(accountID: String) throws -> LabelIndex {
         do {
-            let rows = try modelContext.fetch(
-                FetchDescriptor<CachedLabelAssignment>(
-                    predicate: #Predicate { $0.accountID == accountID }
-                )
+            var assignments = FetchDescriptor<CachedLabelAssignment>(
+                predicate: #Predicate { $0.accountID == accountID }
             )
-            var result: [String: Set<String>] = [:]
-            for row in rows {
-                result[row.threadID, default: []].insert(row.labelID)
+            assignments.propertiesToFetch = [\.threadID, \.labelID]
+            var idsByThread: [String: Set<String>] = [:]
+            try modelContext.enumerate(assignments, batchSize: Self.labelFetchBatchSize) { row in
+                idsByThread[row.threadID, default: []].insert(row.labelID)
             }
-            return result.mapValues { Array($0) }
+            guard !idsByThread.isEmpty else { return .empty }
+
+            var conversations = FetchDescriptor<CachedConversation>(
+                predicate: #Predicate { $0.accountID == accountID }
+            )
+            conversations.propertiesToFetch = [\.threadID]
+            // A thread legitimately has a row per listing scope, so this is a SET
+            // of ids and the count below is per distinct thread, matching the
+            // listing's own dedup.
+            var cachedThreads: Set<String> = []
+            try modelContext.enumerate(conversations, batchSize: Self.labelFetchBatchSize) { row in
+                cachedThreads.insert(row.threadID)
+            }
+
+            var threadCounts: [String: Int] = [:]
+            for (threadID, labelIDs) in idsByThread where cachedThreads.contains(threadID) {
+                for labelID in labelIDs { threadCounts[labelID, default: 0] += 1 }
+            }
+            return LabelIndex(idsByThread: idsByThread, threadCounts: threadCounts)
         } catch {
             logger.error("Label index fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }
+
+    /// label id → the thread ids carrying it, for every label of the account.
+    public func labelIDsByThread(accountID: String) throws -> [String: [String]] {
+        try labelIndex(accountID: accountID).idsByThread.mapValues { Array($0) }
+    }
+
+    /// How many rows a batched walk materialises at a time.
+    ///
+    /// `ModelContext.enumerate` defaults to 5,000, which for the assignment table
+    /// is every label of every message the account has ever synced held live at
+    /// once. 500 keeps the peak bounded without making the walk a round trip per
+    /// handful.
+    static let labelFetchBatchSize = 500
+
+    /// How many thread ids go into one `contains` predicate. SQLite's default
+    /// variable ceiling is 999 bound parameters and the predicate spends one per
+    /// id plus a couple for the account, so 500 stays clear of it with room.
+    static let labelPredicateChunkSize = 500
 
     /// The label ids on one MESSAGE (not its thread) — what the reading pane draws.
     public func labelIDs(messageID: String, accountID: String) throws -> [String] {
@@ -218,28 +288,63 @@ extension MailStore {
         limit: Int = 200
     ) throws -> [ConversationSummary] {
         do {
-            let threadIDs = Set(try modelContext.fetch(
-                FetchDescriptor<CachedLabelAssignment>(
-                    predicate: #Predicate { $0.accountID == accountID && $0.labelID == labelID }
-                )
-            ).map(\.threadID))
-            guard !threadIDs.isEmpty else { return [] }
-            // Fetched by account and sorted in the store, then filtered in Swift:
-            // `#Predicate` cannot take a `Set.contains` over a captured collection
-            // of this shape, and the alternative is one fetch per thread.
-            var descriptor = FetchDescriptor<CachedConversation>(
-                predicate: #Predicate { $0.accountID == accountID },
-                sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
+            var assignments = FetchDescriptor<CachedLabelAssignment>(
+                predicate: #Predicate { $0.accountID == accountID && $0.labelID == labelID }
             )
-            descriptor.fetchLimit = nil
-            var seen: Set<String> = []
-            var rows: [ConversationSummary] = []
-            for row in try modelContext.fetch(descriptor) {
-                guard threadIDs.contains(row.threadID), seen.insert(row.threadID).inserted else { continue }
-                rows.append(Self.conversation(from: row))
-                if rows.count >= limit { break }
+            assignments.propertiesToFetch = [\.threadID]
+            var unique: Set<String> = []
+            try modelContext.enumerate(assignments, batchSize: Self.labelFetchBatchSize) { row in
+                unique.insert(row.threadID)
             }
-            return rows
+            let threadIDs = Array(unique)
+            guard !threadIDs.isEmpty else { return [] }
+
+            // The thread-id filter now runs in the STORE. It used to materialise
+            // every cached conversation of the account and filter in Swift, which
+            // is O(all conversations) per label open and per label toggle while a
+            // listing is up — the audit's P1. A captured `Array.contains` DOES
+            // compile inside `#Predicate` (it is `Sequence.contains`, unlike the
+            // `Set.contains` the earlier note tried); the ids are chunked only to
+            // stay under SQLite's bound-parameter ceiling, and each chunk is
+            // sorted and limited by the store rather than in memory.
+            var seen: Set<String> = []
+            // `sortDate` is a column, not part of `ConversationSummary`, so the
+            // cross-chunk merge below has to carry it alongside.
+            var rows: [(sortDate: Date, summary: ConversationSummary)] = []
+            for chunk in stride(from: 0, to: threadIDs.count, by: Self.labelPredicateChunkSize) {
+                let ids = Array(
+                    threadIDs[chunk ..< min(chunk + Self.labelPredicateChunkSize, threadIDs.count)]
+                )
+                var descriptor = FetchDescriptor<CachedConversation>(
+                    predicate: #Predicate {
+                        $0.accountID == accountID && ids.contains($0.threadID)
+                    },
+                    sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
+                )
+                // NOT `fetchLimit`: a thread holds one row per listing scope and
+                // the dedup below drops the older ones, so `limit` presented rows
+                // can need more than `limit` fetched ones. The walk stops on
+                // DISTINCT threads instead.
+                descriptor.fetchLimit = nil
+                var kept = 0
+                for row in try modelContext.fetch(descriptor) {
+                    guard seen.insert(row.threadID).inserted else { continue }
+                    rows.append((row.sortDate, Self.conversation(from: row)))
+                    kept += 1
+                    // Each chunk comes back newest-first from the STORE, so the
+                    // globally newest `limit` threads are a subset of the union
+                    // of each chunk's newest `limit` — taking more per chunk
+                    // cannot change the answer, only the work.
+                    if kept >= limit { break }
+                }
+            }
+            // One chunk is newest-first on its own; several are not, so the merge
+            // is re-sorted before the cap. `sortDate` is what the folder listing
+            // orders by, and the newest row per thread is the one kept above.
+            if threadIDs.count > Self.labelPredicateChunkSize {
+                rows.sort { $0.sortDate > $1.sortDate }
+            }
+            return rows.prefix(limit).map(\.summary)
         } catch {
             logger.error("Label conversation fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error

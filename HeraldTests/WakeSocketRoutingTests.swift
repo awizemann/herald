@@ -8,12 +8,15 @@ private actor RoutingSync: MailSyncing {
     private(set) var refreshCount = 0
     private(set) var draftRefreshCount = 0
     private(set) var labelRefreshCount = 0
+    /// Every value the view-model pushed for the label surface, in order.
+    private(set) var labelSurfaceVisibility: [Bool] = []
     private(set) var cadences: [SyncCadence] = []
 
     func refreshNow() { refreshCount += 1 }
     func refreshDraftsNow() { draftRefreshCount += 1 }
     func refreshLabelsNow() { labelRefreshCount += 1 }
     func setCadence(_ cadence: SyncCadence) { cadences.append(cadence) }
+    func setLabelSurfaceVisible(_ visible: Bool) { labelSurfaceVisibility.append(visible) }
 }
 
 /// Records the socket's lifecycle without opening one.

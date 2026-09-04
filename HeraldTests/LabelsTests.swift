@@ -8,11 +8,14 @@ private actor LabelFakeSync: MailSyncing {
     private(set) var refreshCount = 0
     private(set) var draftRefreshCount = 0
     private(set) var labelRefreshCount = 0
+    /// Every value the view-model pushed for the label surface, in order.
+    private(set) var labelSurfaceVisibility: [Bool] = []
 
     func refreshNow() { refreshCount += 1 }
     func refreshDraftsNow() { draftRefreshCount += 1 }
     func refreshLabelsNow() { labelRefreshCount += 1 }
     func setCadence(_ cadence: SyncCadence) {}
+    func setLabelSurfaceVisible(_ visible: Bool) { labelSurfaceVisibility.append(visible) }
 }
 
 @MainActor
@@ -205,5 +208,138 @@ struct LabelsTests {
         )
         await harness.model.applyLabelsChanged()
         #expect(harness.model.selectedLabelID == nil)
+    }
+
+    // MARK: - Precomputed index (A3)
+
+    /// Fails if the sidebar badge is derived by walking the index. It is asked
+    /// for once per label per render pass, and the walk was O(threads × labels)
+    /// IN THE VIEW BODY.
+    @Test("Per-label thread counts are precomputed with the index, in one pass")
+    func badgeCountsArePrecomputed() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.seed()
+        try await harness.store.replaceAssignments(
+            labelID: "lbl_2",
+            messages: [
+                LabelRowKey(messageID: "m1", threadID: "thr_inbox"),
+                LabelRowKey(messageID: "m2", threadID: "thr_archived"),
+            ],
+            accountID: LabelHarness.account
+        )
+        await harness.model.reloadLabels()
+        await harness.model.reloadLabelIndex()
+
+        #expect(harness.model.labelThreadCounts == ["lbl_1": 1, "lbl_2": 2])
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1)
+        #expect(harness.model.threadCount(forLabel: "lbl_2") == 2)
+        // A label the workspace has but nobody has used reads zero, not nil.
+        try await harness.store.replaceLabels(
+            [
+                LabelHarness.label("lbl_1", "Billing"),
+                LabelHarness.label("lbl_2", "Later"),
+                LabelHarness.label("lbl_3", "Waiting"),
+            ],
+            accountID: LabelHarness.account
+        )
+        await harness.model.reloadLabels()
+        #expect(harness.model.threadCount(forLabel: "lbl_3") == 0)
+    }
+
+    /// Fails if the badge is a frame behind the chip. Both read the same index,
+    /// so an optimistic toggle that rebuilt one and not the other would leave the
+    /// sidebar contradicting the row the user just changed.
+    @Test("An optimistic toggle moves the badge with the chip")
+    func badgeFollowsAnOptimisticToggle() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.seed()
+        await harness.model.reloadLabels()
+        await harness.model.reloadLabelIndex()
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1)
+
+        await harness.model.setLabel("lbl_1", onThread: "thr_inbox", assigned: true)
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 2, "the added thread is counted")
+
+        await harness.model.setLabel("lbl_1", onThread: "thr_inbox", assigned: false)
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1, "and uncounted again")
+        #expect(harness.model.labels(forThread: "thr_inbox").isEmpty)
+    }
+
+    /// Fails if a label write rebuilds the index twice. `reloadConversations`
+    /// rebuilds it itself (before it publishes the rows, so the chips are never a
+    /// frame behind), so calling both was two whole-account index reads and a
+    /// redundant store round trip per toggle.
+    @Test("A label write rebuilds the index exactly once, inside a listing or out")
+    func labelWriteReloadsTheIndexOnce() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.seed()
+        await harness.model.reloadLabels()
+
+        // Outside a listing: the index alone moved, so only the index reloads.
+        var indexBaseline = harness.model.labelIndexReloadCount
+        var rowBaseline = harness.model.conversationReloadCount
+        await harness.model.setLabel("lbl_2", onThread: "thr_inbox", assigned: true)
+        #expect(harness.model.labelIndexReloadCount == indexBaseline + 1)
+        #expect(
+            harness.model.conversationReloadCount == rowBaseline,
+            "a folder listing is not re-read for a label the rows do not order by"
+        )
+
+        // Inside one: the rows ARE the membership, so the listing reloads — and
+        // that reload is the index rebuild, not an extra one on top of it.
+        harness.model.showLabel("lbl_1")
+        await harness.model.reloadTask?.value
+        indexBaseline = harness.model.labelIndexReloadCount
+        rowBaseline = harness.model.conversationReloadCount
+        await harness.model.setLabel("lbl_1", onThread: "thr_inbox", assigned: true)
+        #expect(harness.model.conversationReloadCount == rowBaseline + 1)
+        #expect(
+            harness.model.labelIndexReloadCount == indexBaseline + 1,
+            "the listing reload IS the index rebuild; a second one is wasted work"
+        )
+        #expect(
+            harness.model.presentedConversations.map(\.id).sorted() == ["thr_archived", "thr_inbox"],
+            "and the thread that just gained the label appears in it"
+        )
+    }
+
+    // MARK: - Sweep cadence signal (A3)
+
+    /// Fails if the engine is left sweeping at its fast cadence for a surface
+    /// nobody can see. The sweep is one request PER LABEL; the signal is what
+    /// buys the idle interval back.
+    @Test("The label surface signal follows the labels, the listing and the app")
+    func labelSurfaceSignalFollowsTheUI() async throws {
+        let harness = try await LabelHarness.make()
+
+        // No labels cached yet: nothing on screen is showing any.
+        await harness.model.reloadLabels()
+        #expect(await harness.sync.labelSurfaceVisibility.isEmpty, "false was already the default")
+
+        // The workspace has labels and the app is frontmost — the sidebar is
+        // drawing a badge per label and the list a chip per row.
+        try await harness.seed()
+        await harness.model.reloadLabels()
+        #expect(await harness.sync.labelSurfaceVisibility == [true])
+
+        // Backgrounded: same labels, nobody looking.
+        await harness.model.setActive(false)
+        #expect(await harness.sync.labelSurfaceVisibility == [true, false])
+
+        // …but a label LISTING open outranks that: the rows on screen ARE the
+        // membership, so it stays visible even while the app is not frontmost.
+        harness.model.showLabel("lbl_1")
+        await harness.model.reloadTask?.value
+        #expect(await harness.sync.labelSurfaceVisibility == [true, false, true])
+
+        // Leaving the listing while still backgrounded turns it off again.
+        harness.model.showLabel(nil)
+        await harness.model.reloadTask?.value
+        #expect(await harness.sync.labelSurfaceVisibility == [true, false, true, false])
+
+        // And a signal that did not change is never re-sent — this is one actor
+        // hop per recomputation, from four call sites.
+        await harness.model.setActive(false)
+        #expect(await harness.sync.labelSurfaceVisibility.count == 4)
     }
 }

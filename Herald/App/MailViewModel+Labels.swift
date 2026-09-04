@@ -16,8 +16,7 @@ extension MailViewModel {
     /// The labels a conversation row draws, in the sidebar's order so two rows
     /// carrying the same labels never show them in different orders.
     func labels(forThread threadID: String) -> [MailLabel] {
-        let ids = Set(labelIDsByThread[threadID] ?? [])
-        guard !ids.isEmpty else { return [] }
+        guard let ids = labelIDsByThread[threadID], !ids.isEmpty else { return [] }
         return labels.filter { ids.contains($0.id) }
     }
 
@@ -30,13 +29,17 @@ extension MailViewModel {
 
     /// How many cached threads carry a label — the sidebar's badge.
     ///
-    /// Derived from the same index the chips read, so it costs nothing extra, and
-    /// it is a TOTAL rather than an unread count: a label spans folders, where
-    /// every other sidebar badge counts one (mailbox, folder) scope.
+    /// A precomputed lookup, NOT a walk of the index: the sidebar asks once per
+    /// label per render pass and this used to be a scan of every indexed thread
+    /// each time, inside the view body.
+    ///
+    /// It is a TOTAL rather than an unread count — a label spans folders, where
+    /// every other sidebar badge counts one (mailbox, folder) scope — and it
+    /// counts threads the by-label listing can RESOLVE rather than assignment
+    /// rows, which is the rule `MailStore.replaceAssignments` sets out. See
+    /// `MailStore.labelIndex(accountID:)` for how the two are reconciled.
     func threadCount(forLabel labelID: String) -> Int {
-        labelIDsByThread.values.reduce(into: 0) { total, ids in
-            if ids.contains(labelID) { total += 1 }
-        }
+        labelThreadCounts[labelID] ?? 0
     }
 
     /// Whether a thread already carries a label — what the context menu's
@@ -66,21 +69,52 @@ extension MailViewModel {
         if let selectedLabelID, !labels.contains(where: { $0.id == selectedLabelID }) {
             showLabel(nil)
         }
+        // An account whose workspace has no labels draws no chips and no badges,
+        // so nothing on screen is waiting on the sweep.
+        await updateLabelSurfaceVisibility()
     }
 
-    /// Rebuilds the thread → labels index the row chips read.
+    /// Rebuilds the thread → labels index the row chips read, AND the per-label
+    /// counts the sidebar badges read.
     ///
-    /// One fetch for the whole account, not one per row: the index is small (a
-    /// join table over a workspace's handful of labels) and the list draws chips
-    /// on every visible row.
+    /// One store call for the whole account, not one per row: the index is small
+    /// (a join table over a workspace's handful of labels) and the list draws
+    /// chips on every visible row. Both structures come out of the same single
+    /// pass over the assignment rows, so the badges cost the view nothing.
     func reloadLabelIndex() async {
+        labelIndexReloadCount += 1
         do {
-            let index = try await store.labelIDsByThread(accountID: accountID)
+            let index = try await store.labelIndex(accountID: accountID)
             guard !Task.isCancelled else { return }
-            labelIDsByThread = index
+            labelIDsByThread = index.idsByThread
+            labelThreadCounts = index.threadCounts
         } catch {
             logger.error("Label index load failed: \(error.localizedDescription, privacy: .private)")
         }
+    }
+
+    /// Tells the sync engine whether anything on screen is showing labels, which
+    /// is what decides how often the membership sweep runs.
+    ///
+    /// The sweep is one `GET /messages?labelId=` page-walk PER label and it is
+    /// the single most expensive idle thing Herald does, so it earns its 120s
+    /// cadence only while someone can see the result. Two ways that is true:
+    ///
+    /// - a label LISTING is open — the rows on screen ARE the membership; or
+    /// - the account has labels at all AND the app is frontmost — the sidebar is
+    ///   drawing a badge per label and the list a chip per row.
+    ///
+    /// Deliberately not finer than that. A "is the sidebar collapsed, is the list
+    /// scrolled past its chips" signal would be several pieces of view state
+    /// racing one actor hop, for a cadence whose whole job is to be approximately
+    /// right; and getting it WRONG in the quiet direction shows the user stale
+    /// chips with no way to tell. Backgrounded-with-labels and no-labels-at-all
+    /// are the cases that actually matter, and both are unambiguous.
+    func updateLabelSurfaceVisibility() async {
+        let visible = selectedLabelID != nil || (!labels.isEmpty && isAppActive)
+        guard visible != isLabelSurfaceVisible else { return }
+        isLabelSurfaceVisible = visible
+        await sync?.setLabelSurfaceVisible(visible)
     }
 
     /// Reloads the labels on the message the reading pane is showing.
@@ -144,6 +178,10 @@ extension MailViewModel {
         reloadTask?.cancel()
         reloadTask = Task { [weak self] in
             await self?.reloadConversations()
+            // Entering a listing turns the fast sweep cadence on; leaving one may
+            // turn it off again (only may — the sidebar's badges keep it on while
+            // the app is frontmost).
+            await self?.updateLabelSurfaceVisibility()
             guard labelID != nil else { return }
             await self?.sync?.refreshLabelsNow()
         }
@@ -169,11 +207,8 @@ extension MailViewModel {
             logger.warning("Label change failed: \(error.localizedDescription, privacy: .private)")
             actionError = error.localizedDescription
         }
-        await reloadLabelIndex()
+        await reloadIndexAfterLabelChange()
         await reloadSelectedMessageLabels()
-        // The listing IS the membership when a label is on screen: a thread that
-        // just lost the label has to leave it, and one that gained it appear.
-        if selectedLabelID != nil { await reloadConversations() }
     }
 
     /// The same, for the single message the reading pane is showing.
@@ -186,8 +221,26 @@ extension MailViewModel {
             logger.warning("Label change failed: \(error.localizedDescription, privacy: .private)")
             actionError = error.localizedDescription
         }
-        await reloadLabelIndex()
+        await reloadIndexAfterLabelChange()
         await reloadSelectedMessageLabels()
-        if selectedLabelID != nil { await reloadConversations() }
+    }
+
+    /// Republishes whatever a label write invalidated, ONCE.
+    ///
+    /// Inside a label listing the rows themselves are the membership — a thread
+    /// that just lost the label has to leave, one that gained it has to appear —
+    /// so the listing is reloaded; and `reloadConversations` rebuilds the index
+    /// itself (before it publishes the rows, so the chips are never a frame
+    /// behind). Doing both, as this used to, was two whole-account index reads
+    /// and a redundant round trip per toggle. Outside a listing only the index
+    /// moved, so only the index is reloaded.
+    ///
+    /// The same either/or `applyLabelsChanged` makes, for the same reason.
+    private func reloadIndexAfterLabelChange() async {
+        if selectedLabelID != nil {
+            await reloadConversations()
+        } else {
+            await reloadLabelIndex()
+        }
     }
 }

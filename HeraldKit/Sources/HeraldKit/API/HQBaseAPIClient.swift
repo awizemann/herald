@@ -1,4 +1,5 @@
 import Foundation
+import HTTPTypes
 import HeraldAPI
 import OpenAPIRuntime
 import OpenAPIURLSession
@@ -294,18 +295,24 @@ public actor HQBaseAPIClient: MailAPIClient {
         data: Data
     ) async throws -> DraftAttachment {
         try await perform {
-            // The spec's `file` part carries no declared headers, so the generated
-            // payload has nowhere to put a per-part Content-Type; the server infers
-            // it from the filename. `mimeType` is kept in the signature because the
-            // spec is expected to gain the header (and callers already know it).
-            _ = mimeType
-            let part = MultipartPart<Operations.AddDraftAttachment.Input.Body.MultipartFormPayload.FilePayload>(
-                payload: .init(body: HTTPBody([UInt8](data))),
-                filename: filename
+            // Upstream 1.3.4 honours a per-part Content-Type (their #45), and the
+            // spec declares `encoding.file.contentType: "*/*"` — but the generator
+            // burns that literal `*/*` into the typed `.file` case, so the typed
+            // payload can only ever send `*/*` and the server falls back to
+            // sniffing. The raw part is the only way to state the real type; the
+            // operation allows unknown parts, and the name/filename here are
+            // exactly what the typed case would have produced.
+            var partHeaders = HTTPFields()
+            partHeaders[.contentType] = mimeType
+            let raw = MultipartRawPart(
+                name: "file",
+                filename: filename,
+                headerFields: partHeaders,
+                body: HTTPBody([UInt8](data))
             )
             let input = Operations.AddDraftAttachment.Input(
                 path: .init(id: draftID),
-                body: .multipartForm(.init([.file(part)]))
+                body: .multipartForm(.init([.undocumented(raw)]))
             )
             switch try await client.addDraftAttachment(input) {
             case .created(let created): return try DraftAttachment(created.body.json)
@@ -330,6 +337,16 @@ public actor HQBaseAPIClient: MailAPIClient {
     public func send(_ input: SendInput) async throws -> MessageSummary {
         try await perform {
             switch try await client.sendMessage(.init(body: .json(input.generated))) {
+            case .created(let created): return try MessageSummary(created.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func forward(_ input: ForwardInput) async throws -> MessageSummary {
+        try await perform {
+            switch try await client.forwardMessage(.init(body: .json(input.generated))) {
             case .created(let created): return try MessageSummary(created.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse

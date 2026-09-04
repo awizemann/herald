@@ -36,7 +36,8 @@ struct DraftSyncTests {
           "bcc": [],
           "subject": "\(subject)",
           "text": "\(text)",
-          "html": ""
+          "html": "",
+          \(Fixtures.draftSignatureAndLabelsJSON)
         }
         """
     }

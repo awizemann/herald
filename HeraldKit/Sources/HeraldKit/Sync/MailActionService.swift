@@ -122,11 +122,10 @@ public nonisolated struct MailActionService: Sendable {
 
     /// Applies a MESSAGE action to every message of a thread, one POST each.
     ///
-    /// This is the only way to move a thread out of Trash: the v1 API has no
-    /// restore/untrash action, and the CONVERSATION-level `archive` ignores
-    /// messages that are not in inbox/catchall. The message route sets
-    /// `folder = archived` from any folder, so "Move to Archive" in the Trash
-    /// scope is N message calls rather than one conversation call.
+    /// Herald used this to fake a "put back" out of Trash before upstream 1.3.4
+    /// added `restore`/`unarchive`; the UI now uses the conversation route for
+    /// that. Kept as the general escape hatch for any action the conversation
+    /// route scopes more narrowly than the message route does.
     ///
     /// Each message goes through the single-message path, so each gets its own
     /// pending fence and its own revert; the first failure is what the caller

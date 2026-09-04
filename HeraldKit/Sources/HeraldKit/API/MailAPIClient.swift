@@ -92,6 +92,9 @@ public nonisolated protocol MailAPIClient: Sendable {
     // MARK: Sending
     func send(_ input: SendInput) async throws -> MessageSummary
     func reply(_ input: ReplyInput) async throws -> MessageSummary
+    /// `POST /forward` — the only send path that preserves the forwarded
+    /// original. Requires a server at upstream 1.3.4 or newer.
+    func forward(_ input: ForwardInput) async throws -> MessageSummary
 }
 
 nonisolated extension MailAPIClient {

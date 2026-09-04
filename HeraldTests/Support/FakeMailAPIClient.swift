@@ -259,6 +259,7 @@ actor FakeMailAPIClient: MailAPIClient {
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws {}
     func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
+    func forward(_ input: ForwardInput) async throws -> MessageSummary { throw MailAPIError.notFound }
 }
 
 /// Minimal DTO builders for the app-hosted suites.

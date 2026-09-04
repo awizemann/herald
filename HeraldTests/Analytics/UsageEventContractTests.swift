@@ -24,7 +24,7 @@ import Testing
     ]
     static let syncTriggers: Set<String> = ["manual", "auto", "launch"]
     static let messageActions: Set<String> = [
-        "read", "unread", "star", "unstar", "archive", "trash",
+        "read", "unread", "star", "unstar", "archive", "unarchive", "trash", "restore",
     ]
     static let actionScopes: Set<String> = ["message", "conversation", "selection"]
     static let searchScopes: Set<String> = ["local", "server"]

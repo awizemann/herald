@@ -21,10 +21,11 @@ actor FakeMailAPIClient: MailAPIClient {
         case fetchDraft(String)
         case updateDraft(id: String, version: Int?)
         case deleteDraft(String)
-        case addAttachment(draftID: String, filename: String, bytes: Int)
+        case addAttachment(draftID: String, filename: String, mimeType: String, bytes: Int)
         case removeAttachment(draftID: String, attachmentID: String)
         case sendMessage(SendInput)
         case replyToMessage(ReplyInput)
+        case forwardMessage(ForwardInput)
     }
 
     private(set) var calls: [Call] = []
@@ -412,7 +413,9 @@ actor FakeMailAPIClient: MailAPIClient {
         mimeType: String,
         data: Data
     ) async throws -> DraftAttachment {
-        calls.append(.addAttachment(draftID: draftID, filename: filename, bytes: data.count))
+        calls.append(.addAttachment(
+            draftID: draftID, filename: filename, mimeType: mimeType, bytes: data.count
+        ))
         if let attachmentFailure { throw attachmentFailure }
         guard let draft = storedDrafts[draftID] else { throw MailAPIError.notFound }
         let attachment = DraftAttachment(
@@ -456,6 +459,12 @@ actor FakeMailAPIClient: MailAPIClient {
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_reply", folder: .sent)
     }
+
+    func forward(_ input: ForwardInput) async throws -> MessageSummary {
+        calls.append(.forwardMessage(input))
+        if let sendFailure { throw sendFailure }
+        return sentSummary ?? SyncFixtures.message("msg_forward", folder: .sent)
+    }
 }
 
 // MARK: - DTO builders
@@ -481,6 +490,7 @@ nonisolated enum SyncFixtures {
         threadID: String = "thr_1",
         mailboxID: String? = "mbx_a",
         folder: MailFolder = .inbox,
+        direction: MessageDirection = .inbound,
         readAt: Date? = nil,
         starredAt: Date? = nil,
         subject: String = "Subject"
@@ -489,7 +499,7 @@ nonisolated enum SyncFixtures {
             id: id,
             threadID: threadID,
             mailboxID: mailboxID,
-            direction: .inbound,
+            direction: direction,
             folder: folder,
             fromAddress: "ada@example.net",
             to: ["support@example.com"],

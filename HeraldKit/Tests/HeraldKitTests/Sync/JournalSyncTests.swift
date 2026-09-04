@@ -218,6 +218,40 @@ struct JournalSyncTests {
         #expect(try await store.cachedBody(messageID: "m1", accountID: account) == nil, "the body sidecar outlived its message")
     }
 
+    /// Upstream 1.3.4 made the tombstone's mailbox id nullable (owner-only
+    /// unassigned mail). The decode half is covered in `ChangesAPITests`; this is
+    /// the behavioural half — a `nil` id must still delete the row and must not
+    /// stall or skip the page. Fails on anything that treats a null id as "no
+    /// tombstone to apply".
+    @Test("A delete change with no mailbox id still removes the row")
+    func deleteChangeWithNullMailboxRemovesRow() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setChangePages([
+            ChangePage(
+                changes: [.delete(messageID: "m1", mailboxID: nil)],
+                nextCursor: "c1",
+                hasMore: false
+            )
+        ])
+
+        let store = try MailStore.inMemory()
+        // The unassigned row the null id addresses: no mailbox at all.
+        _ = try await store.upsertMessages(
+            [SyncFixtures.message("m1", mailboxID: nil)], accountID: account
+        )
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        try await seedCheckpoint(store)
+
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        #expect(try await store.message(id: "m1", accountID: account) == nil)
+        #expect(try await store.syncCheckpoint(accountID: account)?.changeCursor == "c1")
+    }
+
     /// Conversation rows are derived, so they must be re-listed — but only where
     /// something changed. Fails if the pass re-lists every mailbox's
     /// conversations (the full-listing cost the journal exists to avoid) or none

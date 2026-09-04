@@ -73,7 +73,7 @@ nonisolated enum UsageSyncTrigger: String, Sendable, Hashable, CaseIterable {
 }
 
 nonisolated enum UsageMessageAction: String, Sendable, Hashable, CaseIterable {
-    case read, unread, star, unstar, archive, trash
+    case read, unread, star, unstar, archive, unarchive, trash, restore
 }
 
 nonisolated enum UsageActionScope: String, Sendable, Hashable, CaseIterable {

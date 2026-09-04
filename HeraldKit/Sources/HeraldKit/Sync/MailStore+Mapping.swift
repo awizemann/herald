@@ -19,7 +19,31 @@ extension MailStore {
             row.folderRaw = MailFolder.archived.rawValue
         case .trash:
             row.folderRaw = MailFolder.trash.rawValue
+        case .unarchive:
+            // The server no-ops unless the message really is archived
+            // (worker/features/messages/queries.ts), so the cache must too —
+            // otherwise an optimistic move is reverted by the next sync.
+            guard row.folderRaw == MailFolder.archived.rawValue else { return }
+            row.folderRaw = Self.restoredFolder(for: row).rawValue
+        case .restore:
+            guard row.folderRaw == MailFolder.trash.rawValue else { return }
+            row.folderRaw = Self.restoredFolder(for: row).rawValue
         }
+    }
+
+    /// Where `unarchive`/`restore` put a message, mirroring the server's
+    /// `buildMessageActionPatch` (worker/features/messages/actions.ts): mail with
+    /// no mailbox goes to catchall, outbound mail to sent, everything else inbox.
+    ///
+    /// Caveat: the server tests two DIFFERENT predicates for the catchall branch —
+    /// the message route branches on `is_unassigned`, the conversation route on
+    /// `mailbox_id IS NULL` (conversation-queries.ts). Herald caches only the
+    /// mailbox id, so it matches the conversation route; a row with a mailbox id
+    /// AND `is_unassigned = 1` would be guessed as inbox and corrected by the next
+    /// sync. Caching `isUnassigned` is the real fix if that combination shows up.
+    nonisolated static func restoredFolder(for row: CachedMessage) -> MailFolder {
+        if row.mailboxKey.isEmpty { return .catchall }
+        return row.directionRaw == MessageDirection.outbound.rawValue ? .sent : .inbox
     }
 
     nonisolated static func snapshot(_ row: CachedMessage) -> MessageStateSnapshot {

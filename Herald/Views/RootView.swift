@@ -129,24 +129,11 @@ struct MailWindow: View {
                     .iconButtonStyle("Refresh")
             }
 
-            Button { Task { await model.performOnSelection(.archive) } } label: {
-                Image(systemName: "archivebox")
-                    .iconButtonStyle(model.archiveActionTitle)
-            }
-            // Mail's muscle-memory `e` lives on the conversation list, where it
-            // is scoped to that list's focus: as a toolbar shortcut it was
-            // window-global and typing "e" into the search field archived a thread.
-            .disabled(model.selectedThreadID == nil)
-
-            // Nothing to trash in the Trash — the button goes, rather than
-            // sitting there doing nothing (issue #8).
-            if model.offersTrashAction {
-                Button { Task { await model.performOnSelection(.trash) } } label: {
-                    Image(systemName: "trash")
-                        .iconButtonStyle("Move to Trash")
-                }
-                .disabled(model.selectedThreadID == nil)
-            }
+            // No keyboard shortcuts on these: Mail's muscle-memory `e` lives on
+            // the conversation list, where it is scoped to that list's focus. As
+            // a toolbar shortcut it was window-global and typing "e" into the
+            // search field archived a thread.
+            TriageButtons(model: model)
         }
     }
 

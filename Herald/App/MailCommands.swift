@@ -119,11 +119,14 @@ struct MailCommands: Commands {
 
             Divider()
 
-            // In the Trash, ⌘⇧A is a per-message archive — the only way out of
-            // the trash the v1 API offers — and says so (issue #8).
-            Button(isTrashScope ? "Move to Archive" : "Archive") { perform(.archive) }
-                .keyboardShortcut("a", modifiers: [.command, .shift])
-                .disabled(!hasSelection)
+            // ⌘⇧A archives, except in Trash and Archive where archiving is a
+            // server no-op: there the same key puts the thread back (upstream
+            // 1.3.4 restore/unarchive — issues #7, #8).
+            Button(restoreAction == nil ? "Archive" : restoreTitle) {
+                perform(restoreAction ?? .archive)
+            }
+            .keyboardShortcut("a", modifiers: [.command, .shift])
+            .disabled(!hasSelection)
             // ⌘⌫, as in Mail. A bare ⌫ would trash the selected thread while the
             // user was backspacing in the search field. Disabled in the Trash,
             // where the server would do nothing.
@@ -154,6 +157,12 @@ struct MailCommands: Commands {
 
     private var hasSelection: Bool { selectedThreadID != nil }
     private var isTrashScope: Bool { selectionFolder == .trash }
+
+    private var restoreAction: ConversationAction? {
+        MailViewModel.restoreAction(in: selectionFolder)
+    }
+
+    private var restoreTitle: String { MailViewModel.restoreActionTitle(in: selectionFolder) }
     private var hasMessage: Bool { selectedMessageID != nil }
 
     private var markReadTitle: String {

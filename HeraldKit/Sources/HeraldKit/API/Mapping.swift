@@ -229,6 +229,23 @@ nonisolated extension SendInput {
     }
 }
 
+nonisolated extension ForwardInput {
+    var generated: Components.Schemas.ForwardInput {
+        .init(
+            messageId: messageID,
+            from: from,
+            to: to,
+            cc: cc,
+            bcc: bcc,
+            subject: subject,
+            text: text,
+            html: html,
+            attachmentIds: attachmentIDs,
+            includeOriginalAttachments: includeOriginalAttachments
+        )
+    }
+}
+
 nonisolated extension ReplyInput {
     var generated: Components.Schemas.ReplyInput {
         .init(

@@ -55,16 +55,11 @@ private struct ThreadHeader: View {
                     .iconButtonStyle("Reply")
             }
             .buttonStyle(.plain)
-            Button { Task { await model.performOnSelection(.archive) } } label: {
-                Image(systemName: "archivebox")
-                    .iconButtonStyle("Archive")
-            }
-            .buttonStyle(.plain)
-            Button { Task { await model.performOnSelection(.trash) } } label: {
-                Image(systemName: "trash")
-                    .iconButtonStyle("Move to Trash")
-            }
-            .buttonStyle(.plain)
+            // Same rule as the toolbar's, from the same place: in the Trash this
+            // header used to offer an Archive that the server ignored and a
+            // Move to Trash that did nothing (issue #8).
+            TriageButtons(model: model)
+                .buttonStyle(.plain)
         }
         .padding(.horizontal, MailTheme.Spacing.lg)
         .padding(.vertical, MailTheme.Spacing.md)

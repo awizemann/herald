@@ -109,6 +109,53 @@ struct MailStoreTests {
         #expect(m2?.readAt == alreadyRead, "Revert must not clobber unrelated state")
     }
 
+    /// The optimistic write for `restore`/`unarchive` has to reproduce the
+    /// server's `buildMessageActionPatch` exactly (worker/features/messages/
+    /// actions.ts): unassigned → catchall, outbound → sent, otherwise inbox.
+    /// Guessing "inbox" for all three would flash the row into the wrong list and
+    /// then have sync yank it back out.
+    @Test("Restore and unarchive land where the server puts them", arguments: [
+        (MailFolder.trash, MessageAction.restore, "mbx_a", MessageDirection.inbound, MailFolder.inbox),
+        (MailFolder.trash, MessageAction.restore, "mbx_a", MessageDirection.outbound, MailFolder.sent),
+        (MailFolder.trash, MessageAction.restore, nil, MessageDirection.inbound, MailFolder.catchall),
+        (MailFolder.archived, MessageAction.unarchive, "mbx_a", MessageDirection.inbound, MailFolder.inbox),
+        (MailFolder.archived, MessageAction.unarchive, "mbx_a", MessageDirection.outbound, MailFolder.sent)
+    ])
+    func restoreLandsInTheServersFolder(
+        from: MailFolder,
+        action: MessageAction,
+        mailboxID: String?,
+        direction: MessageDirection,
+        expected: MailFolder
+    ) async throws {
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages(
+            [SyncFixtures.message("m1", mailboxID: mailboxID, folder: from, direction: direction)],
+            accountID: account
+        )
+
+        _ = try await store.applyLocalAction(action, messageID: "m1", accountID: account)
+
+        #expect(try await store.message(id: "m1", accountID: account)?.folder == expected)
+    }
+
+    /// The server no-ops `restore` on anything that is not in the trash (and
+    /// `unarchive` outside archived). A cache that moved the row anyway would
+    /// show a message leaving the inbox that the server never touched.
+    @Test("Restore on a message that is not trashed changes nothing")
+    func restoreOutsideTrashIsANoOp() async throws {
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMessages(
+            [SyncFixtures.message("m1", folder: .inbox)],
+            accountID: account
+        )
+
+        _ = try await store.applyLocalAction(.restore, messageID: "m1", accountID: account)
+        _ = try await store.applyLocalAction(.unarchive, messageID: "m1", accountID: account)
+
+        #expect(try await store.message(id: "m1", accountID: account)?.folder == .inbox)
+    }
+
     /// A revert restores a snapshot of the past. If the row has since moved on —
     /// the user kept triaging, or a tombstone took it — restoring that snapshot
     /// resurrects state the user already replaced. Fails on any revert that fires

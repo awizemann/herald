@@ -156,6 +156,38 @@ import Testing
         #expect(mailboxID == "mbx_support")
     }
 
+    /// Upstream 1.3.4 made the tombstone's `mailboxId` NULLABLE (owner-only
+    /// unassigned mail). Before this, `MessageChange.delete` carried a
+    /// non-optional String and the whole page failed to decode — the journal
+    /// would have stalled on the first such deletion.
+    @Test("A delete tombstone with a null mailboxId still decodes")
+    func deleteTombstoneAcceptsNullMailbox() async throws {
+        let server = FakeServer()
+        server.route(
+            "GET",
+            "/api/v1/changes",
+            .json(
+                200,
+                """
+                {
+                  "changes": [{"type":"delete","messageId":"msg_gone","mailboxId":null}],
+                  "nextCursor": "c1:2",
+                  "hasMore": false
+                }
+                """
+            )
+        )
+
+        let page = try await makeClient(server).changes(cursor: "c1:1", limit: 100)
+
+        guard case .delete(let messageID, let mailboxID) = page.changes.first else {
+            Issue.record("expected a delete, got \(String(describing: page.changes.first))")
+            return
+        }
+        #expect(messageID == "msg_gone")
+        #expect(mailboxID == nil)
+    }
+
     /// A checkpoint is "no cursor at all". Sending `cursor=` (or any value) makes
     /// the server replay history instead of handing back the high-water mark, so
     /// the absence of the parameter is the contract. Fails if it appears.

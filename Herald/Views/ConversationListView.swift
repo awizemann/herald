@@ -69,8 +69,13 @@ struct ConversationListView: View {
                     ? model.mailboxTint(for: row.latest.mailboxID)
                     : nil,
                 toggleStar: { Task { await model.toggleStar(row) } },
-                archiveTitle: model.archiveActionTitle,
-                archive: { Task { await model.perform(.archive, onThread: row.id) } },
+                archive: model.offersArchiveAction
+                    ? { Task { await model.perform(.archive, onThread: row.id) } }
+                    : nil,
+                restoreTitle: model.restoreActionTitle,
+                restore: model.restoreAction.map { action in
+                    { Task { await model.perform(action, onThread: row.id) } }
+                },
                 // In the Trash there is nothing to trash: the rotor action goes
                 // away rather than offering a no-op.
                 trash: model.offersTrashAction
@@ -94,7 +99,10 @@ struct ConversationListView: View {
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or
         // menu shortcut these are window-global and fire while the user is typing
         // in the search field — which is how a bare ⌫ deletes the wrong thing.
-        .onKeyPress("e") { act(.archive) }
+        // `e` follows the same folder rule ⌘⇧A does: archive where archiving
+        // means something, put back in the Trash and the Archive where it does
+        // not (the server would ignore an archive there).
+        .onKeyPress("e") { act(model.restoreAction ?? .archive) }
         .onKeyPress(.delete) { act(.trash) }
         // Re-entering a thread the user already backed out of: the selection is
         // unchanged, so nothing else would fire.
@@ -166,10 +174,15 @@ struct ConversationListView: View {
                 }
                 Button(row.isStarred ? "Unstar" : "Star") { Task { await model.toggleStar(row) } }
                 Divider()
-                // "Move to Archive" in the Trash: it is a per-message archive,
-                // the only way back out the v1 API has (issue #8).
-                Button(model.archiveActionTitle) {
-                    Task { await model.perform(.archive, onThread: id) }
+                if model.offersArchiveAction {
+                    Button("Archive") { Task { await model.perform(.archive, onThread: id) } }
+                }
+                // "Put Back" in the Trash, "Move to Inbox" in the Archive —
+                // upstream 1.3.4's restore/unarchive (issue #7, #8).
+                if let restore = model.restoreAction {
+                    Button(model.restoreActionTitle) {
+                        Task { await model.perform(restore, onThread: id) }
+                    }
                 }
                 if model.offersTrashAction {
                     Button("Move to Trash", role: .destructive) {
@@ -458,10 +471,13 @@ struct ConversationRow: View {
     /// The mailbox's resolved palette tint, resolved by the view-model.
     let mailboxTint: MailboxTint?
     let toggleStar: () -> Void
-    /// "Archive", or "Move to Archive" in the Trash — the same verb the context
-    /// menu shows, so VoiceOver and the menu cannot drift apart.
-    let archiveTitle: String
-    let archive: () -> Void
+    /// `nil` in Trash and Archive, where archiving is a server no-op.
+    let archive: (() -> Void)?
+    /// The put-back verb and its action, non-nil only in Trash and Archive. The
+    /// title is the one the context menu shows, so VoiceOver and the menu cannot
+    /// drift apart.
+    let restoreTitle: String
+    let restore: (() -> Void)?
     /// `nil` in the Trash, where trashing is a no-op.
     let trash: (() -> Void)?
     /// Non-nil when the conversation has more than one message.
@@ -574,10 +590,11 @@ struct ConversationRow: View {
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
-        .accessibilityAction(named: archiveTitle, archive)
-        // A container, so the Trash scope offers no trash action at all rather
-        // than a rotor entry that does nothing.
+        // A container, so a scope that cannot archive (or trash, or put back)
+        // offers no rotor entry at all rather than one that does nothing.
         .accessibilityActions {
+            if let archive { Button("Archive", action: archive) }
+            if let restore { Button(restoreTitle, action: restore) }
             if let trash { Button("Move to Trash", action: trash) }
         }
     }

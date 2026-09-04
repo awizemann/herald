@@ -2,8 +2,9 @@ import Foundation
 
 /// What the user is composing, and what the server needs to know about it.
 ///
-/// `.forward` maps to `DraftInput.forwardOfMessageID` (the v1 spec has the field)
-/// but sends through `POST /send` — v1 has no forward route.
+/// `.forward` maps to `DraftInput.forwardOfMessageID` while it is a draft, and
+/// sends through `POST /forward` (upstream 1.3.4+), which names the forwarded
+/// message in the request rather than relying on the draft row.
 public nonisolated enum ComposeMode: Sendable, Hashable {
     case new(mailboxID: String?)
     case reply(toMessageID: String, replyAll: Bool)

@@ -444,24 +444,51 @@ func wait(
 
 @MainActor
 @Suite struct MailViewModelTrashActionTests {
-    /// Issue #8: "Archive" from the Trash made the mail vanish everywhere. The
-    /// CONVERSATION-level archive only moves inbox/catchall messages
-    /// (upstream conversation-queries.ts:190-192), so from Trash the server did
-    /// nothing while Herald moved the row locally. The message route is the only
-    /// way out of the trash the v1 API has. Fails on the pre-fix code: one
-    /// conversation call, no message calls.
-    @Test func archiveInTheTrashGoesThroughEveryMessageOfTheThread() async throws {
+    /// Issue #7/#8: the Trash needs a real "Put back". Before upstream 1.3.4 the
+    /// v1 API had no restore, and Herald faked one with a per-message archive —
+    /// which put mail the user un-deleted into the Archive, not back where it
+    /// came from. `restore` is now one CONVERSATION call carrying `folder: trash`
+    /// (the server no-ops without it), and the row leaves the Trash list.
+    @Test func putBackFromTheTrashIsOneConversationRestore() async throws {
         let harness = try await Harness.make()
         try await harness.seedTrashedThread()
         harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
+        #expect(harness.model.restoreAction == .restore)
+        #expect(harness.model.restoreActionTitle == "Put Back")
 
-        await harness.model.perform(.archive, onThread: "t7")
+        await harness.model.perform(.restore, onThread: "t7")
 
-        #expect(await harness.api.messageActionIDs("archive").sorted() == ["m7a", "m7b"])
-        #expect(await harness.api.conversationActionIDs("archive").isEmpty)
+        #expect(await harness.api.conversationActionIDs("restore") == ["m7b"])
+        #expect(await harness.api.messageActionIDs("restore").isEmpty)
+        #expect(await harness.api.actionFolders("restore", on: "m7b") == [.trash])
         #expect(harness.model.presentedConversations.isEmpty, "the thread must leave the Trash list")
+        #expect(harness.model.actionError == nil)
+    }
+
+    /// The Archive folder gets the mirror verb, and it must go down the
+    /// CONVERSATION route carrying `folder: archived` — the server pushes
+    /// `1 = 0` and matches nothing when the body's folder disagrees, so a
+    /// dropped or wrong folder is a silent no-op the user reads as a bug.
+    @Test func theArchiveFolderUnarchivesThroughTheConversationRoute() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedArchivedThread()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        await harness.model.start()
+        #expect(harness.model.restoreAction == .unarchive)
+        #expect(harness.model.restoreActionTitle == "Move to Inbox")
+        // Archiving what is already archived is a server no-op, so it is not offered.
+        #expect(harness.model.offersArchiveAction == false)
+        #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
+
+        await harness.model.perform(.unarchive, onThread: "t3")
+
+        #expect(await harness.api.conversationActionIDs("unarchive") == ["m3"])
+        #expect(await harness.api.messageActionIDs("unarchive").isEmpty)
+        #expect(await harness.api.actionFolders("unarchive", on: "m3") == [.archived])
+        #expect(harness.model.presentedConversations.isEmpty, "the thread must leave the Archive list")
         #expect(harness.model.actionError == nil)
     }
 
@@ -492,7 +519,9 @@ func wait(
         #expect(await harness.api.actionCount("trash", on: "m7b") == 0)
         #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
         #expect(harness.model.offersTrashAction == false)
-        #expect(harness.model.archiveActionTitle == "Move to Archive")
+        // The Trash offers Put Back instead of Archive.
+        #expect(harness.model.offersArchiveAction == false)
+        #expect(harness.model.restoreActionTitle == "Put Back")
     }
 
     /// A 200 that reports `affected: 0` is the server saying it changed nothing.

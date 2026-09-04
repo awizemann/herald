@@ -61,6 +61,16 @@ public nonisolated struct MessageSummary: Sendable, Hashable, Codable, Identifia
     public var displayDate: Date { receivedAt ?? sentAt ?? createdAt }
 }
 
+/// MIME presentation intent for an attachment part.
+///
+/// The server decides this (upstream 1.3.4): "a content ID does not make a part
+/// inline by itself" — a PDF can carry a Content-ID and still be a download, and
+/// a body image can be inline without one. Herald must never re-derive it.
+public nonisolated enum AttachmentDisposition: String, Sendable, Hashable, Codable, CaseIterable {
+    case attachment
+    case inline
+}
+
 /// A file attached to a stored message.
 public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable {
     public let id: String
@@ -68,8 +78,10 @@ public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable 
     public let filename: String
     public let contentType: String
     public let sizeBytes: Int
-    /// RFC 2392 Content-ID, present for inline (referenced by `cid:`) parts.
+    /// RFC 2392 Content-ID. Present on many parts that are NOT inline.
     public let contentID: String?
+    /// The server's presentation intent; the only thing that decides inline-ness.
+    public let disposition: AttachmentDisposition
     public let createdAt: Date
 
     public init(
@@ -79,6 +91,7 @@ public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable 
         contentType: String,
         sizeBytes: Int,
         contentID: String?,
+        disposition: AttachmentDisposition,
         createdAt: Date
     ) {
         self.id = id
@@ -87,11 +100,15 @@ public nonisolated struct Attachment: Sendable, Hashable, Codable, Identifiable 
         self.contentType = contentType
         self.sizeBytes = sizeBytes
         self.contentID = contentID
+        self.disposition = disposition
         self.createdAt = createdAt
     }
 
     /// Inline parts are rendered inside the body rather than listed as downloads.
-    public var isInline: Bool { contentID != nil }
+    ///
+    /// Server-declared, NOT inferred from `contentID`: inferring listed inline
+    /// PDFs as body images and hid real attachments from the attachment bar.
+    public var isInline: Bool { disposition == .inline }
 }
 
 /// A full message, including body text, recipients and attachments.

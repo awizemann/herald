@@ -169,13 +169,25 @@ public nonisolated final class CachedMessageBody {
     public var accountID: String = ""
     public var textBody: String = ""
     public var html: String?
+    /// The message's attachment metadata, cached with the body so the attachment
+    /// bar still renders when `GET /messages/{id}` is unavailable. Metadata only —
+    /// the bytes are never cached here.
+    public var attachments: [Attachment] = []
     public var fetchedAt: Date = Date.distantPast
 
-    public init(messageID: String, accountID: String, textBody: String, html: String?, fetchedAt: Date) {
+    public init(
+        messageID: String,
+        accountID: String,
+        textBody: String,
+        html: String?,
+        attachments: [Attachment] = [],
+        fetchedAt: Date
+    ) {
         self.messageID = messageID
         self.accountID = accountID
         self.textBody = textBody
         self.html = html
+        self.attachments = attachments
         self.fetchedAt = fetchedAt
     }
 }
@@ -284,12 +296,20 @@ public nonisolated struct CachedBody: Sendable, Hashable {
     public let messageID: String
     public let textBody: String
     public let html: String?
+    public let attachments: [Attachment]
     public let fetchedAt: Date
 
-    public init(messageID: String, textBody: String, html: String?, fetchedAt: Date) {
+    public init(
+        messageID: String,
+        textBody: String,
+        html: String?,
+        attachments: [Attachment] = [],
+        fetchedAt: Date
+    ) {
         self.messageID = messageID
         self.textBody = textBody
         self.html = html
+        self.attachments = attachments
         self.fetchedAt = fetchedAt
     }
 }

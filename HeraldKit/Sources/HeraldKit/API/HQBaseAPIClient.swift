@@ -155,7 +155,13 @@ public actor HQBaseAPIClient: MailAPIClient {
             switch try await client.getAttachment(.init(path: .init(id: id))) {
             case .ok(let ok):
                 let data = try await Self.collect(ok.body.binary)
-                return BinaryPayload(data: data, mimeType: "application/octet-stream")
+                // The generated client does not surface the response's
+                // `Content-Type` for this route, and the hardcoded
+                // `application/octet-stream` that used to sit here staged every
+                // download as `.dat` — Quick Look picks its previewer from the
+                // extension alone, so nothing previewed. Sniff the bytes; the
+                // caller crosses this with the server's `Attachment.contentType`.
+                return BinaryPayload(data: data, mimeType: MIMESniffer.sniff(data) ?? MIMESniffer.unknownType)
             case .undocumented(let code, _):
                 throw unexpected(code)
             default:

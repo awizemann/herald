@@ -297,6 +297,7 @@ public actor MailStore {
                 messageID: row.messageID,
                 textBody: row.textBody,
                 html: row.html,
+                attachments: row.attachments,
                 fetchedAt: row.fetchedAt
             )
         } catch {
@@ -344,6 +345,7 @@ public actor MailStore {
         accountID: String,
         textBody: String,
         html: String?,
+        attachments: [Attachment] = [],
         fetchedAt: Date = Date()
     ) throws -> ChangeSet {
         var descriptor = FetchDescriptor<CachedMessageBody>(
@@ -358,6 +360,7 @@ public actor MailStore {
                         accountID: accountID,
                         textBody: textBody,
                         html: html,
+                        attachments: attachments,
                         fetchedAt: fetchedAt
                     )
                 )
@@ -367,6 +370,13 @@ public actor MailStore {
             var changed = false
             if existing.textBody != textBody { existing.textBody = textBody; changed = true }
             if existing.html != html { existing.html = html; changed = true }
+            // An empty list is "this write knew nothing about attachments" (the
+            // plain-text path), never "the message lost its attachments" — it must
+            // not wipe metadata a previous detail fetch cached.
+            if !attachments.isEmpty, existing.attachments != attachments {
+                existing.attachments = attachments
+                changed = true
+            }
             guard changed else { return ChangeSet() }
             existing.fetchedAt = fetchedAt
             try save()

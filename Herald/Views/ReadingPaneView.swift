@@ -124,6 +124,15 @@ private struct MessageBodySection: View {
             } else {
                 Color.clear
             }
+            if model.inlineImagesUnavailable > 0 {
+                BannerView(
+                    systemImage: "photo.badge.exclamationmark",
+                    tint: .secondary,
+                    text: model.inlineImagesUnavailable == 1
+                        ? "An image embedded in this message could not be loaded."
+                        : "\(model.inlineImagesUnavailable) images embedded in this message could not be loaded."
+                ) { EmptyView() }
+            }
             if let attachments = model.detail?.downloadableAttachments, !attachments.isEmpty {
                 Divider()
                 AttachmentBar(model: model, attachments: attachments)
@@ -138,6 +147,8 @@ private struct AttachmentBar: View {
 
     /// The file Quick Look is showing. Set on the way in, cleared by the panel.
     @State private var previewURL: URL?
+    /// The attachment whose staged file the open Quick Look panel is holding.
+    @State private var pinnedPreviewID: String?
     /// Attachments whose download Quick Look is waiting on, so each chip can say
     /// so instead of looking like a click that did nothing.
     @State private var loadingIDs: Set<String> = []
@@ -153,6 +164,19 @@ private struct AttachmentBar: View {
             .padding(.vertical, MailTheme.Spacing.sm)
         }
         .quickLookPreview($previewURL)
+        .onChange(of: previewURL) { _, url in
+            if url == nil { releasePin() }
+        }
+        // Selecting another message must close a panel showing the old message's
+        // file, and must not leave its pin behind.
+        .onChange(of: attachments.map(\.id)) { _, _ in
+            previewURL = nil
+            releasePin()
+        }
+        .onDisappear {
+            previewURL = nil
+            releasePin()
+        }
     }
 
     private func chip(for attachment: Attachment) -> some View {
@@ -188,15 +212,34 @@ private struct AttachmentBar: View {
         Task {
             defer { loadingIDs.remove(attachment.id) }
             do {
-                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api)
+                // Pinned inside the actor, in the same step that stages it.
+                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api, pinned: true)
                 // The user may have moved to another message while this
                 // downloaded; opening Quick Look on the previous message's file
-                // would be a panel they never asked for.
-                guard attachments.contains(where: { $0.id == attachment.id }) else { return }
+                // would be a panel they never asked for. `attachments` is the
+                // CURRENT list — the closure captured the old view value before,
+                // so the check passed for a message no longer on screen.
+                guard model.detail?.downloadableAttachments.contains(where: { $0.id == attachment.id }) == true
+                else { return }
+                // The pin is held for as long as the panel shows the file and
+                // released in `previewURL`'s change handler. The hand-over of
+                // `pinnedPreviewID` happens with NO await in between, so a
+                // concurrent `releasePin()` cannot drop the same pin twice.
+                let previous = pinnedPreviewID
+                pinnedPreviewID = attachment.id
                 previewURL = url
+                if let previous { await AttachmentFile.shared.unpin(previous) }
             } catch {
                 model.actionError = error.localizedDescription
             }
         }
+    }
+
+    /// Drops the pin when Quick Look closes (it writes `nil` back through the
+    /// binding) or when the preview moves to another attachment.
+    private func releasePin() {
+        guard let pinned = pinnedPreviewID else { return }
+        pinnedPreviewID = nil
+        Task { await AttachmentFile.shared.unpin(pinned) }
     }
 }

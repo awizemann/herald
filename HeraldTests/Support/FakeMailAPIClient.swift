@@ -84,7 +84,14 @@ actor FakeMailAPIClient: MailAPIClient {
         throw MailAPIError.notFound
     }
 
+    /// Forced failure for `GET /messages/{id}` — the offline/contract-break
+    /// cases the reading pane has to tell apart.
+    var detailError: MailAPIError?
+
+    func setDetailError(_ error: MailAPIError?) { detailError = error }
+
     func message(id: String) async throws -> MessageDetail {
+        if let detailError { throw detailError }
         guard let detail = details[id] else { throw MailAPIError.notFound }
         return detail
     }

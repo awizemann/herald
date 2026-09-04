@@ -19,12 +19,37 @@ extension MailViewModel {
     }
 
     /// Replaces `cid:` references with the data URLs we already fetched.
+    ///
+    /// Restricted to `src`/`background` ATTRIBUTE positions: a global string
+    /// replace also rewrote `cid:` text a human wrote in the body (and any
+    /// `cid:` inside an unrelated attribute), which is a silent corruption of
+    /// the message. A content ID that fails to fetch is left alone — the raw
+    /// `cid:` URL is inert under the CSP.
     nonisolated static func substituteInlineImages(in html: String, with images: [String: String]) -> String {
         guard !images.isEmpty else { return html }
         var output = html
         for (contentID, dataURL) in images {
-            output = output.replacingOccurrences(of: "cid:\(contentID)", with: dataURL)
-            output = output.replacingOccurrences(of: "cid:<\(contentID)>", with: dataURL)
+            let id = NSRegularExpression.escapedPattern(for: contentID)
+            let template = NSRegularExpression.escapedTemplate(for: dataURL)
+            // `<?id>?` — the reference is written both bare and angle-bracketed.
+            let reference = "[cC][iI][dD]:<?\(id)>?"
+            // Case-insensitive attribute name: `<IMG SRC=…>` is ordinary mail.
+            // QUOTED values only — an unquoted `src=cid:…` cannot be told apart
+            // from the same text sitting inside another attribute's value without
+            // parsing the tag, and rewriting THAT is the corruption this replaced.
+            // The server hands us sanitized HTML, which quotes its attributes.
+            let attribute = "(?<=\\s)(?i:src|background)\\s*=\\s*"
+            for (pattern, replacement) in [
+                ("(\(attribute)\")\(reference)(\")", "$1\(template)$2"),
+                ("(\(attribute)')\(reference)(')", "$1\(template)$2"),
+            ] {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                output = regex.stringByReplacingMatches(
+                    in: output,
+                    range: NSRange(output.startIndex..., in: output),
+                    withTemplate: replacement
+                )
+            }
         }
         return output
     }

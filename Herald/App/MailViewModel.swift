@@ -412,6 +412,10 @@ final class MailViewModel {
     private(set) var detail: MessageDetail?
     private(set) var body: RenderedBody?
     private(set) var isLoadingBody = false
+    /// How many inline parts of the presented message could not be rendered
+    /// (fetch failed, or the part was not renderable media). Surfaced as a note
+    /// under the body rather than left as a hole the reader cannot explain.
+    private(set) var inlineImagesUnavailable = 0
     private(set) var status: SyncStatus = .idle
     /// When the last pass finished cleanly. The sidebar's status slot is always
     /// present, so idle needs something quiet to say.
@@ -1440,8 +1444,9 @@ final class MailViewModel {
         // load finishing late would otherwise hide the spinner for the new one.
         defer { if selectedMessageID == messageID { isLoadingBody = false } }
         do {
-            // Attachments and the full recipient list are not cached, so the
-            // single-message route is the source here (never a list route).
+            // The single-message route is the authoritative source (never a list
+            // route): it is the only one carrying attachments and the full
+            // recipient list.
             let loaded = try await api.message(id: messageID)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             detail = loaded
@@ -1449,12 +1454,56 @@ final class MailViewModel {
         } catch {
             logger.warning("Message detail failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
-            actionError = error.localizedDescription
+            // Offline (or a flaky detail route) used to blank the whole pane
+            // header AND the attachment bar while the body still rendered from
+            // cache. Rebuild a detail from the cache instead.
+            // A DECODING failure is the server contract breaking (an instance
+            // older than the `disposition` field, say) — every message would fail
+            // the same way, and quietly serving cached detail forever would hide
+            // it. Only a transport/availability failure earns the fallback.
+            if !Self.isContractFailure(error), let cached = await cachedDetail(messageID: messageID) {
+                guard selectedMessageID == messageID else { return }
+                detail = cached
+                await loadBody(for: cached, allowRemote: false)
+            } else {
+                actionError = error.localizedDescription
+            }
         }
+    }
+
+    /// Whether the error says the response itself was unusable rather than
+    /// unreachable.
+    private nonisolated static func isContractFailure(_ error: any Error) -> Bool {
+        if case MailAPIError.decoding = error { return true }
+        return false
+    }
+
+    /// A `MessageDetail` reassembled from the cache: the summary row plus the
+    /// body sidecar (which carries the attachment metadata). Recipients the cache
+    /// never held (cc/bcc) come back empty — deliberately, rather than wrongly.
+    private func cachedDetail(messageID: String) async -> MessageDetail? {
+        guard let summary = try? await store.message(id: messageID, accountID: accountID) else { return nil }
+        let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID)
+        guard let cached else { return nil }
+        return MessageDetail(
+            summary: summary,
+            cc: [],
+            bcc: [],
+            deliveredToAddress: nil,
+            textBody: cached.textBody,
+            htmlAvailable: cached.html != nil,
+            rfcMessageID: nil,
+            inReplyTo: nil,
+            references: [],
+            attachments: cached.attachments
+        )
     }
 
     private func loadBody(for detail: MessageDetail, allowRemote: Bool) async {
         let messageID = detail.id
+        // Cleared per load, not only inside `inlineImages`: the plain-text path
+        // never calls that, so a previous message's count used to stay on screen.
+        inlineImagesUnavailable = 0
         // The subject becomes the document's <title>: VoiceOver announces the web
         // area by it, and an untitled web area is announced as "HTML content".
         let title = detail.summary.subject
@@ -1465,7 +1514,7 @@ final class MailViewModel {
             }.value
             guard selectedMessageID == messageID else { return }
             body = RenderedBody(messageID: messageID, html: rendered, blocksRemote: true, offersRemoteConsent: false)
-            await cacheBody(messageID: messageID, text: text, html: nil)
+            await cacheBody(messageID: messageID, text: text, html: nil, attachments: detail.attachments)
             return
         }
 
@@ -1490,14 +1539,25 @@ final class MailViewModel {
                 blocksRemote: !allowRemote,
                 offersRemoteConsent: payload.needsRemoteMediaConsent && !allowRemote
             )
-            await cacheBody(messageID: messageID, text: detail.textBody, html: payload.html)
+            await cacheBody(
+                messageID: messageID,
+                text: detail.textBody,
+                html: payload.html,
+                attachments: detail.attachments
+            )
         } catch {
             logger.warning("Message HTML failed: \(error.localizedDescription, privacy: .private)")
             guard selectedMessageID == messageID else { return }
             // Fall back to the cached copy so an offline read still shows something.
             if let cached = try? await store.cachedBody(messageID: messageID, accountID: accountID), let html = cached.html {
+                // The cached HTML still holds raw `cid:` references; without the
+                // substitution every inline image in an offline read is a broken
+                // image (the CSP forbids the web view fetching `cid:` itself).
+                // The inline route may well be up when the HTML route is not.
+                let inline = await inlineImages(for: detail)
+                guard !Task.isCancelled, selectedMessageID == messageID else { return }
                 let wrapped = await Task.detached(priority: .userInitiated) { @Sendable in
-                    Self.document(wrapping: html, title: title)
+                    Self.document(wrapping: Self.substituteInlineImages(in: html, with: inline), title: title)
                 }.value
                 guard selectedMessageID == messageID else { return }
                 body = RenderedBody(messageID: messageID, html: wrapped, blocksRemote: true, offersRemoteConsent: false)
@@ -1507,9 +1567,15 @@ final class MailViewModel {
         }
     }
 
-    private func cacheBody(messageID: String, text: String, html: String?) async {
+    private func cacheBody(messageID: String, text: String, html: String?, attachments: [Attachment]) async {
         do {
-            try await store.storeBody(messageID: messageID, accountID: accountID, textBody: text, html: html)
+            try await store.storeBody(
+                messageID: messageID,
+                accountID: accountID,
+                textBody: text,
+                html: html,
+                attachments: attachments
+            )
         } catch {
             logger.error("Body cache write failed: \(error.localizedDescription, privacy: .private)")
         }
@@ -1551,10 +1617,19 @@ final class MailViewModel {
                 }
             }
             var result: [String: String] = [:]
+            var failures = 0
             for await entry in group {
-                guard let entry else { continue }
+                guard let entry else {
+                    failures += 1
+                    continue
+                }
                 result[entry.0] = entry.1
             }
+            // Inline failures used to be entirely silent: the reader saw a body
+            // with holes in it and no reason why. Only the CURRENT selection's
+            // load may publish a count; a superseded load must not label the
+            // message that replaced it.
+            if selectedMessageID == messageID { inlineImagesUnavailable = failures }
             return result
         }
     }

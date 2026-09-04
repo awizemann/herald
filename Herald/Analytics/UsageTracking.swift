@@ -27,6 +27,10 @@ nonisolated protocol UsageTracking: Sendable {
     /// The user-facing opt-out (Settings → Privacy). Persisted by the SDK.
     func setEnabled(_ enabled: Bool) async
     var isEnabled: Bool { get async }
+    /// `false` on ``NoopUsageTracker`` — this build has nothing to opt in or out
+    /// of. Lets Settings → Privacy tell "not configured in this build" apart from
+    /// "configured, currently off", which `isEnabled` alone cannot.
+    var isAvailable: Bool { get }
 }
 
 // MARK: - No-op
@@ -42,6 +46,7 @@ nonisolated struct NoopUsageTracker: UsageTracking {
     func flush() async {}
     func setEnabled(_ enabled: Bool) async {}
     var isEnabled: Bool { get async { false } }
+    var isAvailable: Bool { false }
 }
 
 // MARK: - Real tracker
@@ -113,6 +118,8 @@ nonisolated struct StatsUsageTracker: UsageTracking {
     var isEnabled: Bool {
         get async { await client.isEnabled }
     }
+
+    var isAvailable: Bool { true }
 }
 
 // MARK: - Construction and gating

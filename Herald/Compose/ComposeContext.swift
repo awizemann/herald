@@ -40,6 +40,25 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
         self.storedDraft = storedDraft
     }
 
+    /// Read-only preview of what the server will append below the authored text
+    /// on send (reply/reply-all attribution + quote, or the forwarded body).
+    /// DISPLAY ONLY — never folded into ``ComposeDraft/body``, or the quoted
+    /// history would double up (the server appends its own copy).
+    var quotedPreview: String? {
+        guard let message else { return nil }
+        switch kind {
+        case .reply, .replyAll:
+            return ComposePrefill.quotedPreview(
+                of: message,
+                mode: .reply(toMessageID: message.id, replyAll: kind == .replyAll)
+            )
+        case .forward:
+            return ComposePrefill.quotedPreview(of: message, mode: .forward(messageID: message.id))
+        case .draft, .new:
+            return nil
+        }
+    }
+
     /// The draft this context opens with.
     func makeDraft() -> ComposeDraft {
         switch kind {

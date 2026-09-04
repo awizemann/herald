@@ -81,6 +81,7 @@ struct ComposeView: View {
                 .padding(MailTheme.Spacing.sm)
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
+            if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
             if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
             if let message = model.status.message { errorBar(message) }
         }
@@ -205,6 +206,29 @@ struct ComposeView: View {
                 }
             }
         }
+    }
+
+    /// Read-only, collapsed-by-default preview of the quoted original the
+    /// server will append below the authored text on send. Display only: it is
+    /// never written into `model.bodyText` — the server appends its own copy
+    /// on `POST /reply`/`POST /forward`, so folding it into the draft would
+    /// double the quoted history.
+    private func quotedPreviewSection(_ text: String) -> some View {
+        DisclosureGroup("Quoted \(model.draft.mode.forwardOfMessageID != nil ? "message" : "original")") {
+            ScrollView {
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(MailTheme.Spacing.sm)
+            }
+            .frame(maxHeight: 160)
+            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+        }
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
+        .accessibilityLabel("Quoted original message, included automatically when you send")
     }
 
     private var attachmentBar: some View {

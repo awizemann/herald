@@ -50,6 +50,10 @@ final class ComposeViewModel {
     // MARK: Derived / published state
 
     private(set) var draft: ComposeDraft
+    /// Read-only preview of the quoted original the server will append below
+    /// the authored text on send. `nil` for a new message or a reopened draft.
+    /// DISPLAY ONLY — never concatenated into ``bodyText``/``draft/body``.
+    let quotedPreview: String?
     private(set) var status: Status = .idle {
         didSet {
             guard status != oldValue, let message = status.message else { return }
@@ -92,6 +96,7 @@ final class ComposeViewModel {
         let draft = context.makeDraft()
         self.draft = draft
         self.initialDraft = draft
+        self.quotedPreview = context.quotedPreview
         self.outbox = outbox
         self.record = record
         self.autosaveDelay = autosaveDelay

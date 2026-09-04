@@ -219,6 +219,75 @@ actor FakeOutbox: Outboxing {
         #expect(model.windowTitle == "Re: Standup")
     }
 
+    /// Fails if the quoted preview leaks into the outgoing body (would double the
+    /// server's own quote on `POST /reply`/`POST /forward`) or is missing for the
+    /// modes that should show one.
+    @Test func quotedPreviewIsDisplayOnlyAndNeverJoinsTheOutgoingBody() async throws {
+        let date = Date(timeIntervalSince1970: 1_770_000_000)
+        let detail = MessageDetail(
+            summary: MessageSummary(
+                id: "msg_01",
+                threadID: "thr_09",
+                mailboxID: "mbx_support",
+                direction: .inbound,
+                folder: .inbox,
+                fromAddress: "ada@example.net",
+                to: ["me@example.com"],
+                subject: "Invoice question",
+                snippet: "…",
+                receivedAt: date,
+                sentAt: nil,
+                readAt: nil,
+                starredAt: nil,
+                hasAttachments: false,
+                createdAt: date
+            ),
+            cc: [],
+            bcc: [],
+            deliveredToAddress: "me@example.com",
+            textBody: "Line one\n\nLine two",
+            htmlAvailable: false,
+            rfcMessageID: nil,
+            inReplyTo: nil,
+            references: [],
+            attachments: []
+        )
+        let outbox = FakeOutbox()
+
+        let replyContext = ComposeContext(kind: .reply, fromAddress: "me@example.com", message: detail)
+        let replyModel = ComposeViewModel(context: replyContext, outbox: outbox)
+        #expect(replyModel.quotedPreview?.contains("wrote:") == true)
+        #expect(replyModel.draft.body.isEmpty)
+        #expect(replyModel.bodyText.isEmpty)
+
+        let forwardContext = ComposeContext(kind: .forward, fromAddress: "me@example.com", message: detail)
+        let forwardModel = ComposeViewModel(context: forwardContext, outbox: outbox)
+        #expect(forwardModel.quotedPreview == detail.textBody)
+        #expect(forwardModel.draft.body.isEmpty)
+
+        forwardModel.toText = "someone@example.com"
+        forwardModel.bodyText = "See below"
+        _ = await forwardModel.send()
+        let sentForward = await outbox.lastSent
+        // The ONLY thing that reaches the outbox is the authored text — the
+        // preview must never be appended to it.
+        #expect(sentForward?.body == "See below")
+        #expect(sentForward?.body.contains(detail.textBody) == false)
+
+        // Same invariant on the reply path, which shows a DIFFERENT preview
+        // (attributed quote, not the raw body) — checked separately since a
+        // leak here would double the server's own quote too.
+        replyModel.bodyText = "Thanks!"
+        _ = await replyModel.send()
+        let sentReply = await outbox.lastSent
+        #expect(sentReply?.body == "Thanks!")
+        #expect(sentReply?.body.contains("wrote:") == false)
+
+        let newContext = ComposeContext(kind: .new, fromAddress: "me@example.com")
+        let newModel = ComposeViewModel(context: newContext, outbox: outbox)
+        #expect(newModel.quotedPreview == nil)
+    }
+
     private static let mailbox = Mailbox(
         id: "mbA",
         address: "me@example.com",

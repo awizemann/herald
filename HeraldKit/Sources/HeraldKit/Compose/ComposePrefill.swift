@@ -95,6 +95,30 @@ public nonisolated enum ComposePrefill {
         return "On \(date), \(message.summary.fromAddress) wrote:"
     }
 
+    // MARK: - Display-only preview
+
+    /// What the server will append below the authored text — DISPLAY ONLY.
+    ///
+    /// Reply/reply-all show the same attribution + `> `-quoted body the server
+    /// appends on `POST /reply`; forward shows the original message body plain,
+    /// matching what `POST /forward` builds. Never fold this into
+    /// ``ComposeDraft/body`` — the server appends its own copy on send, and
+    /// concatenating here would double the quoted history.
+    public static func quotedPreview(
+        of message: MessageDetail,
+        mode: ComposeMode,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String? {
+        switch mode {
+        case .reply:
+            return quotedBody(of: message, locale: locale)
+        case .forward:
+            return message.textBody
+        case .new:
+            return nil
+        }
+    }
+
     // MARK: - Whole drafts
 
     /// A reply (or reply-all) prefilled from `message`.

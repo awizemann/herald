@@ -68,6 +68,7 @@ struct ConversationListView: View {
                 mailboxTint: model.selection.mailboxID == nil
                     ? model.mailboxTint(for: row.latest.mailboxID)
                     : nil,
+                labels: model.labels(forThread: row.id),
                 toggleStar: { Task { await model.toggleStar(row) } },
                 archive: model.offersArchiveAction
                     ? { Task { await model.perform(.archive, onThread: row.id) } }
@@ -189,6 +190,7 @@ struct ConversationListView: View {
                         Task { await model.perform(.trash, onThread: id) }
                     }
                 }
+                LabelMenu(model: model, threadID: id)
             }
         }
     }
@@ -199,6 +201,36 @@ struct ConversationListView: View {
         guard model.selectedThreadID != nil else { return .ignored }
         Task { await model.performOnSelection(action) }
         return .handled
+    }
+}
+
+/// The "Labels" submenu of a conversation's context menu.
+///
+/// A toggle per label rather than an add list and a remove list: assignment is a
+/// membership, so a checkmark says the current state and one click flips it.
+/// Renders nothing when the workspace has no labels — an empty submenu is a dead
+/// end the user has to open to discover.
+struct LabelMenu: View {
+    @Bindable var model: MailViewModel
+    let threadID: String
+
+    var body: some View {
+        if !model.labels.isEmpty {
+            Divider()
+            Menu(MailTheme.labelsSectionTitle) {
+                ForEach(model.labels) { label in
+                    // Read through the model in the GETTER, never a value snapshotted
+                    // at body-evaluation time: an open menu has to show the checkmark
+                    // move when the toggle is flipped.
+                    Toggle(label.name, isOn: Binding(
+                        get: { model.threadHasLabel(label.id, threadID: threadID) },
+                        set: { newValue in
+                            Task { await model.setLabel(label.id, onThread: threadID, assigned: newValue) }
+                        }
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -470,6 +502,9 @@ struct ConversationRow: View {
     let mailboxName: String?
     /// The mailbox's resolved palette tint, resolved by the view-model.
     let mailboxTint: MailboxTint?
+    /// The labels on ANY message of the thread, in sidebar order. Empty for most
+    /// rows, and the chip row renders nothing at all then.
+    var labels: [MailLabel] = []
     let toggleStar: () -> Void
     /// `nil` in Trash and Archive, where archiving is a server no-op.
     let archive: (() -> Void)?
@@ -526,12 +561,17 @@ struct ConversationRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 }
+                // Last line, under the snippet: labels are metadata about the
+                // thread, not part of what it says.
+                LabelChipRow(labels: labels)
             }
             // COMBINE, not the row's old `contain`: as a container VoiceOver
             // stopped on each Text separately and the row's own label — the only
             // place unread/starred/attachments were spoken — was never read.
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilitySummary(for: row, mailboxName: mailboxName))
+            .accessibilityLabel(
+                Self.accessibilitySummary(for: row, mailboxName: mailboxName, labels: labels)
+            )
             // The full date, not the "Tue" on screen: the short form is not a date.
             .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
 
@@ -628,7 +668,8 @@ struct ConversationRow: View {
     /// primary label on screen and has to be the first thing spoken too.
     nonisolated static func accessibilitySummary(
         for row: ConversationSummary,
-        mailboxName: String? = nil
+        mailboxName: String? = nil,
+        labels: [MailLabel] = []
     ) -> String {
         var parts: [String] = []
         if let mailboxName { parts.append(mailboxName) }
@@ -638,6 +679,9 @@ struct ConversationRow: View {
         if row.isUnread { parts.append("unread") }
         if row.isStarred { parts.append("starred") }
         if row.latest.hasAttachments { parts.append("has attachments") }
+        // The chips are `accessibilityHidden`, so this is the ONLY place a
+        // VoiceOver user hears which labels a row carries.
+        if let phrase = LabelChipRow.accessibilityPhrase(for: labels) { parts.append(phrase) }
         parts.append(row.latest.snippet)
         return parts.joined(separator: ", ")
     }

@@ -148,6 +148,109 @@ public nonisolated struct MailActionService: Sendable {
         if let firstFailure { throw firstFailure }
     }
 
+    // MARK: - Labels
+
+    /// Adds or removes one label on a whole thread, optimistically.
+    ///
+    /// Same shape as the triage actions: the cache moves first, the request
+    /// follows, and a rejection reverts EXACTLY the rows the optimistic write
+    /// created.
+    ///
+    /// On success only the TOGGLED label is settled across the thread, from
+    /// `result.assigned`. The answer's `labels` is deliberately NOT written: for
+    /// a conversation it is the DISTINCT UNION across every accessible message of
+    /// the thread, which is not any one message's set — writing it onto a message
+    /// row would hand that message labels only its siblings carry, and strip ones
+    /// it holds alone.
+    public func setLabel(
+        _ labelID: String,
+        onConversation threadID: String,
+        accountID: String,
+        assigned: Bool,
+        representativeMessageID: String? = nil
+    ) async throws {
+        // The conversation routes take a MESSAGE id, exactly like the triage ones
+        // (the server derives the thread and does its access check from it).
+        let cached = try await store.messages(accountID: accountID, threadID: threadID)
+            .max(by: { ($0.receivedAt ?? $0.sentAt ?? .distantPast) < ($1.receivedAt ?? $1.sentAt ?? .distantPast) })
+            .map(\.id)
+        guard let representative = cached ?? representativeMessageID else {
+            throw MailAPIError.notFound
+        }
+        let undo = try await store.applyLocalLabel(
+            labelID, threadID: threadID, accountID: accountID, assigned: assigned
+        )
+        let result: LabelAssignment
+        do {
+            result = try await api.setLabel(labelID, onConversation: representative, assigned: assigned)
+        } catch {
+            logger.warning(
+                "Label change on a conversation was rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
+            )
+            do {
+                try await revert(undo)
+            } catch let revertError {
+                logger.warning("Revert after a rejected label change failed (\(Self.code(for: revertError), privacy: .public))")
+            }
+            throw error
+        }
+        // `affected: 0` here is NOT the no-op the triage actions have to undo: the
+        // server answers 0 when every accessible message already had (or already
+        // lacked) the label, and the optimistic write agrees with that outcome.
+        // The authoritative set below is what settles it either way.
+        do {
+            try await store.settleThreadLabel(
+                labelID, threadID: threadID, accountID: accountID, assigned: result.assigned
+            )
+        } catch {
+            logger.error("Confirmed label change could not be recorded: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// The same, for one message.
+    public func setLabel(
+        _ labelID: String,
+        onMessage messageID: String,
+        accountID: String,
+        assigned: Bool
+    ) async throws {
+        let undo = try await store.applyLocalLabel(
+            labelID, messageID: messageID, accountID: accountID, assigned: assigned
+        )
+        let result: LabelAssignment
+        do {
+            result = try await api.setLabel(labelID, onMessage: messageID, assigned: assigned)
+        } catch {
+            logger.warning(
+                "Label change on a message was rejected (\(Self.code(for: error), privacy: .public)); reverting: \(error.localizedDescription, privacy: .private)"
+            )
+            do {
+                try await revert(undo)
+            } catch let revertError {
+                logger.warning("Revert after a rejected label change failed (\(Self.code(for: revertError), privacy: .public))")
+            }
+            throw error
+        }
+        do {
+            try await store.setMessageLabels(
+                result.labels.map(\.id), messageID: messageID, accountID: accountID
+            )
+        } catch {
+            logger.error("Confirmed label change could not be recorded: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    private func revert(_ undo: LabelActionUndo) async throws {
+        do {
+            try await store.revertLocalLabel(undo)
+        } catch {
+            logger.error("Label revert failed; cache will heal on the next sweep: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
     /// The revert is best-effort by design: the original API error is what the
     /// caller needs, and a failed revert is logged here rather than masking it.
     private func revert(_ undo: LocalActionUndo) async throws {

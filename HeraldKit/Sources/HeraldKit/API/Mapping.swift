@@ -204,6 +204,38 @@ nonisolated extension SignatureCandidates {
     }
 }
 
+nonisolated extension MailLabel {
+    init(_ generated: Components.Schemas.Label) {
+        self.init(
+            id: generated.id,
+            name: generated.name,
+            // KNOWN LIMIT: the spec declares `color` as a closed enum, so the
+            // GENERATED decoder rejects an eleventh colour before this runs and
+            // the whole `GET /labels` response fails (consistent with Herald's
+            // min-server-1.3.4 policy — see the contract note). Re-parsing the raw
+            // value is still what protects the CACHE read path, where `colorRaw`
+            // is a plain stored string that an older build may have written.
+            color: LabelColor(serverValue: generated.color.rawValue),
+            createdAt: generated.createdAt,
+            updatedAt: generated.updatedAt
+        )
+    }
+}
+
+nonisolated extension LabelAssignment {
+    init(_ generated: Components.Schemas.LabelAssignmentResult) {
+        self.init(
+            affected: generated.affected,
+            assigned: generated.assigned,
+            labelID: generated.labelId,
+            messageID: generated.messageId,
+            threadID: generated.threadId,
+            draftID: generated.draftId,
+            labels: generated.labels.map(MailLabel.init)
+        )
+    }
+}
+
 nonisolated extension SignatureSnapshot {
     init(_ generated: Components.Schemas.SignatureSnapshot) {
         self.init(

@@ -27,6 +27,11 @@ actor FakeMailAPIClient: MailAPIClient {
         case replyToMessage(ReplyInput)
         case forwardMessage(ForwardInput)
         case listSignatures(from: String)
+        // Labels (P8).
+        case listLabels
+        case listMessagesByLabel(labelID: String, cursor: String?)
+        case setMessageLabel(labelID: String, messageID: String, assigned: Bool)
+        case setConversationLabel(labelID: String, messageID: String, assigned: Bool)
     }
 
     private(set) var calls: [Call] = []
@@ -324,6 +329,79 @@ actor FakeMailAPIClient: MailAPIClient {
         calls.append(.listDrafts)
         if let draftListFailure { throw draftListFailure }
         return draftListing ?? Array(storedDrafts.values)
+    }
+
+    // MARK: - Labels (P8)
+
+    private var labels: [MailLabel] = []
+    private var labelFailure: MailAPIError?
+    /// Membership pages keyed by (labelID, cursor). A label with no scripted page
+    /// answers an empty first page and no Link header — a real, EMPTY label.
+    private var labelMessagePages: [LabelPageKey: MessagePage] = [:]
+    private var labelAssignmentFailure: MailAPIError?
+    /// What `PUT`/`DELETE` answers with, keyed by label id. `nil` means "echo the
+    /// request": assigned → that one label, unassigned → none.
+    private var labelAssignmentResult: LabelAssignment?
+
+    struct LabelPageKey: Hashable, Sendable {
+        var labelID: String
+        var cursor: String?
+    }
+
+    func setLabels(_ labels: [MailLabel]) { self.labels = labels }
+    func setLabelFailure(_ failure: MailAPIError?) { labelFailure = failure }
+    func setLabelMessages(_ page: MessagePage, forLabel labelID: String, cursor: String? = nil) {
+        labelMessagePages[LabelPageKey(labelID: labelID, cursor: cursor)] = page
+    }
+    func setLabelAssignmentFailure(_ failure: MailAPIError?) { labelAssignmentFailure = failure }
+    func setLabelAssignmentResult(_ result: LabelAssignment?) { labelAssignmentResult = result }
+
+    func listLabels() async throws -> [MailLabel] {
+        calls.append(.listLabels)
+        await awaitGate()
+        if let labelFailure { throw labelFailure }
+        return labels
+    }
+
+    func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        calls.append(.listMessagesByLabel(labelID: labelID, cursor: cursor))
+        await awaitGate()
+        if let labelFailure { throw labelFailure }
+        return labelMessagePages[LabelPageKey(labelID: labelID, cursor: cursor)]
+            ?? MessagePage(messages: [], nextCursor: nil)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        calls.append(.setMessageLabel(labelID: labelID, messageID: id, assigned: assigned))
+        // Gated like the listing calls, so a test can hold the request open and
+        // prove the CACHE moved before the server answered — the whole claim of
+        // the optimistic path.
+        await awaitGate()
+        if let labelAssignmentFailure { throw labelAssignmentFailure }
+        return labelAssignmentResult ?? echoedAssignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        calls.append(.setConversationLabel(labelID: labelID, messageID: id, assigned: assigned))
+        await awaitGate()
+        if let labelAssignmentFailure { throw labelAssignmentFailure }
+        return labelAssignmentResult ?? echoedAssignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    private func echoedAssignment(
+        _ labelID: String, assigned: Bool, messageID: String
+    ) -> LabelAssignment {
+        let label = labels.first { $0.id == labelID }
+            ?? MailLabel(id: labelID, name: labelID, color: .gray)
+        return LabelAssignment(
+            affected: 1,
+            assigned: assigned,
+            labelID: labelID,
+            messageID: messageID,
+            labels: assigned ? [label] : []
+        )
     }
 
     // MARK: - Compose surface (P0.5)

@@ -85,6 +85,13 @@ extension MailStore {
                 model: CachedMessageBody.self,
                 where: #Predicate { $0.accountID == accountID && $0.messageID == id }
             )
+            // Label assignments name a message that no longer exists; leaving them
+            // would keep the row in its labels' sidebar listings forever, since the
+            // per-label sweep only ever REPLACES the set of a label it re-reads.
+            try modelContext.delete(
+                model: CachedLabelAssignment.self,
+                where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+            )
             try save()
             return MessageDeletion(changes: ChangeSet(deleted: [id]), mailboxID: mailboxID, folder: folder)
         } catch {
@@ -111,6 +118,10 @@ extension MailStore {
                 pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
                 try modelContext.delete(
                     model: CachedMessageBody.self,
+                    where: #Predicate { $0.accountID == accountID && $0.messageID == id }
+                )
+                try modelContext.delete(
+                    model: CachedLabelAssignment.self,
                     where: #Predicate { $0.accountID == accountID && $0.messageID == id }
                 )
                 modelContext.delete(row)

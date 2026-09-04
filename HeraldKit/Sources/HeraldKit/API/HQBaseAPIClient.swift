@@ -194,6 +194,73 @@ public actor HQBaseAPIClient: MailAPIClient {
         }
     }
 
+    // MARK: - Labels
+
+    public func listLabels() async throws -> [MailLabel] {
+        try await perform {
+            switch try await client.listLabels(.init()) {
+            case .ok(let ok): return try ok.body.json.map(MailLabel.init)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        try await perform {
+            // `labelId`, singular: the repeated `labelIds` form is an AND across
+            // labels upstream (`queries.ts` adds one EXISTS per id), which is not
+            // what a per-label membership sweep is asking.
+            let query = Operations.ListMessages.Input.Query(labelId: labelID, limit: limit, cursor: cursor)
+            switch try await client.listMessages(.init(query: query)) {
+            case .ok(let ok):
+                return MessagePage(
+                    messages: try ok.body.json.map(MessageSummary.init),
+                    nextCursor: LinkHeader.nextCursor(from: ok.headers.link)
+                )
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    @discardableResult
+    public func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        try await perform {
+            let path = Operations.AddMessageLabel.Input.Path(id: id, labelId: labelID)
+            if assigned {
+                switch try await client.addMessageLabel(.init(path: path)) {
+                case .ok(let ok): return try LabelAssignment(ok.body.json)
+                case .undocumented(let code, _): throw unexpected(code)
+                default: throw unhandledErrorResponse
+                }
+            }
+            switch try await client.removeMessageLabel(.init(path: .init(id: id, labelId: labelID))) {
+            case .ok(let ok): return try LabelAssignment(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    @discardableResult
+    public func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        try await perform {
+            if assigned {
+                switch try await client.addConversationLabel(.init(path: .init(id: id, labelId: labelID))) {
+                case .ok(let ok): return try LabelAssignment(ok.body.json)
+                case .undocumented(let code, _): throw unexpected(code)
+                default: throw unhandledErrorResponse
+                }
+            }
+            switch try await client.removeConversationLabel(.init(path: .init(id: id, labelId: labelID))) {
+            case .ok(let ok): return try LabelAssignment(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
     // MARK: - Conversations
 
     public func listConversations(

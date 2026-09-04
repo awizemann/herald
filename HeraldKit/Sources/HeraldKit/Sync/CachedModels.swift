@@ -245,6 +245,62 @@ public nonisolated final class CachedDraft {
     }
 }
 
+/// One workspace label, cached so the sidebar and the row chips draw offline.
+@Model
+public nonisolated final class CachedLabel {
+    #Unique<CachedLabel>([\.accountID, \.id])
+    // The list is always read whole for an account, sorted by name.
+    #Index<CachedLabel>([\.accountID, \.sortName])
+
+    public var id: String = ""
+    public var accountID: String = ""
+    public var name: String = ""
+    /// Raw ``LabelColor``; an unknown value maps to the fallback on read.
+    public var colorRaw: String = ""
+    /// Lowercased `name`, so the sidebar's case-insensitive order (the server's
+    /// own `COLLATE NOCASE`) comes out of the index instead of a Swift sort.
+    public var sortName: String = ""
+    public var createdAt: Date = Date.distantPast
+    public var updatedAt: Date = Date.distantPast
+
+    public init(id: String, accountID: String) {
+        self.id = id
+        self.accountID = accountID
+    }
+}
+
+/// One (label, message) assignment.
+///
+/// A join row rather than a `[String]` column on ``CachedMessage``, because the
+/// sweep that keeps this current is per-LABEL (`GET /messages?labelId=…` — the
+/// only membership source v1 offers) and has to be able to replace one label's
+/// whole set without rewriting every message row.
+///
+/// `threadID` is denormalized onto the row so a conversation's chips and the
+/// sidebar's by-label listing are one indexed fetch rather than a join against
+/// ``CachedMessage`` per row.
+@Model
+public nonisolated final class CachedLabelAssignment {
+    #Unique<CachedLabelAssignment>([\.accountID, \.labelID, \.messageID])
+    #Index<CachedLabelAssignment>(
+        [\.accountID, \.labelID],
+        [\.accountID, \.messageID],
+        [\.accountID, \.threadID]
+    )
+
+    public var accountID: String = ""
+    public var labelID: String = ""
+    public var messageID: String = ""
+    public var threadID: String = ""
+
+    public init(accountID: String, labelID: String, messageID: String, threadID: String) {
+        self.accountID = accountID
+        self.labelID = labelID
+        self.messageID = messageID
+        self.threadID = threadID
+    }
+}
+
 /// Where the account's sync got to: the change-journal cursor to resume from and
 /// whether the full bootstrap listing ever completed.
 ///

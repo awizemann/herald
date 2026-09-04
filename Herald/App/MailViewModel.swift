@@ -10,6 +10,8 @@ nonisolated protocol MailSyncing: Sendable {
     func refreshNow() async
     /// A pass that also re-reads `GET /drafts`, whatever the drafts interval says.
     func refreshDraftsNow() async
+    /// A pass that also re-sweeps label membership, whatever the label interval says.
+    func refreshLabelsNow() async
     func setCadence(_ cadence: SyncCadence) async
 }
 
@@ -79,6 +81,10 @@ final class MailViewModel {
     nonisolated enum SidebarItem: Hashable, Sendable {
         case folder(FolderSelection)
         case drafts
+        /// One workspace label, by id. Also not a ``ConversationFolder``: a label
+        /// spans every folder at once (a labelled thread stays in its inbox, its
+        /// archive or its trash), so it is a listing of its own.
+        case label(String)
     }
 
     // MARK: Dependencies
@@ -215,7 +221,20 @@ final class MailViewModel {
             // showing is a navigation that happened, and leaving its `via` behind
             // would mislabel whatever the user does next.
             let via = consumeNavigationSource()
-            guard selection != oldValue else { return }
+            // A folder was chosen, so a label listing is no longer what the
+            // middle column is showing. Cleared HERE rather than only in the
+            // sidebar's setter, because `reloadConversations` branches on it
+            // first: any other writer of `selection` (the launch restore, a
+            // reveal) would otherwise leave label rows under a folder that
+            // changed underneath them.
+            //
+            // Leaving a label for the folder that was ALREADY selected changes
+            // nothing about `selection`, so the guard below would return before
+            // reloading and the label's rows would stay on screen under a folder
+            // row. Dropping the listing counts as a change in its own right.
+            let leftLabelListing = selectedLabelID != nil
+            selectedLabelID = nil
+            guard selection != oldValue || leftLabelListing else { return }
             recordViewShown(Self.viewKind(for: selection.folder), via: via)
             selectedThreadID = nil
             // Server search is scoped to (mailbox, folder): its rows answer the
@@ -253,6 +272,24 @@ final class MailViewModel {
     @ObservationIgnored var draftReloadCount = 0
     /// The in-flight drafts load, owned so ``stop()`` can cancel it.
     @ObservationIgnored var draftTask: Task<Void, Never>?
+
+    // MARK: Labels
+    //
+    // Storage only, same arrangement as the drafts block above: every write lives
+    // in `MailViewModel+Labels.swift`.
+
+    /// The workspace's labels, name-ordered. Shared across mailboxes — a label is
+    /// not scoped to one, and assigning it never moves a message.
+    var labels: [MailLabel] = []
+    /// thread id → the label ids on ANY of its messages, so a row's chips are a
+    /// dictionary lookup rather than a store round trip per row.
+    var labelIDsByThread: [String: [String]] = [:]
+    /// The label ids on the message the reading pane is showing.
+    var selectedMessageLabelIDs: [String] = []
+    /// The label the middle column is listing, or `nil` when it is showing a
+    /// folder. A label listing crosses folders, which is exactly why it cannot be
+    /// expressed as a ``FolderSelection``.
+    var selectedLabelID: String?
 
     /// Everything the store holds for the current scope, before search.
     private(set) var allConversations: [ConversationSummary] = [] {
@@ -409,6 +446,10 @@ final class MailViewModel {
             guard let messageID = selectedMessageID else { return }
             detailTask = Task { await loadDetail(messageID) }
             markReadTask = Task { await markReadAfterDwell(messageID) }
+            // The chips come from the CACHE, so they are there the moment the
+            // selection lands rather than after the detail round trip.
+            labelTask?.cancel()
+            labelTask = Task { await reloadSelectedMessageLabels() }
         }
     }
 
@@ -437,10 +478,14 @@ final class MailViewModel {
     // MARK: Tasks
 
     /// Exposed so tests can assert the superseded reload was cancelled, not just
-    /// dropped on the floor.
-    @ObservationIgnored private(set) var reloadTask: Task<Void, Never>?
+    /// dropped on the floor. Not `private(set)`: the labels extension owns the
+    /// label listing's reload and lives in another file, where `private` does not
+    /// reach.
+    @ObservationIgnored var reloadTask: Task<Void, Never>?
     private var threadTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
+    /// The reading pane's label load. Owned so `stop()` can cancel it.
+    @ObservationIgnored var labelTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     /// Exposed so tests can await the dwell timer instead of sleeping.
     private(set) var markReadTask: Task<Void, Never>?
@@ -483,16 +528,24 @@ final class MailViewModel {
         bodyIndexTask?.cancel()
         cancelServerSearch()
         draftTask?.cancel()
+        labelTask?.cancel()
     }
 
     // MARK: - Derived state
 
     /// Recomputes ``presentedConversations``. The ONLY writer of it, called from
     /// the `didSet` of each of the three inputs the filter depends on.
-    private func refilter() {
+    /// Internal, not private: the labels extension changes the presentation rule
+    /// (a label listing is not folder-filtered) and has to recompute it.
+    func refilter() {
         filterCount += 1
         let folder = selection.folder
-        let inScope = allConversations.filter { Self.belongs($0, to: folder) }
+        // A label listing is NOT a folder listing: its rows legitimately sit in
+        // the inbox, the archive and the trash at once, so the folder rule that
+        // makes a locally-archived row vanish would empty most of it.
+        let inScope = selectedLabelID == nil
+            ? allConversations.filter { Self.belongs($0, to: folder) }
+            : allConversations
         // Trimmed, and trimmed HERE as well as on the wire: the local tier and
         // the server tier must agree on what the needle is, or a trailing space
         // silently empties the list while the server still finds rows.
@@ -505,7 +558,10 @@ final class MailViewModel {
         // Union with whatever the server matched that the cache does not hold.
         // Local rows win on identity: they carry any optimistic action the user
         // just took, where the server's copy predates it.
-        if !serverResults.isEmpty {
+        // Server search answers a (mailbox, folder) question; inside a label
+        // listing its rows would arrive unfiltered by the label and read as hits
+        // that do not carry it.
+        if !serverResults.isEmpty, selectedLabelID == nil {
             var seen = Set(rows.map(\.id))
             for row in serverResults where Self.belongs(row, to: folder) && seen.insert(row.id).inserted {
                 rows.append(row)
@@ -1008,6 +1064,7 @@ final class MailViewModel {
         await reloadMailboxes()
         await reloadConversations()
         await reloadDrafts()
+        await reloadLabels()
         // The launch view has to be said out loud: `selection` is assigned in
         // `init`, where a `didSet` does not fire, so nothing else reports the
         // folder the window comes up on. Once per view-model — a re-`start()`
@@ -1094,6 +1151,9 @@ final class MailViewModel {
             case .draftsChanged(let changes):
                 if !changes.isEmpty { passChangedAnything = true }
                 await applyDraftChanges(changes)
+            case .labelsChanged:
+                passChangedAnything = true
+                await applyLabelsChanged()
             case .failed(let error):
                 // A `MailAPIError` reports its case; anything else (an OAuth
                 // failure surfacing as the re-auth banner) reports `other`, so a
@@ -1162,9 +1222,15 @@ final class MailViewModel {
         let via = pendingNavigationSource ?? .other
         pendingNavigationSource = nil
         let wasShowingDrafts = isShowingDrafts
+        let wasShowingLabel = selectedLabelID != nil
         // Silent: the view this lands on is the inbox, reported once below —
         // never a drafts→inbox→inbox trail for one click.
         showDrafts(false, silently: true)
+        // A label listing occupies the SAME middle column, and its rows are
+        // fetched by membership: leaving it set would have the reload below fetch
+        // the label again, never find the inbox thread, and silently do nothing —
+        // the drafts bug this function already guards against.
+        showLabel(nil)
         searchQuery = ""
         let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
         if selection != inbox {
@@ -1173,7 +1239,7 @@ final class MailViewModel {
             // The `didSet` starts the reload; awaiting it is what makes the row
             // available to select below.
             await reloadTask?.value
-        } else if wasShowingDrafts || isShowingThread {
+        } else if wasShowingDrafts || wasShowingLabel || isShowingThread {
             // Already on the inbox scope, but not looking at it: the click still
             // moved the user back to the conversation list.
             recordViewShown(.inbox, via: via)
@@ -1322,17 +1388,29 @@ final class MailViewModel {
         // otherwise race, and whichever store read finishes last wins — showing
         // the previous folder's rows under the current selection.
         let scope = selection
+        let labelID = selectedLabelID
         do {
-            let rows = try await store.conversations(
-                accountID: accountID,
-                mailboxID: scope.mailboxID,
-                folder: scope.folder
-            )
-            guard scope == selection, !Task.isCancelled else { return }
+            let rows: [ConversationSummary]
+            if let labelID {
+                rows = try await store.conversations(withLabel: labelID, accountID: accountID)
+            } else {
+                rows = try await store.conversations(
+                    accountID: accountID,
+                    mailboxID: scope.mailboxID,
+                    folder: scope.folder
+                )
+            }
+            // BEFORE the rows are published, not after: macOS `List` caches a
+            // measured height per row identity, so a row that first renders
+            // without its label chips and grows a line afterwards stays clipped
+            // at the height it was measured at (the same trap the mailbox chip
+            // has — see the design-system note).
+            await reloadLabelIndex()
+            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
             allConversations = rows
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
-            guard scope == selection, !Task.isCancelled else { return }
+            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
             allConversations = []
         }
         // A server-search hit is by construction NOT in `allConversations`; the

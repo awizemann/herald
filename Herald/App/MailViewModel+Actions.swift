@@ -81,7 +81,16 @@ extension MailViewModel {
     /// can be put back. Upstream 1.3.4 added both; each is a server no-op unless
     /// the request's `folder` matches the one it undoes, which is exactly the
     /// folder the user is looking at.
-    var restoreAction: ConversationAction? { Self.restoreAction(in: selection.folder) }
+    ///
+    /// Never offered inside a LABEL listing: both verbs are server no-ops unless
+    /// the request's `folder` is the one the row is actually in, and a label
+    /// listing crosses folders — `selection.folder` there is only the folder the
+    /// user was last looking at, so the verb would be wrong for most rows and
+    /// would silently no-op-and-revert. (Archive and Trash stay: they are safe
+    /// from any folder, at worst an accurate no-op.)
+    var restoreAction: ConversationAction? {
+        selectedLabelID == nil ? Self.restoreAction(in: selection.folder) : nil
+    }
 
     /// Both verbs land the thread back in inbox/sent/catchall, so the Archive
     /// folder's says where it goes and the Trash's says what it undoes.

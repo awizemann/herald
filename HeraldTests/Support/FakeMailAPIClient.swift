@@ -240,6 +240,53 @@ actor FakeMailAPIClient: MailAPIClient {
         return ConversationActionResult(threadID: id, affected: conversationAffected)
     }
 
+    // MARK: Labels
+    //
+    // Recorded like the triage actions: the view-model's label menu is optimistic,
+    // so "the request was actually made, with this label and this direction" is
+    // half of what the tests assert.
+
+    private(set) var labelWrites: [(labelID: String, id: String, assigned: Bool, isConversation: Bool)] = []
+    private var labels: [MailLabel] = []
+    private var labelWriteError: MailAPIError?
+    /// The set the server reports AFTER the write. `nil` echoes the request.
+    private var labelResultOverride: [MailLabel]?
+
+    func setLabels(_ labels: [MailLabel]) { self.labels = labels }
+    func setLabelWriteError(_ error: MailAPIError?) { labelWriteError = error }
+    func setLabelResult(_ labels: [MailLabel]?) { labelResultOverride = labels }
+
+    func listLabels() async throws -> [MailLabel] { labels }
+
+    func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
+        MessagePage(messages: [], nextCursor: nil)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onMessage id: String, assigned: Bool) async throws -> LabelAssignment {
+        labelWrites.append((labelID, id, assigned, false))
+        if let labelWriteError { throw labelWriteError }
+        return assignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    @discardableResult
+    func setLabel(_ labelID: String, onConversation id: String, assigned: Bool) async throws -> LabelAssignment {
+        labelWrites.append((labelID, id, assigned, true))
+        if let labelWriteError { throw labelWriteError }
+        return assignment(labelID, assigned: assigned, messageID: id)
+    }
+
+    private func assignment(_ labelID: String, assigned: Bool, messageID: String) -> LabelAssignment {
+        let label = labels.first { $0.id == labelID } ?? MailLabel(id: labelID, name: labelID, color: .gray)
+        return LabelAssignment(
+            affected: 1,
+            assigned: assigned,
+            labelID: labelID,
+            messageID: messageID,
+            labels: labelResultOverride ?? (assigned ? [label] : [])
+        )
+    }
+
     // MARK: Drafts
     //
     // Recorded, not stubbed away: "the composer was seeded from the CACHE" is

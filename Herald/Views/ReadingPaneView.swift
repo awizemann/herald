@@ -32,7 +32,7 @@ struct ReadingPaneView: View {
             // its rendered body changes.
             if let message = model.selectedMessage {
                 Divider()
-                SelectedMessageHeader(message: message)
+                SelectedMessageHeader(message: message, labels: model.selectedMessageLabels)
             }
             Divider()
             MessageBodySection(model: model)
@@ -55,6 +55,7 @@ private struct ThreadHeader: View {
                     .iconButtonStyle("Reply")
             }
             .buttonStyle(.plain)
+            MessageLabelMenu(model: model)
             // Same rule as the toolbar's, from the same place: in the Trash this
             // header used to offer an Archive that the server ignored and a
             // Move to Trash that did nothing (issue #8).
@@ -66,10 +67,53 @@ private struct ThreadHeader: View {
     }
 }
 
+/// Labels for the MESSAGE being read.
+///
+/// Message-level, where the conversation list's menu is thread-level, and on
+/// purpose: this pane shows exactly one message and draws that message's chips,
+/// so the control beside them has to change the same thing they show. The server
+/// keeps both — `PUT /messages/{id}/labels/{labelId}` and its conversation
+/// sibling, which fans the change out over every accessible message of the thread.
+private struct MessageLabelMenu: View {
+    @Bindable var model: MailViewModel
+
+    var body: some View {
+        if !model.labels.isEmpty, let messageID = model.selectedMessageID {
+            Menu {
+                ForEach(model.labels) { label in
+                    // Same rule as the list's menu: the getter reads the model, so an
+                    // open menu shows the checkmark move.
+                    Toggle(label.name, isOn: Binding(
+                        get: { model.selectedMessageLabelIDs.contains(label.id) },
+                        set: { newValue in
+                            Task { await model.setLabel(label.id, onMessage: messageID, assigned: newValue) }
+                        }
+                    ))
+                }
+            } label: {
+                Image(systemName: MailTheme.labelSymbol)
+                    .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            // On the MENU, not on its label image: a `Menu`'s label view is not
+            // the accessibility element (see the sidebar's account menu).
+            .help("Labels")
+            .accessibilityLabel("Labels")
+        }
+    }
+}
+
 /// Who the message being read is from and to. Static: picking WHICH message is
 /// the middle column's job, so this is a header, not a control.
 private struct SelectedMessageHeader: View {
     let message: MessageSummary
+    /// The labels on THIS message — not on its thread. The two differ: a
+    /// conversation carries the union across its messages, and the reading pane
+    /// is showing exactly one of them.
+    var labels: [MailLabel] = []
 
     /// Hoisted: building a `Date.FormatStyle` per render is pure waste.
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
@@ -90,6 +134,9 @@ private struct SelectedMessageHeader: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                // Every label, not the list's first three: there is room here and
+                // this is where the reader asks "what is this filed under".
+                LabelChipRow(labels: labels, limit: labels.count)
             }
             Spacer()
             Text(message.displayDate, format: Self.dateFormat)
@@ -99,7 +146,11 @@ private struct SelectedMessageHeader: View {
         .padding(.horizontal, MailTheme.Spacing.lg)
         .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(message.isUnread ? "Unread" : "")
+        .accessibilityValue(
+            [message.isUnread ? "Unread" : nil, LabelChipRow.accessibilityPhrase(for: labels)]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+        )
     }
 }
 

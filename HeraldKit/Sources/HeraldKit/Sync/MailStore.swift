@@ -573,6 +573,8 @@ public actor MailStore {
             try modelContext.delete(model: CachedMessage.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedConversation.self, where: #Predicate { $0.accountID == accountID })
             try modelContext.delete(model: CachedMailbox.self, where: #Predicate { $0.accountID == accountID })
+            try modelContext.delete(model: CachedLabelAssignment.self, where: #Predicate { $0.accountID == accountID })
+            try modelContext.delete(model: CachedLabel.self, where: #Predicate { $0.accountID == accountID })
             try save()
         } catch {
             logger.error("Cache purge failed: \(error.localizedDescription, privacy: .private)")

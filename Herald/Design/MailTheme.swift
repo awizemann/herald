@@ -127,6 +127,40 @@ enum MailTheme {
     /// in the full-strength tint on top, so the chip is never colour-only.
     nonisolated static let mailboxChipFillOpacity: Double = 0.18
 
+    // MARK: Label colours
+
+    /// The label palette, keyed by the SERVER's colour name.
+    ///
+    /// Unlike ``mailboxPalette`` this is not an assignment order Herald owns: the
+    /// ten names are the server's closed `labelColors` set and the web app draws
+    /// the same ten, so this is a translation table, not a policy. `NSColor.system*`
+    /// for the same reason as the mailbox tints — they are the colours that adapt
+    /// to dark mode and Increase Contrast. `amber` has no AppKit twin and maps to
+    /// systemYellow, `gray` to systemGray.
+    nonisolated static func labelTint(for color: LabelColor) -> Color {
+        switch color {
+        case .gray: Color(nsColor: .systemGray)
+        case .red: Color(nsColor: .systemRed)
+        case .orange: Color(nsColor: .systemOrange)
+        case .amber: Color(nsColor: .systemYellow)
+        case .green: Color(nsColor: .systemGreen)
+        case .teal: Color(nsColor: .systemTeal)
+        case .blue: Color(nsColor: .systemBlue)
+        case .indigo: Color(nsColor: .systemIndigo)
+        case .purple: Color(nsColor: .systemPurple)
+        case .pink: Color(nsColor: .systemPink)
+        }
+    }
+
+    /// The sidebar's Labels section header and its row symbol.
+    static let labelsSectionTitle = "Labels"
+    static let labelSymbol = "tag"
+
+    /// How many label chips a conversation row draws before it collapses the rest
+    /// into a "+n" chip. A row that carries six labels must not push the sender
+    /// and the subject off their lines.
+    static let maxRowLabelChips = 3
+
     // MARK: Metrics
 
     /// Width of a row's trailing date slot. FIXED, and sized for the longest form

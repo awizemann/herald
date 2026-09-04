@@ -12,6 +12,13 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
     public var attachmentIDs: [String]
     /// Draft to consume (and delete) as part of sending.
     public var draftID: String?
+    /// Signature to apply. The SERVER appends the resolved signature to the body
+    /// (`assembleMessageBody`) — Herald never concatenates it into `text`.
+    ///
+    /// Ignored when `draftID` is set: the draft's stored snapshot wins
+    /// (`resolveSendSignature`). Omitting it on a draft-less send means NO
+    /// signature, not the default one.
+    public var signature: SignatureSelection?
 
     public init(
         from: String,
@@ -22,7 +29,8 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
         text: String,
         html: String? = nil,
         attachmentIDs: [String] = [],
-        draftID: String? = nil
+        draftID: String? = nil,
+        signature: SignatureSelection? = nil
     ) {
         self.from = from
         self.to = to
@@ -33,6 +41,7 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
         self.html = html
         self.attachmentIDs = attachmentIDs
         self.draftID = draftID
+        self.signature = signature
     }
 }
 
@@ -65,6 +74,9 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
     /// always leaves this at the server's default — the compose window has no
     /// affordance for dropping the original's attachments.
     public var includeOriginalAttachments: Bool
+    /// Signature to apply. `POST /forward` takes NO `draftId`, so this selection
+    /// is always what decides — there is no stored snapshot to fall back on.
+    public var signature: SignatureSelection?
 
     public init(
         messageID: String,
@@ -76,7 +88,8 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
         text: String = "",
         html: String? = nil,
         attachmentIDs: [String] = [],
-        includeOriginalAttachments: Bool = true
+        includeOriginalAttachments: Bool = true,
+        signature: SignatureSelection? = nil
     ) {
         self.messageID = messageID
         self.from = from
@@ -88,6 +101,7 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
         self.html = html
         self.attachmentIDs = attachmentIDs
         self.includeOriginalAttachments = includeOriginalAttachments
+        self.signature = signature
     }
 }
 
@@ -102,6 +116,13 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
     public var html: String?
     public var attachmentIDs: [String]
     public var draftID: String?
+    /// Signature to apply. The SERVER appends the resolved signature to the body
+    /// (`assembleMessageBody`) — Herald never concatenates it into `text`.
+    ///
+    /// Ignored when `draftID` is set: the draft's stored snapshot wins
+    /// (`resolveSendSignature`). Omitting it on a draft-less send means NO
+    /// signature, not the default one.
+    public var signature: SignatureSelection?
 
     public init(
         messageID: String,
@@ -112,7 +133,8 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
         text: String,
         html: String? = nil,
         attachmentIDs: [String] = [],
-        draftID: String? = nil
+        draftID: String? = nil,
+        signature: SignatureSelection? = nil
     ) {
         self.messageID = messageID
         self.from = from
@@ -123,5 +145,6 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
         self.html = html
         self.attachmentIDs = attachmentIDs
         self.draftID = draftID
+        self.signature = signature
     }
 }

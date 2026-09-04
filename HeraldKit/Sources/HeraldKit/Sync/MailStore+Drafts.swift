@@ -212,6 +212,7 @@ extension MailStore {
         set(\.textBody, content.text)
         set(\.htmlBody, content.html)
         set(\.attachments, dto.attachments)
+        set(\.signature, dto.signature)
         return changed
     }
 
@@ -221,6 +222,7 @@ extension MailStore {
             version: row.version,
             updatedAt: row.updatedAt,
             attachments: row.attachments,
+            signature: row.signature,
             content: DraftInput(
                 mailboxID: row.mailboxKey.isEmpty ? nil : row.mailboxKey,
                 replyToMessageID: row.replyToMessageID,

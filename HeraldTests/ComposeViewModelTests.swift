@@ -17,7 +17,20 @@ actor FakeOutbox: Outboxing {
     /// Stands in for a server that normalises what it is given.
     private var normalize: (@Sendable (ComposeDraft) -> ComposeDraft)?
 
+    /// Scripted answer of `GET /signatures`; `nil` means the route 404s, i.e. a
+    /// server older than upstream 1.3.4.
+    private var signatures: SignatureCandidates?
+    private(set) var signatureRequests: [String] = []
+
     func setSendError(_ error: OutboxError?) { sendError = error }
+
+    func setSignatures(_ candidates: SignatureCandidates?) { signatures = candidates }
+
+    func signatures(from address: String) async throws(OutboxError) -> SignatureCandidates {
+        signatureRequests.append(address)
+        guard let signatures else { throw OutboxError.api(.notFound) }
+        return signatures
+    }
 
     func setNormalizer(_ normalize: (@Sendable (ComposeDraft) -> ComposeDraft)?) {
         self.normalize = normalize

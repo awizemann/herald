@@ -89,6 +89,12 @@ public nonisolated protocol MailAPIClient: Sendable {
     func addDraftAttachment(draftID: String, filename: String, mimeType: String, data: Data) async throws -> DraftAttachment
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws
 
+    // MARK: Signatures
+    /// Signatures usable from this EXACT sending address, plus the id the
+    /// `automatic` selection resolves to. Requires a server at upstream 1.3.4 or
+    /// newer; older ones answer 404.
+    func signatures(from address: String) async throws -> SignatureCandidates
+
     // MARK: Sending
     func send(_ input: SendInput) async throws -> MessageSummary
     func reply(_ input: ReplyInput) async throws -> MessageSummary

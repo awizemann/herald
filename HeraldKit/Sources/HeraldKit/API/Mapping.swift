@@ -170,8 +170,70 @@ nonisolated extension DraftAttachment {
     }
 }
 
+nonisolated extension SignatureScope {
+    init?(_ generated: Components.Schemas.Signature.ScopePayload) {
+        self.init(rawValue: generated.rawValue)
+    }
+}
+
+nonisolated extension Signature {
+    init(_ generated: Components.Schemas.Signature) {
+        self.init(
+            id: generated.id,
+            name: generated.name,
+            html: generated.html,
+            text: generated.text,
+            // A scope Herald does not know cannot be resolved into anything
+            // sensible, and `user` is the least surprising label to show.
+            scope: SignatureScope(generated.scope) ?? .user,
+            scopeID: generated.scopeId,
+            scopeLabel: generated.scopeLabel,
+            isDefault: generated.isDefault,
+            createdAt: generated.createdAt,
+            updatedAt: generated.updatedAt
+        )
+    }
+}
+
+nonisolated extension SignatureCandidates {
+    init(_ generated: Components.Schemas.SignatureCandidates) {
+        self.init(
+            automaticSignatureID: generated.automaticSignatureId,
+            signatures: generated.signatures.map(Signature.init)
+        )
+    }
+}
+
+nonisolated extension SignatureSnapshot {
+    init(_ generated: Components.Schemas.SignatureSnapshot) {
+        self.init(
+            mode: Mode(rawValue: generated.mode.rawValue) ?? .none,
+            id: generated.id,
+            name: generated.name,
+            html: generated.html,
+            text: generated.text
+        )
+    }
+}
+
+nonisolated extension SignatureSelection {
+    /// The generated `oneOf` has no discriminator, so the payload's `mode`
+    /// literal is what separates the cases — the case NUMBER is meaningless.
+    var generated: Components.Schemas.SignatureSelection {
+        switch self {
+        case .automatic: return .case1(.init(mode: .automatic))
+        case .selected(let id): return .case2(.init(mode: .selected, id: id))
+        case .noSignature: return .case3(.init(mode: .none))
+        }
+    }
+}
+
 nonisolated extension DraftInput {
-    init(_ generated: Components.Schemas.DraftInput) {
+    /// From a STORED draft's fields. `DraftFields` is `DraftInput` minus the
+    /// write-only `signature` selection (see the schema's own note in
+    /// `openapi.json`): on a response that key holds the server's SNAPSHOT, and
+    /// `Draft.init` restates the selection from it.
+    init(_ generated: Components.Schemas.DraftFields) {
         self.init(
             mailboxID: generated.mailboxId,
             replyToMessageID: generated.replyToMessageId,
@@ -183,6 +245,7 @@ nonisolated extension DraftInput {
             subject: generated.subject,
             text: generated.text,
             html: generated.html,
+            signature: nil,
             version: generated.version
         )
     }
@@ -199,7 +262,8 @@ nonisolated extension DraftInput {
             subject: subject,
             text: text,
             html: html,
-            version: version
+            version: version,
+            signature: signature?.generated
         )
     }
 }
@@ -211,6 +275,7 @@ nonisolated extension Draft {
             version: generated.value2.version,
             updatedAt: generated.value2.updatedAt,
             attachments: generated.value2.attachments.map(DraftAttachment.init),
+            signature: SignatureSnapshot(generated.value2.signature),
             content: DraftInput(generated.value1)
         )
     }
@@ -229,7 +294,8 @@ nonisolated extension SendInput {
             text: text,
             html: html,
             attachmentIds: attachmentIDs,
-            draftId: draftID
+            draftId: draftID,
+            signature: signature?.generated
         )
     }
 }
@@ -246,7 +312,8 @@ nonisolated extension ForwardInput {
             text: text,
             html: html,
             attachmentIds: attachmentIDs,
-            includeOriginalAttachments: includeOriginalAttachments
+            includeOriginalAttachments: includeOriginalAttachments,
+            signature: signature?.generated
         )
     }
 }
@@ -262,7 +329,8 @@ nonisolated extension ReplyInput {
             text: text,
             html: html,
             attachmentIds: attachmentIDs,
-            draftId: draftID
+            draftId: draftID,
+            signature: signature?.generated
         )
     }
 }

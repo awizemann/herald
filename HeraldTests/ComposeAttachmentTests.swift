@@ -46,6 +46,7 @@ actor GatedOutbox: Outboxing {
 
     @discardableResult
     func saveDraft(_ draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft { draft }
+    func signatures(from address: String) async throws(OutboxError) -> SignatureCandidates { .empty }
     func discard(_ draft: ComposeDraft) async throws(OutboxError) {}
     func removeAttachment(_ id: String, from draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft { draft }
     @discardableResult

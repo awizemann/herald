@@ -271,6 +271,7 @@ actor FakeMailAPIClient: MailAPIClient {
         throw MailAPIError.notFound
     }
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws {}
+    func signatures(from address: String) async throws -> SignatureCandidates { .empty }
     func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func forward(_ input: ForwardInput) async throws -> MessageSummary { throw MailAPIError.notFound }

@@ -26,6 +26,7 @@ actor FakeMailAPIClient: MailAPIClient {
         case sendMessage(SendInput)
         case replyToMessage(ReplyInput)
         case forwardMessage(ForwardInput)
+        case listSignatures(from: String)
     }
 
     private(set) var calls: [Call] = []
@@ -354,6 +355,7 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version + 1,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments,
+            signature: draft.signature,
             content: draft.content
         )
     }
@@ -375,6 +377,9 @@ actor FakeMailAPIClient: MailAPIClient {
             version: 1,
             updatedAt: Date(timeIntervalSince1970: 3_000),
             attachments: [],
+            // No selection on create means no signature, exactly as upstream's
+            // `resolveDraftSignature` does with neither selection nor current.
+            signature: try snapshot(for: input.signature ?? .noSignature, from: input.from),
             content: input
         )
         storedDrafts[draft.id] = draft
@@ -396,6 +401,9 @@ actor FakeMailAPIClient: MailAPIClient {
             version: existing.version + 1,
             updatedAt: Date(timeIntervalSince1970: 3_100),
             attachments: existing.attachments,
+            // An omitted selection keeps what the draft already had.
+            signature: try input.signature.map { try snapshot(for: $0, from: input.from) }
+                ?? existing.signature,
             content: input
         )
         storedDrafts[id] = updated
@@ -429,6 +437,7 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments + [attachment],
+            signature: draft.signature,
             content: draft.content
         )
         return attachment
@@ -444,24 +453,106 @@ actor FakeMailAPIClient: MailAPIClient {
             version: draft.version,
             updatedAt: draft.updatedAt,
             attachments: draft.attachments.filter { $0.id != attachmentID },
+            signature: draft.signature,
             content: draft.content
         )
     }
 
+    // MARK: - Signatures (upstream 1.3.4)
+    //
+    // Modelled on `worker/features/signatures/service.ts`: the selection is
+    // RESOLVED server-side into the snapshot stored on the draft, an unusable id
+    // is a 400, and a send that names a draft uses that draft's snapshot.
+
+    private var signaturesByAddress: [String: SignatureCandidates] = [:]
+    private var signatureFailure: MailAPIError?
+
+    func setSignatures(_ candidates: SignatureCandidates, from address: String) {
+        signaturesByAddress[address.lowercased()] = candidates
+    }
+
+    /// A server older than 1.3.4 has no route: `.notFound`.
+    func setSignatureFailure(_ failure: MailAPIError?) { signatureFailure = failure }
+
+    func signatures(from address: String) async throws -> SignatureCandidates {
+        calls.append(.listSignatures(from: address))
+        if let signatureFailure { throw signatureFailure }
+        return signaturesByAddress[address.lowercased()] ?? .empty
+    }
+
+    /// The server's `resolveSignatureSelection`, minus the access checks.
+    private func snapshot(for selection: SignatureSelection, from address: String) throws -> SignatureSnapshot {
+        let candidates = signaturesByAddress[address.lowercased()] ?? .empty
+        switch selection {
+        case .noSignature:
+            return .empty
+        case .automatic:
+            guard let signature = candidates.resolved(.automatic) else {
+                return SignatureSnapshot(mode: .automatic, id: nil, name: "", html: "", text: "")
+            }
+            return SignatureSnapshot(
+                mode: .automatic,
+                id: signature.id,
+                name: signature.name,
+                html: signature.html,
+                text: signature.text
+            )
+        case .selected(let id):
+            guard let signature = candidates.resolved(.selected(id: id)) else {
+                throw MailAPIError.server(
+                    code: "SIGNATURE_NOT_AVAILABLE",
+                    message: "This signature is not available for the selected From address."
+                )
+            }
+            return SignatureSnapshot(
+                mode: .selected,
+                id: signature.id,
+                name: signature.name,
+                html: signature.html,
+                text: signature.text
+            )
+        }
+    }
+
+    /// The snapshot a send actually uses: the draft's when one is named, else the
+    /// body's selection, else nothing (`resolveSendSignature`).
+    private func sentSignature(
+        draftID: String?,
+        selection: SignatureSelection?,
+        from address: String
+    ) throws -> SignatureSnapshot {
+        if let draftID, let draft = storedDrafts[draftID] { return draft.signature }
+        guard let selection else { return .empty }
+        return try snapshot(for: selection, from: address)
+    }
+
+    /// What the last send/reply/forward would have appended.
+    private(set) var lastSentSignature: SignatureSnapshot = .empty
+
     func send(_ input: SendInput) async throws -> MessageSummary {
         calls.append(.sendMessage(input))
+        lastSentSignature = try sentSignature(
+            draftID: input.draftID, selection: input.signature, from: input.from
+        )
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_sent", folder: .sent)
     }
 
     func reply(_ input: ReplyInput) async throws -> MessageSummary {
         calls.append(.replyToMessage(input))
+        lastSentSignature = try sentSignature(
+            draftID: input.draftID, selection: input.signature, from: input.from
+        )
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_reply", folder: .sent)
     }
 
     func forward(_ input: ForwardInput) async throws -> MessageSummary {
         calls.append(.forwardMessage(input))
+        // `POST /forward` takes no draft id, so the body's selection is all there is.
+        lastSentSignature = try sentSignature(
+            draftID: nil, selection: input.signature, from: input.from
+        )
         if let sendFailure { throw sendFailure }
         return sentSummary ?? SyncFixtures.message("msg_forward", folder: .sent)
     }

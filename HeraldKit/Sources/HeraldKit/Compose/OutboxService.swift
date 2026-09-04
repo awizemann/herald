@@ -16,6 +16,8 @@ public nonisolated protocol Outboxing: Sendable {
     func removeAttachment(_ attachmentID: String, from draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
     @discardableResult
     func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary
+    /// Signatures usable from `address`, for the compose picker.
+    func signatures(from address: String) async throws(OutboxError) -> SignatureCandidates
 }
 
 extension OutboxService: Outboxing {}
@@ -195,6 +197,15 @@ public actor OutboxService {
         return draft
     }
 
+    // MARK: - Signatures
+
+    /// The candidate list for one sending address. A server older than upstream
+    /// 1.3.4 has no such route and answers 404 — the caller treats that as "this
+    /// server has no signatures" and hides the picker.
+    public func signatures(from address: String) async throws(OutboxError) -> SignatureCandidates {
+        try await call { try await api.signatures(from: address) }
+    }
+
     // MARK: - Sending
 
     /// Sends the draft: `POST /reply` for a reply, `POST /forward` for a forward,
@@ -216,12 +227,34 @@ public actor OutboxService {
     /// not inherited. Herald does not surface draft labels yet, so nothing is
     /// visibly lost; revisit when labels land.
     ///
+    /// The signature selection rides along on all three routes, but only decides
+    /// on the two that carry no `draftId` (a forward, or a send/reply before the
+    /// first autosave): with a `draftId` the server uses the snapshot it stored
+    /// for that draft and ignores the body's selection (`resolveSendSignature`).
+    /// The selection is saved onto the draft as it is made, so the two agree.
+    ///
     /// When the draft was persisted its id rides along as `draftId` so the server
     /// consumes it. On failure nothing is deleted — the server draft is still the
     /// user's text. On success the draft is deleted if it still exists.
     @discardableResult
     public func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary {
         try validateAddresses(draft.allRecipients)
+        var draft = draft
+        // A send that names a draft uses the SNAPSHOT stored on that draft and
+        // ignores the selection in the body. Switching signature and hitting Send
+        // inside the autosave debounce would otherwise send the previous
+        // signature — so a disagreement is resolved before the send, not after.
+        //
+        // Only for the routes that carry a `draftId`: `POST /forward` does not,
+        // so its body's selection is already the one that decides and an extra
+        // PATCH would be a round trip for nothing.
+        let sendsDraftID = draft.mode.forwardOfMessageID == nil
+        if sendsDraftID,
+           let existing = draft.serverDraft,
+           SignatureSelection(existing.signature) != draft.signature {
+            logger.info("Saving draft \(existing.id, privacy: .public) so the send uses the chosen signature")
+            draft = try await saveDraft(draft)
+        }
 
         let sent: MessageSummary
         switch draft.mode {
@@ -236,7 +269,8 @@ public actor OutboxService {
                 bcc: draft.bcc.isEmpty ? nil : draft.bcc,
                 text: draft.body,
                 attachmentIDs: draft.attachmentIDs,
-                draftID: draft.serverDraft?.id
+                draftID: draft.serverDraft?.id,
+                signature: draft.signature
             )
             sent = try await call { try await api.reply(input) }
         case .forward(let messageID):
@@ -252,7 +286,8 @@ public actor OutboxService {
                 // subject must be omitted too, not sent and 400'd.
                 subject: Self.trimmedOrNil(draft.subject),
                 text: draft.body,
-                attachmentIDs: draft.attachmentIDs
+                attachmentIDs: draft.attachmentIDs,
+                signature: draft.signature
             )
             sent = try await call { try await api.forward(input) }
         case .new:
@@ -265,7 +300,8 @@ public actor OutboxService {
                 subject: draft.subject,
                 text: draft.body,
                 attachmentIDs: draft.attachmentIDs,
-                draftID: draft.serverDraft?.id
+                draftID: draft.serverDraft?.id,
+                signature: draft.signature
             )
             sent = try await call { try await api.send(input) }
         }

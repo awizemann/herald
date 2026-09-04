@@ -30,6 +30,14 @@ public nonisolated struct DraftInput: Sendable, Hashable, Codable {
     public var subject: String
     public var text: String
     public var html: String
+    /// The signature to apply, or `nil` to leave the stored one alone.
+    ///
+    /// Omitting it is NOT "no signature": on create the server stores
+    /// ``SignatureSnapshot/none``, and on update it keeps (or re-resolves, when
+    /// `from` changed) whatever the draft already had — `resolveDraftSignature`.
+    /// Herald always states its selection so the stored snapshot is never a
+    /// leftover of an earlier From address.
+    public var signature: SignatureSelection?
     public var version: Int?
 
     public init(
@@ -43,6 +51,7 @@ public nonisolated struct DraftInput: Sendable, Hashable, Codable {
         subject: String = "",
         text: String = "",
         html: String = "",
+        signature: SignatureSelection? = nil,
         version: Int? = nil
     ) {
         self.mailboxID = mailboxID
@@ -55,6 +64,7 @@ public nonisolated struct DraftInput: Sendable, Hashable, Codable {
         self.subject = subject
         self.text = text
         self.html = html
+        self.signature = signature
         self.version = version
     }
 }
@@ -65,13 +75,26 @@ public nonisolated struct Draft: Sendable, Hashable, Codable, Identifiable {
     public let version: Int
     public let updatedAt: Date
     public let attachments: [DraftAttachment]
+    /// The signature the server has RESOLVED and stored for this draft. Sending
+    /// with this draft's id uses this snapshot verbatim and ignores any selection
+    /// in the send body (`resolveSendSignature`), so it is the truth about what
+    /// will be appended.
+    public let signature: SignatureSnapshot
     public let content: DraftInput
 
-    public init(id: String, version: Int, updatedAt: Date, attachments: [DraftAttachment], content: DraftInput) {
+    public init(
+        id: String,
+        version: Int,
+        updatedAt: Date,
+        attachments: [DraftAttachment],
+        signature: SignatureSnapshot = .empty,
+        content: DraftInput
+    ) {
         self.id = id
         self.version = version
         self.updatedAt = updatedAt
         self.attachments = attachments
+        self.signature = signature
         self.content = content
     }
 
@@ -79,6 +102,9 @@ public nonisolated struct Draft: Sendable, Hashable, Codable, Identifiable {
     public var editableContent: DraftInput {
         var input = content
         input.version = version
+        // Restate the selection the stored snapshot represents, so a PATCH that
+        // does not mean to change the signature cannot drop it.
+        input.signature = SignatureSelection(signature)
         return input
     }
 }

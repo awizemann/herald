@@ -4095,7 +4095,7 @@
       "Draft": {
         "allOf": [
           {
-            "$ref": "#/components/schemas/DraftInput"
+            "$ref": "#/components/schemas/DraftFields"
           },
           {
             "type": "object",
@@ -4555,6 +4555,67 @@
             "items": {
               "$ref": "#/components/schemas/Signature"
             }
+          }
+        }
+      },
+      "DraftFields": {
+        "type": "object",
+        "description": "Herald-local schema: the stored fields of a draft, i.e. DraftInput WITHOUT the write-only `signature` selection. `Draft` is `allOf[DraftInput, {\u2026, signature: SignatureSnapshot}]` upstream, so the one `signature` key would be decoded twice from the same object \u2014 once as the snapshot the server stores, once as a SignatureSelection. A snapshot of a DELETED signature is `{\"mode\":\"selected\",\"id\":null}` (drafts.signature_id is ON DELETE SET NULL), which matches no SignatureSelection case, and the generated oneOf decoder would fail the WHOLE draft \u2014 every draft list and fetch. Splitting the response half off is the fix; regenerating this file from upstream must re-apply it.",
+        "required": [
+          "from",
+          "to",
+          "cc",
+          "bcc",
+          "subject",
+          "text",
+          "html"
+        ],
+        "properties": {
+          "mailboxId": {
+            "type": "string"
+          },
+          "replyToMessageId": {
+            "type": "string"
+          },
+          "forwardOfMessageId": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "html": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
           }
         }
       }

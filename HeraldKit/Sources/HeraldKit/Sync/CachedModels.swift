@@ -233,6 +233,11 @@ public nonisolated final class CachedDraft {
     public var textBody: String = ""
     public var htmlBody: String = ""
     public var attachments: [DraftAttachment] = []
+    /// The signature the server resolved for this draft. Cached because opening a
+    /// draft from the Drafts folder builds its composer from THIS row: without it
+    /// the composer would reopen as "no signature" and the next autosave would
+    /// send `{"mode":"none"}`, quietly dropping the signature the draft had.
+    public var signature: SignatureSnapshot = SignatureSnapshot.empty
 
     public init(id: String, accountID: String) {
         self.id = id

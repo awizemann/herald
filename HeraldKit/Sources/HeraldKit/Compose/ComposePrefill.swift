@@ -165,6 +165,10 @@ public nonisolated enum ComposePrefill {
             bcc: content.bcc,
             subject: content.subject,
             body: content.text,
+            // The stored snapshot, not `.automatic`: reopening a draft the user
+            // had set to "No signature" must not silently re-apply the default.
+            signature: SignatureSelection(draft.signature),
+            signatureSnapshot: draft.signature,
             uploadedAttachments: draft.attachments,
             serverDraft: draft,
             isDirty: false

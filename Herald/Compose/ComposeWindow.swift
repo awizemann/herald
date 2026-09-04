@@ -82,6 +82,7 @@ struct ComposeView: View {
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
             if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
+            if model.showsSignaturePicker { signatureSection }
             if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
             if let message = model.status.message { errorBar(message) }
         }
@@ -100,6 +101,9 @@ struct ComposeView: View {
                     .accessibilityHidden(true)
             }
         }
+        // Keyed on the From address: it can arrive after the first layout, and a
+        // bare `.task` would then leave the window without a picker for good.
+        .task(id: model.draft.fromAddress) { await model.loadSignatures() }
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
         .background(pasteShortcut)
@@ -229,6 +233,54 @@ struct ComposeView: View {
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityLabel("Quoted original message, included automatically when you send")
+    }
+
+    /// Signature picker plus a read-only preview of what the server will append.
+    ///
+    /// Display only, exactly like ``quotedPreviewSection``: the server assembles
+    /// authored text + signature + quoted original itself, so writing the preview
+    /// into `model.bodyText` would send the signature twice.
+    private var signatureSection: some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
+            if let preview = model.signaturePreview {
+                Text(preview)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(MailTheme.Spacing.sm)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+                    .accessibilityLabel("Signature preview, added automatically when you send")
+            }
+            Menu {
+                ForEach(model.signatureOptions) { option in
+                    Button {
+                        model.signatureTag = option.id
+                    } label: {
+                        // The check mark is what a Picker would draw; a Menu of
+                        // Buttons is used instead because a Picker cannot disable
+                        // a single row, and the draft's saved copy of a deleted
+                        // signature MUST be unpickable — asking for it again is a
+                        // 400 `SIGNATURE_NOT_AVAILABLE`.
+                        Label(
+                            option.label,
+                            systemImage: option.id == model.signatureTag ? "checkmark" : ""
+                        )
+                    }
+                    .disabled(!option.isSelectable)
+                }
+            } label: {
+                Text(model.signatureMenuLabel)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Signature")
+            .accessibilityValue(model.signatureMenuLabel)
+            .disabled(model.isBusy)
+        }
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .padding(.vertical, MailTheme.Spacing.sm)
     }
 
     private var attachmentBar: some View {

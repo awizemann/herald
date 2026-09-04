@@ -338,6 +338,18 @@ public actor HQBaseAPIClient: MailAPIClient {
         }
     }
 
+    // MARK: - Signatures
+
+    public func signatures(from address: String) async throws -> SignatureCandidates {
+        try await perform {
+            switch try await client.listSignatures(.init(query: .init(from: address))) {
+            case .ok(let ok): return try SignatureCandidates(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
     // MARK: - Sending
 
     public func send(_ input: SendInput) async throws -> MessageSummary {

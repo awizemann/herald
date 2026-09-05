@@ -138,6 +138,51 @@ import Testing
         #expect(server.requests(path: AuthFixtures.revokePath).isEmpty)
     }
 
+    /// The steps are what a stuck sign-in is diagnosed with — in the log and under
+    /// the spinner. Fails if a step is skipped or reported out of order, which
+    /// would point a hang at the wrong place.
+    @MainActor
+    @Test("addAccount reports every step, in order")
+    func addAccountReportsItsSteps() async throws {
+        @MainActor final class StepLog { var steps: [AuthStep] = [] }
+        let log = StepLog()
+        let server = AuthFixtures.fullServer()
+        let coordinator = AuthCoordinator(
+            store: RecordingAccountStore(),
+            presenter: FakeAuthorizationPresenter.succeeding(),
+            session: server.makeSession()
+        )
+
+        _ = try await coordinator.addAccount(origin: AuthFixtures.origin) { log.steps.append($0) }
+
+        #expect(log.steps == [.discovering, .checkingRegistration, .registering, .presenting, .exchanging, .saving])
+    }
+
+    /// The per-launch discovery cache is keyed by normalized ORIGIN; sign-out
+    /// evicted it under `account.id`, so the entry survived and a same-launch
+    /// re-add reused endpoints the server may no longer have (an HQBase
+    /// reinstall between the two is exactly the reported scenario). Fails if
+    /// sign-out does not actually evict.
+    @Test("signOut evicts the discovery cache, so a re-add re-runs discovery")
+    func signOutEvictsTheDiscoveryCache() async throws {
+        let server = AuthFixtures.fullServer()
+        let coordinator = AuthCoordinator(
+            store: RecordingAccountStore(),
+            presenter: FakeAuthorizationPresenter.succeeding(),
+            session: server.makeSession()
+        )
+
+        let account = try await coordinator.addAccount(origin: AuthFixtures.origin)
+        let afterFirst = server.requests(path: AuthFixtures.suffixedMetadataPath).count
+        try await coordinator.signOut(account)
+        _ = try await coordinator.addAccount(origin: AuthFixtures.origin)
+
+        #expect(
+            server.requests(path: AuthFixtures.suffixedMetadataPath).count > afterFirst,
+            "the cached discovery document survived sign-out"
+        )
+    }
+
     /// Signing out used to only forget Herald's copy of the tokens: the refresh
     /// token stayed live on the server for its whole lifetime, redeemable by
     /// anyone who had captured it. Fails on a sign-out that does not revoke, that

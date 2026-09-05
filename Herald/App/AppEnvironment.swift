@@ -73,9 +73,62 @@ final class AppEnvironment {
         case failed(String)
     }
 
+    /// Where the running sign-in is. Named steps, because "spinner" is not a
+    /// diagnosis: issue #9 was a sign-in stuck at the browser hand-off with
+    /// nothing on screen or in the log to say so.
+    enum SignInStage: Equatable {
+        case contactingServer
+        case checkingRegistration
+        case registering
+        case waitingForBrowser
+        case completingSignIn
+        case savingCredentials
+        case activating
+
+        init(_ step: AuthStep) {
+            switch step {
+            case .discovering: self = .contactingServer
+            case .checkingRegistration: self = .checkingRegistration
+            case .registering: self = .registering
+            case .presenting: self = .waitingForBrowser
+            case .exchanging: self = .completingSignIn
+            case .saving: self = .savingCredentials
+            }
+        }
+
+        /// The caption under the spinner.
+        var message: String {
+            switch self {
+            case .contactingServer: "Contacting your server…"
+            case .checkingRegistration: "Checking this Mac's registration…"
+            case .registering: "Registering Herald with your server…"
+            case .waitingForBrowser: "Waiting for the sign-in window…"
+            case .completingSignIn: "Completing sign-in…"
+            case .savingCredentials: "Saving your credentials…"
+            case .activating: "Setting up your mailbox…"
+            }
+        }
+
+        /// Log-safe name. Stable, never localized, never a server address.
+        var logName: String {
+            switch self {
+            case .contactingServer: "contactingServer"
+            case .checkingRegistration: "checkingRegistration"
+            case .registering: "registering"
+            case .waitingForBrowser: "waitingForBrowser"
+            case .completingSignIn: "completingSignIn"
+            case .savingCredentials: "savingCredentials"
+            case .activating: "activating"
+            }
+        }
+    }
+
     private(set) var phase: Phase = .openingCache
     /// Set while the onboarding sheet is running a sign-in.
     private(set) var isSigningIn = false
+    /// The step the visible sign-in is on; `nil` when none is running. Only ever
+    /// set by an INTERACTIVE sign-in — an automatic re-auth is silent by design.
+    private(set) var signInStage: SignInStage?
     var signInError: String?
     /// Drives the "Add Account…" sheet over the mail UI.
     var presentsAddAccount = false
@@ -158,6 +211,20 @@ final class AppEnvironment {
     /// letting its `install` resurrect the account behind it. Observation-ignored:
     /// the banner reads ``autoReauth``, not this.
     @ObservationIgnored private var automaticReauthTasks: [Account.ID: Task<Bool, Never>] = [:]
+    /// Cancels the live INTERACTIVE sign-in. Held as a closure rather than the
+    /// task itself only because the two entry points (first sign-in, re-auth)
+    /// return different values; what matters is that the handle is kept at all —
+    /// discarding it is what made the reported hang unrecoverable.
+    @ObservationIgnored private var signInCancellation: (@Sendable () -> Void)?
+    /// Bumped by every cancel and every new interactive attempt. An attempt only
+    /// owns the sign-in UI — and is only allowed to install its account — while
+    /// its generation is still the current one, so a session that completes after
+    /// the user gave up cannot reach back and change the screen under them.
+    @ObservationIgnored private var signInGeneration = 0
+    /// The account a live INTERACTIVE re-auth is repairing, if any. Held so a
+    /// cancel (or a sign-out) can release that account's ``AutoReauthPolicy``
+    /// claim without waiting for a task that may never return.
+    @ObservationIgnored private var signInReauthAccountID: Account.ID?
     /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
     /// so every test — and any caller that does not opt in — collects nothing.
     let usage: any UsageTracking
@@ -305,7 +372,7 @@ final class AppEnvironment {
     private func restoreAccounts() async {
         let accounts: [Account]
         do {
-            accounts = try auth.accounts()
+            accounts = try await auth.loadAccounts()
         } catch {
             logger.error("Account list unreadable: \(error.localizedDescription, privacy: .private)")
             phase = .failed(error.localizedDescription)
@@ -602,9 +669,90 @@ final class AppEnvironment {
         return Account.normalize(url)
     }
 
+    /// Runs one interactive sign-in, retaining the task so it can be cancelled.
+    ///
+    /// Awaited by the caller so tests (and the view's task) still see it through,
+    /// but the work lives in the retained handle: cancelling the view's task would
+    /// otherwise leave the real sign-in running with nothing observing it.
     func signIn(originText: String) async {
-        let result = await performSignIn(originText: originText)
-        record(.accountAdded(outcome: result.outcome, kind: result.kind))
+        let generation = beginInteractiveSignIn()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.performSignIn(originText: originText, generation: generation)
+            self.record(.accountAdded(outcome: result.outcome, kind: result.kind))
+        }
+        signInCancellation = { task.cancel() }
+        await task.value
+        // Only if nothing has taken the sign-in over since (a cancel, or the
+        // attempt the user started right after it).
+        if signInGeneration == generation { signInCancellation = nil }
+    }
+
+    /// Claims the sign-in UI for a new interactive attempt and returns its ticket.
+    ///
+    /// Whatever held the claim is CANCELLED first, not merely orphaned: the two
+    /// entry points can interleave (the re-auth banner clicked while an Add
+    /// Account sheet is signing in, or the reverse), and a dropped handle would
+    /// leave a browser window open that nothing could close.
+    private func beginInteractiveSignIn(reauthenticating accountID: Account.ID? = nil) -> Int {
+        cancelInteractiveSignIn()
+        signInGeneration &+= 1
+        signInReauthAccountID = accountID
+        return signInGeneration
+    }
+
+    /// Cancels the attempt that currently holds the claim and releases anything
+    /// it was holding open on its behalf. Does NOT touch the visible state — the
+    /// callers differ on that.
+    private func cancelInteractiveSignIn() {
+        signInCancellation?()
+        signInCancellation = nil
+        // A re-auth attempt claimed this account in `AutoReauthPolicy` and only
+        // releases it when its task returns — which, for the stall this whole
+        // change is about, may be never. Releasing it here is what keeps the
+        // banner from reading "Signing you back in…" forever with a dead retry
+        // button behind it.
+        if let accountID = signInReauthAccountID {
+            autoReauth.finish(accountID: accountID, succeeded: false)
+            signInReauthAccountID = nil
+        }
+    }
+
+    /// Abandons the running interactive sign-in and gives the screen back.
+    ///
+    /// Two separate jobs, because they can fail independently: cancelling the task
+    /// (which unwinds a presenter that honours cancellation) AND clearing the UI
+    /// state right here. The second is what makes the reported hang survivable —
+    /// a step that cannot be interrupted at all (a blocked `SecItem` call, an
+    /// authentication agent that never answers) still leaves the user with a
+    /// usable window and a working second attempt.
+    ///
+    /// Automatic re-auth is untouched: it never sets this state and its attempts
+    /// are tracked separately, so a user cancelling a manual sign-in cannot
+    /// abort a background repair, and vice versa.
+    func cancelSignIn() {
+        guard isSigningIn else { return }
+        logger.info("sign-in cancelled by the user at stage \(self.signInStage?.logName ?? "none", privacy: .public)")
+        // Orphans the attempt in flight: whatever it does from here cannot touch
+        // the sign-in UI or install an account.
+        signInGeneration &+= 1
+        cancelInteractiveSignIn()
+        isSigningIn = false
+        signInStage = nil
+        signInError = nil
+    }
+
+    /// Publishes a stage, if the attempt reporting it still owns the screen.
+    private func setSignInStage(_ stage: SignInStage, generation: Int?) {
+        guard ownsSignInUI(generation) else { return }
+        signInStage = stage
+        logger.info("sign-in stage: \(stage.logName, privacy: .public)")
+    }
+
+    /// Whether this attempt is still the one the sign-in UI belongs to. `nil` is
+    /// an automatic attempt, which never owns it.
+    private func ownsSignInUI(_ generation: Int?) -> Bool {
+        generation != nil && generation == signInGeneration
     }
 
     /// What one sign-in round trip produced. The ACCOUNT matters to re-auth: the
@@ -619,31 +767,66 @@ final class AppEnvironment {
     /// The sign-in flow itself, reduced to the two values an event may carry.
     /// Shared by ``signIn(originText:)`` and ``reauthenticate(accountID:)`` so the
     /// same round trip is never reported as both an add AND a re-auth.
-    /// - Parameter isAutomatic: whether Herald started this round trip by itself.
-    ///   An automatic attempt leaves `isSigningIn`, `signInError` and
-    ///   `presentsAddAccount` alone: nothing asked for the onboarding sheet, and
-    ///   a failure must land on the re-auth banner that is already up rather than
-    ///   raising sheet state over the mail the user is reading.
+    /// - Parameter generation: the interactive attempt's ticket, or `nil` for an
+    ///   attempt Herald started by itself. An automatic attempt leaves
+    ///   `isSigningIn`, `signInStage`, `signInError` and `presentsAddAccount`
+    ///   alone: nothing asked for the onboarding sheet, and a failure must land on
+    ///   the re-auth banner that is already up rather than raising sheet state
+    ///   over the mail the user is reading. A stale generation — the user
+    ///   cancelled — behaves the same way, and additionally refuses to install.
     private func performSignIn(
         originText: String,
-        isAutomatic: Bool = false
+        generation: Int? = nil
     ) async -> SignInResult {
+        let isAutomatic = generation == nil
         guard let origin = Self.normalizedOrigin(from: originText) else {
-            if !isAutomatic {
+            if ownsSignInUI(generation) {
                 signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
             }
             // A typo in the address field, not an OAuth fault: there is no kind
             // to report, and the text the user typed is never one.
             return SignInResult(outcome: .failed)
         }
-        if !isAutomatic {
+        if ownsSignInUI(generation) {
             isSigningIn = true
+            signInStage = nil
             signInError = nil
         }
-        defer { if !isAutomatic { isSigningIn = false } }
+        // Runs on every exit INCLUDING cancellation — but only clears state this
+        // attempt still owns, so a cancel that already reset the screen (and a
+        // second attempt started behind it) is not undone here.
+        defer {
+            if ownsSignInUI(generation) {
+                isSigningIn = false
+                signInStage = nil
+            }
+        }
         do {
-            let account = try await auth.addAccount(origin: origin)
-            if !isAutomatic { presentsAddAccount = false }
+            let account = try await auth.addAccount(origin: origin) { [weak self] step in
+                self?.setSignInStage(SignInStage(step), generation: generation)
+            }
+            // Consent finished, but the user may have given up while the browser
+            // window was open. Installing now would drag them into a mailbox they
+            // just cancelled out of.
+            guard isAutomatic || ownsSignInUI(generation), !Task.isCancelled else {
+                logger.info("sign-in completed after it was cancelled; undoing it")
+                // `addAccount` has ALREADY written the account and its tokens to
+                // the Keychain. Leaving them there would make Cancel a merely
+                // deferred sign-in: the next launch would restore the account and
+                // open the mailbox the user walked away from. Signing it back out
+                // also revokes the refresh token, which is the right end for
+                // consent nobody wanted.
+                do {
+                    try await auth.signOut(account)
+                } catch {
+                    logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
+                }
+                return SignInResult(outcome: .cancelled)
+            }
+            if ownsSignInUI(generation) {
+                presentsAddAccount = false
+                signInStage = .activating
+            }
             // Consent alone is not a signed-in account: an activation that fails
             // (unreachable server, unreadable tokens) leaves the user exactly as
             // stuck as before, and reporting it as a success would also clear the
@@ -656,7 +839,7 @@ final class AppEnvironment {
             )
         } catch {
             logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
-            if !isAutomatic { signInError = error.localizedDescription }
+            if ownsSignInUI(generation) { signInError = error.localizedDescription }
             // A failure that is not an `OAuthError` still failed: it counts as
             // `other` rather than being dropped, and carries nothing of itself.
             let kind = UsageOAuthErrorKind(anyError: error)
@@ -679,8 +862,32 @@ final class AppEnvironment {
         // automatic attempt is running would open a second consent window over
         // the first.
         guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
-        let succeeded = await runReauthentication(account: account, isAutomatic: false)
+        // Retained and generation-stamped like a first sign-in: a re-auth is just
+        // as capable of stalling in the browser hand-off, and the banner's spinner
+        // has to be escapable too — the banner shows Cancel while
+        // ``isSigningIn`` and it lands on ``cancelSignIn()``.
+        let generation = beginInteractiveSignIn(reauthenticating: accountID)
+        let task = Task { [weak self] in
+            guard let self else { return false }
+            return await self.runReauthentication(account: account, generation: generation)
+        }
+        signInCancellation = { task.cancel() }
+        let succeeded = await task.value
+        // A cancel (or a second attempt) already released the policy claim and
+        // moved the generation on; finishing again here would write a stale
+        // result over whatever now owns the account.
+        guard signInGeneration == generation else { return }
+        signInCancellation = nil
+        signInReauthAccountID = nil
         autoReauth.finish(accountID: accountID, succeeded: succeeded)
+    }
+
+    /// Whether the re-auth running for this account is the USER's, and therefore
+    /// has a Cancel to offer. False for an automatic attempt (nobody asked for it,
+    /// and it withdraws by itself) and for a sign-in belonging to another account
+    /// or to the Add Account sheet.
+    func isCancellableReauthentication(accountID: Account.ID) -> Bool {
+        isSigningIn && signInReauthAccountID == accountID
     }
 
     /// Whether a re-auth round trip is running for this account. The banner stays
@@ -718,7 +925,7 @@ final class AppEnvironment {
         // window selection — straight back.
         let task = Task { [weak self] in
             guard let self else { return false }
-            return await self.runReauthentication(account: account, isAutomatic: true)
+            return await self.runReauthentication(account: account, generation: nil)
         }
         automaticReauthTasks[accountID] = task
         let succeeded = await task.value
@@ -740,11 +947,12 @@ final class AppEnvironment {
 
     /// The re-auth round trip both entry points share. Returns whether the
     /// account is signed in again.
-    private func runReauthentication(account: Account, isAutomatic: Bool) async -> Bool {
+    private func runReauthentication(account: Account, generation: Int?) async -> Bool {
+        let isAutomatic = generation == nil
         let accountID = account.id
         let result = await performSignIn(
             originText: account.origin.absoluteString,
-            isAutomatic: isAutomatic
+            generation: generation
         )
         record(.accountReauthenticated(
             outcome: result.outcome,
@@ -773,9 +981,22 @@ final class AppEnvironment {
         // An account whose graph never came up (its server was unreachable at
         // launch) is still signed in as far as the Keychain is concerned, so the
         // account list is the fallback — otherwise it could never be removed.
-        guard let account = graphs[accountID]?.account
-            ?? (try? auth.accounts())?.first(where: { $0.id == accountID })
-        else { return }
+        var resolved = graphs[accountID]?.account
+        if resolved == nil {
+            resolved = (try? await auth.loadAccounts())?.first { $0.id == accountID }
+        }
+        guard let account = resolved else { return }
+        // An INTERACTIVE re-auth for this account would `install` it again — with
+        // a graph and the window selection — right after the sign-out removed it.
+        // Its automatic sibling is cancelled and awaited just below; this one is
+        // only cancelled, because the whole point of the handle is that its task
+        // may never return.
+        if signInReauthAccountID == accountID {
+            signInGeneration &+= 1
+            cancelInteractiveSignIn()
+            isSigningIn = false
+            signInStage = nil
+        }
         // An automatic attempt still running would `install` this account again —
         // selecting it — right after the sign-out removed it. Cancelled AND
         // waited for, so nothing of it can land behind the removal.

@@ -177,6 +177,15 @@ struct ReauthBanner: View {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityHidden(true)
+                // A re-auth the USER started can stall in the browser hand-off
+                // exactly like a first sign-in (issue #9), and without this the
+                // spinner is the end of the road: the button is withdrawn and
+                // nothing else here can stop the attempt. Never shown for an
+                // automatic attempt — it withdraws on its own.
+                if environment.isCancellableReauthentication(accountID: accountID) {
+                    Button("Cancel") { environment.cancelSignIn() }
+                        .accessibilityLabel("Cancel sign-in")
+                }
             } else {
                 Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
             }

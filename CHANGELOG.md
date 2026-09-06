@@ -10,6 +10,84 @@ first, then cut the release.
 
 ## [Unreleased]
 
+### Fixed
+- Sign-in can no longer trap you. A sign-in that stops making progress — most often because macOS
+  never opens the browser window it was asked for — now shows a **Cancel** button on both the
+  first-run screen and the Add Account sheet, and Cancel abandons the sign-in itself rather than
+  just closing the window over it. The screen is usable again immediately and a second attempt
+  works — and a cancelled sign-in is really cancelled: the account it had already stored is
+  removed and its token revoked, rather than quietly reappearing at the next launch. The re-auth
+  banner offers the same Cancel while it is signing you back in. Herald #9.
+- The spinner now says what it is waiting for: contacting your server, checking this Mac's
+  registration, registering, waiting for the sign-in window, completing sign-in, saving
+  credentials, setting up your mailbox. Each step is logged too, so a stuck sign-in names its
+  location instead of just spinning.
+- A browser sign-in that never reports back no longer waits forever: it is noted in the log after
+  45 seconds and fails with an explanation after ten minutes. The deadline is deliberately long —
+  macOS gives Herald no signal that the window actually opened, so a shorter one would close a
+  consent page you were still typing into. Cancel is the fast way out.
+- Sign-in and token requests have real deadlines (15s per request, 30s overall). They previously
+  inherited the system default of seven days, so a server that accepted the connection and then
+  went quiet could hang the sign-in indefinitely.
+- Keychain reads and writes during sign-in and at launch no longer run on the main thread, so a
+  stalled system keychain leaves Herald responsive — and cancellable — instead of frozen.
+- Signing out now clears the cached server discovery for that address. Signing back into a server
+  that was reinstalled in the meantime, without quitting Herald, could previously reuse the old
+  install's endpoints.
+
+## [0.4.0] - 2026-09-04
+
+Herald now targets HQBase 1.3.4 or newer: forwarding and message rendering use API surfaces that
+older servers don't have.
+
+### Added
+- Put Back. Trashed conversations can be restored ("Put Back") and archived ones moved back to
+  the inbox — toolbar, context menu, ⌘⇧A, the `e` key and VoiceOver all follow one folder rule,
+  so no more silent no-op archive from the Trash.
+- Labels. Workspace labels sync into a sidebar section with per-label listings, colored name
+  chips on rows and in the reading pane, and add/remove from the context menu, the reading-pane
+  header, and the Message menu. Label colors match the web app.
+- Signatures. Compose shows the signatures usable from the sending address, picks the address's
+  default automatically, and lets you switch (or send with none). The server appends the
+  signature, and a read-only preview shows exactly what will go out. A draft's saved signature is
+  kept when you reopen it.
+- Quoted-thread preview in compose. Reply and forward windows show a collapsed, read-only preview
+  of the original the server will quote below your text.
+- Instant sync. Herald now holds a lightweight wake connection to the server and refreshes the
+  moment something changes, instead of waiting for the next poll. Polling remains as a fallback,
+  stretched while the connection is healthy.
+- Automatic sign-in repair. When a session expires while your HQBase web session is still alive,
+  Herald re-runs the sign-in by itself the next time it's frontmost — the window flashes once and
+  syncing resumes. The banner stays as a fallback and shows progress.
+
+### Changed
+- Forwarding uses the server's dedicated forward route, so the forwarded message can no longer be
+  lost by sending before an autosave; the original's attachments ride along.
+- Message rendering: text a sender wrote below the quoted history is now shown (it was silently
+  dropped); quoted history collapses behind "Show quoted history"; nested quotes get per-level
+  bars; plain-text mail renders in the system font with clickable links and tinted quote lines;
+  wide tables scroll inside the message instead of the whole pane; dark mode no longer glares on
+  unstyled light emails, and Increase Contrast is honored inside the message view.
+- Attachments: downloads carry their real file type (previews and Quick Look work for files the
+  server sends untyped or misnamed), inline-vs-attachment now follows the server's intent, the
+  attachment bar survives offline reads, saving reuses the already-downloaded file, and a file
+  being previewed or dragged can no longer be evicted mid-use. Failed inline images are called
+  out instead of leaving silent holes.
+- Sending marks messages read/unread, stars, archives and trashes more reliably from the Trash
+  and Archive scopes, which the server treats specially.
+- The Privacy pane's usage-statistics toggle now says when analytics aren't included in a build
+  (dev copies) instead of rendering a switch that snaps back, and confirms opt-out in real builds.
+- Accessibility: selection state in the signature menu, contrast-safe label chips, VoiceOver
+  announcements for session-repair and blocked/failed image banners, and a Labels submenu in the
+  Message menu.
+
+### Fixed
+- Sessions no longer log out when two Herald copies share one account (server-side fix Herald
+  asked for in HQBase 1.3.x, plus client-side hardening).
+- A rejected sync cursor now recovers by re-syncing instead of failing forever.
+- Cached data written by an older Herald can no longer crash the app on read; the cache degrades
+  and heals on the next sync.
+
 ## [0.3.0] - 2026-08-19
 
 ### Added

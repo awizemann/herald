@@ -10,6 +10,8 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-06
+
 ### Fixed
 - Sign-in can no longer trap you. A sign-in that stops making progress — most often because macOS
   never opens the browser window it was asked for — now shows a **Cancel** button on both the

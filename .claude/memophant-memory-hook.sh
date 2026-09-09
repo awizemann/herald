@@ -53,6 +53,17 @@ fi
 echo '## Repo memory (managed by Memophant) — the single source of truth'
 echo 'Search the repo memory before assuming; record durable decisions/learnings as memory notes (write_memory) or wiki pages — never in session-private memory. Search before writing and edit the existing note (edit_memory) rather than forking a near-duplicate. File every note under ONE of the six folders (architecture/conventions/decisions/operations/project/roadmap); when a note is grounded in code, pass source_paths so Memory Health can drift-check it — an unanchored code note cannot be kept current.'
 echo 'PREFER the `memophant` MCP tools for everything they cover (search_memories, read_memory, write_memory, edit_memory, build_context, tasks, tier files, and more) — they carry the guards (slug-gen, validation, secret scan). Found or made a credential → store it with set_vendor_credential, never in chat. Server down → grep .memory/ and wiki/.'
+# The CHARTER is the highest-precedence thing this session reads, and it is deliberately
+# excluded from memory ingest/search (a reserved singleton, never a note) — so nothing else in
+# this session would ever surface it. Announce it here, conditionally, so the agent knows to
+# call read_charter; a repo without one stays silent rather than nagging. Like the script's
+# neighbouring probes, the path is hardcoded to .memory — a custom memoryRelPath project
+# misses this line but still gets the charter directive from the AGENTS.md block, the shim,
+# and the server instructions, all three of which thread the custom path.
+if [ -f "$ROOT/.memory/charter.md" ]; then
+  echo ''
+  echo 'Project charter present (.memory/charter.md): read it now via the memophant MCP server (read_charter) — or read the file directly if the server is down — and obey it. Its commandments are ABSOLUTE and outrank memory notes, the repo instruction files, and your agent brief. It is human-only — propose a change as a task tagged `charter`, never by editing the file.'
+fi
 if [ -d "$ROOT/.memory" ]; then
   echo ''
   total=$(find "$ROOT/.memory" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')

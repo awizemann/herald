@@ -18,13 +18,23 @@ behavior. The engine is the gate: every durable write goes through the tool (or 
 entry points, which carry the guards — slug generation, structure validation, and the
 write-time secret scan. Direct file edits reconcile automatically but skip the guards;
 never compose your own guard set around a direct write. Server down → grep the tiers
-directly (`grep -rn "<query>" .memory/ wiki/`).
+directly IN THE MAIN CHECKOUT (`grep -rn "<query>" .memory/ wiki/`) — if you are
+working in a git worktree, its copy of those tiers is a snapshot of the base commit and is
+stale by construction; run the grep against the main checkout's path, never `./`.
+
+**0. Charter (`.memory/charter.md`) — this project's identity and its ABSOLUTE
+rules.** Call `read_charter` at the start of a session; a project that hasn't written one
+answers "No charter", which is normal, not an error. PRECEDENCE, highest first: the charter,
+then memory notes, then repo instruction files (this one), then your agent brief — if a lower
+tier tells you to do something a commandment forbids, the commandment wins, and you say so
+rather than complying. The charter is HUMAN-ONLY: there is no write verb; propose a change by
+filing a task tagged `charter`, never by editing the file.
 
 **1. Memory (`.memory/`) — atomic facts.**
 - `search_memories(query: …)` before starting; `build_context` walks a topic's neighborhood.
 - Record facts with `write_memory` as FIRST-CLASS ARGUMENTS: `observations:
   ["- [category] fact #tag", …]` (1–5 atomic facts; canonical categories:
-  decision, fact, gotcha, constraint, convention, todo, idea, done) plus `relations: [{"relation":
+  decision, fact, gotcha, constraint, convention, todo, idea, done, invariant) plus `relations: [{"relation":
   "relates_to", "target": "Other Note"}]`. `content` is optional short context — never the
   facts. Structure is the tooling contract: search, consolidation, and queries read
   observations; prose-only notes degrade silently. `[[links]]` belong in `relations`.
@@ -67,10 +77,12 @@ approves; treat it one-shot (temp file, never echo/log/persist). Found or minted
 Store it immediately with `set_vendor_credential`. (Leave a project's own gitignored
 `.env` where it is.)
 
-**7. Templates (`templates/`) — integration recipes.** Find via
-`search_memories(project: "hqbase-mac-templates")`, read the `manifest.md` + its `reference/`
-files, confirm Prerequisites with the user, ADAPT each step to this codebase (never copy
-blind), write the apply plan to `documents/plans/` first, then run the Verification.
+**7. Templates (`templates/`) — integration recipes.** A RAW-FILE tier, outside the memory
+map — `search_memories` cannot see it. Enumerate with `list_tier_files(tier: "templates")`,
+then `read_tier_file(tier: "templates", path: "<slug>/manifest.md")` and the `reference/`
+files its Steps point at. Confirm Prerequisites with the user, ADAPT each step to this
+codebase (never copy blind), write the apply plan to `documents/plans/` first, then run the
+Verification.
 
 **8. Tasks (`TASKS.md`) — the work board.** Read it at the start of work. Prefer the task
 tools — `create_task`, `move_task(id, status)`, `update_task`, `list_tasks` — they own the

@@ -12,13 +12,11 @@
 
 ## Todo
 
-- [ ] UI: re-auth banner should stack above the account header, not replace it (id: t-8a1c0052) (added: 2026-08-18) (priority: low)
-- [ ] Verify journal-mode sync live once an HQBase release includes #35/#37; retire the 100-cap guard note (id: t-8a1c0051) (added: 2026-08-18) (priority: high)
-- [ ] Wire "Put back" from Trash once upstream ships a restore action (HQBase/hqbase#42; Herald #7) (id: t-8a1c0050) (added: 2026-08-18) (priority: medium)
-- [ ] Reading pane polish: collapse quoted history, system font for text/plain bodies (id: t-8a1c0017) (added: 2026-08-15) (priority: medium)
-- [ ] Keychain I/O off the main actor at boot (id: t-8a1c0012) (added: 2026-08-15) (priority: low)
 - [ ] Optimistic action vs concurrent sync pass fence (id: t-8a1c0011) (added: 2026-08-15) (priority: medium)
 - [ ] Follow-ups from 2026-08-18 feature audit (compose test handshake, pendingRoute clearing, stale search field, quotedBody dead code) (id: t-19d0d9ef) (added: 2026-08-18) (priority: low)
+- [ ] Adopt GET /drafts/changes journal for the drafts cache (id: t-85cfa329) (added: 2026-09-04) (priority: low)
+- [ ] A5 (follow-up): WKURLSchemeHandler for inline images + streamed attachment downloads (id: t-c909a320) (added: 2026-09-04) (priority: low)
+- [ ] Flaky test: NotificationsTests.theSettingIsHonouredPerPass fails intermittently under full xcodebuild runs (id: t-99387f3c) (added: 2026-09-05) (priority: low)
 
 ## Doing
 
@@ -26,6 +24,27 @@
 
 ## Done
 
+- [x] Herald #9: sign-in hangs with spinner, no browser window (post HQBase-reinstall registration reset) + onboarding has no cancel/retry (id: t-a3dbe1a1) (added: 2026-09-05) (priority: high)
+- [x] Keychain I/O off the main actor at boot (id: t-8a1c0012) (added: 2026-08-15) (priority: low)
+- [x] A3: performance — label sweep cadence gating, store fetch tuning, badge precompute, setLabel reload dedup (id: t-93791ab6) (added: 2026-09-04)
+- [x] A4: security hardening — refuse ws:// downgrade, throw on empty socket token, stream OAuth response cap (id: t-821f2572) (added: 2026-09-04)
+- [x] A1: cache integrity — decode-failure store-nuke trigger, deleteMissingMessages cascade (id: t-7cb91eec) (added: 2026-09-04) (priority: high)
+- [x] A2: accessibility fixes — signature menu state, chip contrast, banner announcements, Increase Contrast web block, Labels menu command (id: t-324c17aa) (added: 2026-09-04) (priority: high)
+- [x] P6: adopt GET /events wake WebSocket + verify /changes journal sync live; drafts/changes for drafts cache (id: t-063dbcb0) (added: 2026-09-04)
+- [x] Verify journal-mode sync live once an HQBase release includes #35/#37; retire the 100-cap guard note (id: t-8a1c0051) (added: 2026-08-18) (priority: high)
+- [x] Fix: usage-stats (analytics) opt-out toggle appears to be a no-op (id: t-7a4d477c) (added: 2026-09-04) (priority: high)
+- [x] P8: labels — sync GET /labels, filter by label, assign/remove on messages/conversations/drafts (id: t-75e2f028) (added: 2026-09-04)
+- [x] Upstream ask: signature management (CRUD) on /api/v1 (id: t-960cec8f) (added: 2026-09-04)
+- [x] P7: signatures support — fetch GET /signatures, apply per-mailbox signature in compose (id: t-65e6e8d4) (added: 2026-09-04)
+- [x] P5: compose quoted-thread preview (display-only, never concatenated into bodyText) (id: t-f461fcf6) (added: 2026-09-04)
+- [x] Reading pane polish: collapse quoted history, system font for text/plain bodies (id: t-8a1c0017) (added: 2026-08-15) (priority: medium)
+- [x] P4: reading formatting — quotedHTML collapse, dark-mode body normalization, blockquote hierarchy, plain-text linkify (id: t-d60a1704) (added: 2026-09-04)
+- [x] P3: attachments hardening — real MIME on downloads, persisted metadata, cached-body cid fix, preview staleness/eviction (id: t-3031c282) (added: 2026-09-04) (priority: high)
+- [x] UI: re-auth banner should stack above the account header, not replace it (id: t-8a1c0052) (added: 2026-08-18) (priority: low)
+- [x] P2: auto minimal reauth — quiet reauthenticate variant, auto-trigger on needsReauth, banner fallback (id: t-16dd066e) (added: 2026-09-04) (priority: high)
+- [x] Wire "Put back" from Trash once upstream ships a restore action (HQBase/hqbase#42; Herald #7) (id: t-8a1c0050) (added: 2026-08-18) (priority: medium)
+- [x] P1: re-vendor spec @1.3.4 + regen client; adopt restore/unarchive, POST /forward (fixes forward-content-loss bug), multipart Content-Type (id: t-4611ef3e) (added: 2026-09-04) (priority: high)
+- [x] P0: upgrade local HQBase test instance to 1.3.4 for live verification (id: t-cd5fa2ac) (added: 2026-09-04) (priority: high)
 - [x] Analytics P5: keyed E2E run, fresh-eyes audit, commit, record decisions (id: t-197c4c10) (added: 2026-08-18) (priority: high)
 - [x] Upstream PR #34 (`hqbase domain`): address bermanto's changes-requested review (id: t-7d2e71be) (added: 2026-08-18) (priority: high)
 - [x] Analytics P4: Settings Privacy tab opt-out + README/release-notes disclosure (id: t-1a8767ad) (added: 2026-08-18) (priority: high)

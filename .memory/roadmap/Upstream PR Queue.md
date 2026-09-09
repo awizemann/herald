@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/roadmap/upstream-pr-queue
 tags: [upstream, roadmap]
 created: 2026-08-16
-updated: 2026-08-18
+updated: 2026-09-04
 ---
 
 Owner decision 2026-08-15: submit upstream changes as separate PRs, in order, smallest first; the
@@ -65,3 +65,12 @@ client itself comes last after UI polish. Branches live in the fork ~/Developer/
 ## Update (2026-08-18 night — PR #34 review addressed)
 - [done] #34 re-pushed (attach→verify→cutover→redirect with staged manifest.domainMove, Cloudflare workers/domains API, --configuration-only deploy, conflicts refused unless --override-existing --yes; 23 command tests) + reply comment; companion HQBase/hqbase-site#14 opened (site test gate forbids "canonical" on reader pages → "main portal address"). Open questions to bermanto: CLOUDFLARE_API_TOKEN requirement, workspace_hosts write via d1 execute vs endpoint, install pinning BETTER_AUTH_URL, retired-host grace period #pr34
 - [gotcha] hqbase-site `test/site.test.mjs` rejects jargon (canonical|mailbox grant|runtime secrets|bounded|idempotent|protected resource) on reader-facing pages; guide command form is `pnpm run hqbase -- <cmd>` in ```bash fences #site-style
+
+
+## Update (2026-09-04 — session: 1.3.4 adoption run)
+- [fact] Filed HQBase/hqbase#112 (signature CRUD on /api/v1); draft in documents/upstream/issues-2026-09-04/ #issues
+- [todo] Upstream ask candidate from P8: `/api/v1` responses omit the `labels` embed (gated to /api/v2 by base path; v2 not drop-in — token resource-binding forces re-consent) and the changes journal upsert carries no labels, so Herald label sync needs a 120s sweep. Ask: embed labels on v1 (or a v1→v2 token migration path). Also: GET /drafts returns `labels` undeclared in BOTH OpenAPI docs (spec gap worth reporting) #labels
+
+- [fact] CORRECTION 2026-09-04: the earlier #labels claim that `GET /drafts` returns `labels` undeclared in the OpenAPI docs is WRONG at v1.3.4 — `Draft` declares `labels` (required, items Label) in both documents. Verified defects instead: the Draft `allOf` double-decode of `signature` (real) and mixed OpenAPI 3.1 nullable spellings (anyOf-null vs type-array-null) #correction
+
+- [fact] FILED 2026-09-04 (drafts in documents/upstream/issues-2026-09-04/): #113 Draft allOf signature double-decode + mixed nullable spellings (spec-only; offered the DraftFields-split PR); #114 session binding — tokens die with the 7d browser session, two options offered (refresh renews bound session / bind native tokens to user), open question whether the join is deliberate revocation; #115 labels embed on v1 behind ?includeLabels=true (recommended; alternatives: journal-only labels, v1→v2 token migration). With #112 (signature CRUD), four asks now pending upstream; Herald 0.4.0 released and verified same day — next release after these land #issues

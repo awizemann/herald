@@ -7,7 +7,7 @@ source_paths: [Herald/Analytics/UsageEvent.swift, Herald/Analytics/UsageTracking
 source_paths_inferred: false
 source_sha: b9bad49ec091e681d0c39a29f1cdb3ab45b3d234
 created: 2026-08-18
-updated: 2026-08-19
+updated: 2026-09-04
 ---
 
 Herald ships privacy-first, opt-out usage analytics via swift-stats 0.1.0 (hosted https://api.swiftstats.co), landed 2026-08-18 in commit b9bad49. The approved event/prop contract lives in documents/plans/usage-analytics-plan.md and is enforced in code by Herald/Analytics/UsageEvent.swift (the privacy contract) plus HeraldTests/Analytics.
@@ -26,3 +26,7 @@ Herald ships privacy-first, opt-out usage analytics via swift-stats 0.1.0 (hoste
 - relates_to [[Herald Release Pipeline]]
 - relates_to [[Herald Testing Conventions]]
 - relates_to [[Herald Architecture]]
+
+
+## Update (2026-09-04)
+- [fact] `UsageTracking` gained `isAvailable` (false on NoopUsageTracker): Settings → Privacy disables the toggle with "Usage analytics aren't included in this build" in unkeyed builds (the toggle used to render live-but-off and snap back — reported as a no-op), and keyed builds now show a brief confirmation caption after opt-in/out. `accountReauthenticated` gained an `automatic` prop to separate machine re-auth attempts from the human funnel #toggle

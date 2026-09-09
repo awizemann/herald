@@ -3,8 +3,11 @@ title: Herald Release Pipeline
 type: note
 permalink: hqbase-mac/operations/herald-release-pipeline
 tags: [release, sparkle, operations]
+source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
+source_paths_inferred: true
+source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-08-19
+updated: 2026-09-06
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -52,3 +55,7 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [done] v0.3.0 released (build 7): notarization Accepted, main + tag v0.3.0 pushed (6888c3f), GitHub release live (Herald-0.3.0.zip HTTP 200), gh-pages appcast advertises 0.3.0/7. Contents as rehearsed plus the swift-stats 0.2.0 bump (b7ea704) #release
 
 - [done] Sparkle self-update 0.2.1 → 0.3.0 confirmed by the owner 2026-08-19 #verified
+
+
+## Update (2026-09-06 — v0.4.1 shipped)
+- [done] v0.4.1 released (sign-in recoverability for Herald #9: cancel everywhere, stage indicator, presentation watchdog 45s-log/10min-fail, keychain off main, 15s/30s auth timeouts, discovery-cache eviction fix). Notarization Accepted, main + tag pushed (ce1f733), zip HTTP 200, appcast advertises 0.4.1. Trigger confirmed by reporter as the macOS per-user authentication agent wedging (app responsive, agent self-recovered); browser-fallback sign-in remains a follow-up candidate #release

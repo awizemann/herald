@@ -7,7 +7,7 @@ source_paths: [Herald/App/AppEnvironment.swift, Herald/App/MailViewModel.swift, 
 source_paths_inferred: false
 source_sha: 37e925193f7c89c076f83ae4c757b24f7cf5d415
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-09-04
 ---
 
 Landed 2026-08-18 in five phases (multi-account, attachments polish, notifications, drafts folder, two-tier search). Investigation report: documents/reports/feature-investigation-2026-08-18.md; upstream Issue drafts: documents/upstream/issues-2026-08-18/.
@@ -23,3 +23,7 @@ Landed 2026-08-18 in five phases (multi-account, attachments polish, notificatio
 - relates_to [[Herald Architecture]]
 - relates_to [[Herald Sync Model]]
 - relates_to [[HQBase Mail API v1 Contract]]
+
+
+## Update (2026-09-04)
+- [fact] The polling design here is now the FALLBACK tier: upstream 1.3.4's `GET /events` wake WebSocket (see [[Herald Wake Socket Architecture]]) stretches the poll to 120s/300s while connected; drafts refresh is also wake-driven (`drafts` topic). Labels landed as a new sidebar surface with its own 120s sweep (see [[Herald Label Caching and UI Architecture]]) #wake-socket

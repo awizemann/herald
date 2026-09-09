@@ -2,12 +2,9 @@
 title: Herald Sync Model
 type: note
 permalink: hqbase-mac/decisions/herald-sync-model
-tags:
-- decision
-- swiftdata
-- sync
+tags: [decision, swiftdata, sync]
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-09-04
 ---
 
 ## Observations
@@ -44,3 +41,34 @@ updated: 2026-08-16
 - [fact] CORRECTION: `MailStore.applyLocalAction` for archive/trash now MATERIALISES the destination conversation-scope row (`materializeMovedScope`) and records it in `LocalActionUndo.insertedConversations` for revert — the earlier fact "only the message folder changes; the VM filters by latest.folder" is now half true (the filter remains as a belt) #materialize
 - [rule] Programmatic selection advances (after archive/trash) NEVER drill (`select(_:drill:)` / `drillsOnSelection` flag); only user selection drills. Refresh sets `reloadsWhenPassFinishes` → `.finished` reloads the presented scope + counts #selection
 - [fact] Trash scope: conversation-level archive/trash are server no-ops (`affected: 0`), and there is NO restore action in v1 → Herald offers per-message "Move to Archive" (`MailActionService.perform(_:onMessagesOfThread:)`) and never sends the no-op conversation actions; `affected == 0` reverts the optimistic move immediately. Upstream HQBase/hqbase#42 asks for `restore` #trash
+
+
+## Update (2026-09-04 — attachment metadata in the cache, P3)
+- [fact] `CachedMessageBody` now carries `attachments: [Attachment]` (a Codable blob beside the body, metadata only — never bytes) so the attachment bar renders offline; the schema change is additive on the rebuildable cache, still bare `Schema([...])` with NO VersionedSchema/migration plan #attachments
+- [gotcha] A Codable value array on a @Model is an opaque blob: adding a NON-OPTIONAL field to `Attachment` (as `disposition` was) invalidates every previously written blob with no migration hook. Acceptable only because the store is rebuildable — if `Attachment` gains another required field, treat it as a cache-nuke, not a migration #blob
+- [decision] `storeBody(..., attachments:)` treats an EMPTY list as "this write knew nothing about attachments" (the plain-text path) and never clears metadata a previous detail fetch cached #merge
+
+
+## Update (2026-09-04 — labels, P8)
+
+- [fact] There are now THREE poll cadences in one pass, in order: messages (15s active / 60s idle, journal-driven), drafts (60s, whole-list diff), labels (120s, per-label sweep). Each later surface has its own failure mode and can never fail the mail pass; each advances its own "last polled" stamp only on success #cadence
+- [fact] Labels are the second surface with NO usable delta. The v1 change journal DOES report a label-only edit (upstream bumps `messages.updated_at`), but the v1 upsert payload has no `labels` field, so the entry proves a change and identifies nothing — membership is re-derived by listing each label. `refreshLabelsNow()` forces it, the way `refreshDraftsNow()` forces the drafts read #labels
+- [gotcha] The per-label listing is authoritative for that label ONLY when the page-walk reached the end; a capped walk writes nothing at all, same rule as message tombstoning. See [[Herald Label Caching and UI Architecture]] #labels
+
+
+## Update (2026-09-04 — P6: wake socket, and the 100-cap guard reconciled against a live 1.3.4 server)
+
+- [fact] CORRECTION to the `#cap` guard (recorded 2026-08-16 against a 1.1.2 server, when `GET /messages` silently clamped to 100 rows with no pagination): upstream 1.3.4 DOES paginate, verified live — `GET /messages?limit=2` returns `Link: <…cursor=…>; rel="next"`. The guard is NOT retired, and deliberately so: it is now the LEGACY-SERVER path. `paginatingAccounts` flips the moment any `Link` is seen for an account, and from then on a full-cap page is page-walked normally; the "a 100-row response may be truncated, skip tombstoning" rule only ever applies to a server that never emitted a cursor. Deleting it would break pre-1.3 servers by erasing unreturned mail on every pass #cap-status
+- [done] t-8a1c0051's live verification is SATISFIED: checkpoint → mutation → single upsert entry → `hasMore:false` exercised end to end against localhost:8787, and the pagination the guard keys on confirmed present. See the "#changes-live" facts in [[HQBase Mail API v1 Contract]] #journal-verified
+- [gotcha] The journal's cursor rejection is a 400, not a 410 (the server reserves 410 for a retention policy it has not built). Herald persists the cursor, so before P6 a foreign cursor — journal rebuilt, or a cache carried to a different instance — was PERMANENT: every pass failed on it and no amount of retrying could clear it. `AuthenticatingMiddleware` now maps both statuses to `.cursorExpired`, which drops the checkpoint and re-bootstraps (self-healing, because bootstrap asks the server for a fresh cursor) #cursor-rejection
+- [decision] There are now FOUR wake sources, and polling is still the floor: the `GET /events` socket stretches the message poll (active 15s→120s, idle 60s→300s) while it is CONNECTED and restores it the instant it is not — never stops it. The frames are documented wake-only with no replay, so a client that stopped polling would diverge silently the first time one was dropped; the stretched interval is also what still carries the drafts (60s) and label (120s) sweeps, which only ever run inside a pass. See [[Herald Wake Socket Architecture]] #poll-stretch
+
+
+## Update (2026-09-04 — A1 cache integrity: blob decoding, tombstone cascade)
+
+- [gotcha] MEASURED CORRECTION to the `#blob` note above ("treat it as a cache-nuke"): there is nothing to nuke, because nothing gets control. SwiftData decodes a `Codable` column with `try!` (`SwiftData/DefaultStore.swift:2393`) — a blob whose shape no longer matches the DTO is a PROCESS-FATAL trap inside `fetch`, not a thrown error. Verified both ways in-process: a missing key faults with `DecodingError.keyNotFound`, non-JSON bytes fault with `dataCorrupted`. So no typed error, no catch, and no route to `MailStoreContainer`'s delete-and-retry valve exists — that valve guards `open()` only, and the file here opens perfectly #try-bang
+- [decision] The fix is therefore STRUCTURAL, not a recovery path: every cache-blob DTO (`Attachment`, `DraftAttachment`, `MailboxAddress`, `SignatureSnapshot`) now has a TOTAL `init(from:)` — explicit `CodingKeys`, every field decoded with a fallback — so a missing, renamed or retyped key degrades ONE cached value instead of crashing the app on every launch. Safe precisely because the store is a rebuildable cache: the next fetch corrects the defaulted field. Their `Codable` conformance is used by SwiftData ONLY (the API layer maps from generated OpenAPI types), so nothing else loses its error reporting #total-decode
+- [rule] CACHE-BLOB CONVENTION: a new field on one of those four DTOs goes in THREE places — the property, `CodingKeys`, and the decode — and must have a sensible default. Hand-written `CodingKeys` mean an omitted field silently stops persisting, which is what the round-trip test in `CacheIntegrityTests` exists to catch #convention
+- [fact] Residual, accepted: byte-level corruption of a blob column (bit rot, a half-written page) still faults before any Herald code runs. Fatal on any design short of storing the column as `Data` and decoding by hand; SQLite's own integrity guarantees make it far rarer than the shape change, which was one routine schema edit away #residual
+- [fact] `deleteMissingMessages` now cascades like `deleteMessage`: body sidecar, label assignments and the pending-mutation fence. Every orphan it used to leave was DURABLE — an assignment keeps a dead message in its label's listing forever (the sweep only replaces the set of a label it re-reads), a sidecar becomes unreachable, and a fence blocks the journal from ever writing that id again #cascade
+- [fact] ACCEPTED and now commented in `replaceAssignments`: the per-label sweep inserts assignment rows for messages the cache has never held (the label listing covers the whole account; the message cache covers only synced folders). Consequence — a label's assignment-row count can exceed what the by-label conversation listing resolves, so any badge must count what the listing RESOLVES, never `CachedLabelAssignment` rows #sweep-unknown-ids

@@ -3,8 +3,11 @@ title: Herald Build and Toolchain
 type: note
 permalink: hqbase-mac/operations/herald-build-and-toolchain
 tags: [build, xcode]
+source_paths: [scripts/build-detached.sh, HeraldKit/Package.resolved]
+source_paths_inferred: true
+source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-08-18
+updated: 2026-09-04
 ---
 
 ## Observations
@@ -24,3 +27,5 @@ updated: 2026-08-18
 
 ## Update (2026-08-18 — dev copy isolation)
 - [decision] Debug builds use Keychain service `com.wizemann.herald.debug` and cache folder `Application Support/Herald-Debug` (`#if DEBUG` in KeychainStore / MailStoreContainer). Why: a login-keychain item is ACL-locked to the creating code signature; the dev copy (Apple Development cert) and release app (Developer ID) differed, so sharing one item prompted for the login keychain password on every dev launch and two processes rotated one refresh token. build-detached.sh no longer refuses to run beside the release app; sign in once in the dev copy #keychain #dev
+
+- [gotcha] 2026-09-04: running `swift build`/`swift test` on HeraldKit alone rewrites `HeraldKit/Package.resolved` and DROPS the app-only Sparkle pin — `git checkout HeraldKit/Package.resolved` before committing after package-level builds; the app build via xcodebuild restores/needs the pin #package-resolved

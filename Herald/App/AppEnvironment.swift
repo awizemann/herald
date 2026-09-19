@@ -18,6 +18,9 @@ final class AccountGraph {
     let sync: SyncEngine
     let mail: MailViewModel
     let outbox: OutboxService
+    /// Settings ▸ Signatures' client. Per-account like everything else here: two
+    /// accounts manage different signatures on different servers.
+    let signatures: SignatureManagementService
     /// Per-account: its "already announced" history dies with the graph, so a
     /// sign-out and a fresh sign-in cannot silence the new account's first mail.
     let notifier: NewMailNotifier
@@ -29,6 +32,7 @@ final class AccountGraph {
         sync: SyncEngine,
         mail: MailViewModel,
         outbox: OutboxService,
+        signatures: SignatureManagementService,
         notifier: NewMailNotifier,
         wake: MailEventSocket? = nil
     ) {
@@ -36,6 +40,7 @@ final class AccountGraph {
         self.sync = sync
         self.mail = mail
         self.outbox = outbox
+        self.signatures = signatures
         self.notifier = notifier
         self.wake = wake
     }
@@ -341,6 +346,49 @@ final class AppEnvironment {
         accountIDs.reduce(0) { $0 + (graphs[$1]?.mail.pickerUnread(forMailbox: nil) ?? 0) }
     }
 
+    // MARK: - Signature management
+
+    /// Settings ▸ Signatures, one per account, built on first use.
+    ///
+    /// Held HERE rather than made in the view's `body`: a fresh model per
+    /// SwiftUI pass would re-list on every redraw, and `@State` would pin
+    /// whichever instance happened to be first anyway. Cleared with the account
+    /// in ``forgetSignatureSettings(accountID:)``.
+    @ObservationIgnored private var signatureSettingsModels: [Account.ID: SignatureSettingsModel] = [:]
+
+    /// Bumped after any signature mutation. Open compose windows key their
+    /// candidate fetch on it, so a signature renamed or deleted in Settings is
+    /// not still offered under its old name by a composer that is already up.
+    private(set) var signatureRevision = 0
+
+    /// The selected account's pane model, or `nil` when no account is up (the
+    /// tab is then not shown at all rather than showing an empty list).
+    func signatureSettingsModel() -> SignatureSettingsModel? {
+        guard let id = selectedAccountID, let graph = graphs[id] else { return nil }
+        if let existing = signatureSettingsModels[id] { return existing }
+        let model = SignatureSettingsModel(
+            service: graph.signatures,
+            // Read through the view-model on every load, so a mailbox that has
+            // synced since the pane opened is offered as a scope.
+            mailboxes: { [weak graph] in graph?.mail.mailboxes ?? [] },
+            didMutate: { [weak self] in self?.signatureRevision += 1 }
+        )
+        signatureSettingsModels[id] = model
+        return model
+    }
+
+    /// Drops one account's pane model — on sign-out, and on a re-auth that
+    /// replaces the graph, so the pane cannot keep talking to a dead client.
+    func forgetSignatureSettings(accountID: Account.ID) {
+        signatureSettingsModels[accountID] = nil
+    }
+
+    /// The Signatures pane's "Sign In Again" button.
+    func reauthenticateSelectedAccount() {
+        let accountID = selectedAccountID
+        Task { await reauthenticate(accountID: accountID) }
+    }
+
     // MARK: - Launch
 
     func start() async {
@@ -527,12 +575,16 @@ final class AppEnvironment {
             sync: engine,
             mail: viewModel,
             outbox: OutboxService(api: api),
+            signatures: SignatureManagementService(api: api),
             notifier: notifier,
             wake: socket
         )
         // Published synchronously, so no second install can slip in and be
         // forgotten.
         let superseded = graphs.updateValue(graph, forKey: account.id)
+        // The Settings pane holds the SUPERSEDED graph's service; a re-auth must
+        // not leave it talking to a client whose tokens are gone.
+        forgetSignatureSettings(accountID: account.id)
         if !accountIDs.contains(account.id) { accountIDs.append(account.id) }
         // Selecting is what puts this account in the window. A restore bringing
         // the OTHER accounts up must not steal it — but an empty window beats

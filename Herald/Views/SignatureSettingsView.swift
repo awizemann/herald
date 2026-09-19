@@ -1,0 +1,439 @@
+import HeraldKit
+import SwiftUI
+import WebKit
+
+/// Settings ▸ Signatures — the manage-across-scopes list and its editor.
+///
+/// In its own file rather than inside `SettingsView`: the pane, its editor sheet
+/// and the preview web view together are longer than the other three panes put
+/// together.
+struct SignatureSettingsPane: View {
+    @State var model: SignatureSettingsModel
+    /// The re-auth action, for the "signed in before this existed" screen. `nil`
+    /// in tests and previews, which hides the button rather than offering one
+    /// that does nothing.
+    var reauthenticate: (() -> Void)?
+
+    var body: some View {
+        Group {
+            switch model.state {
+            case .loading:
+                SignatureMessagePane(
+                    symbol: "hourglass",
+                    title: "Loading signatures…",
+                    message: nil
+                ) {
+                    ProgressView().controlSize(.small)
+                }
+            case .ready:
+                if model.groups.isEmpty {
+                    SignatureMessagePane(
+                        symbol: "signature",
+                        title: "No signatures yet",
+                        message: "Signatures you can manage — your own, your mailboxes' and your domains' — appear here."
+                    ) {
+                        newSignatureButton
+                    }
+                } else {
+                    signatureList
+                }
+            case .needsReauthorization:
+                SignatureMessagePane(
+                    symbol: "person.badge.key",
+                    title: "Sign in again to manage signatures",
+                    message: "This account was signed in before signature management existed — sign in again to manage signatures."
+                ) {
+                    if let reauthenticate {
+                        Button("Sign In Again", action: reauthenticate)
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            case .unsupportedByServer:
+                SignatureMessagePane(
+                    symbol: "exclamationmark.triangle",
+                    title: "Server too old",
+                    message: "This server cannot manage signatures. It needs HQBase 1.4.2 or newer."
+                ) {}
+            case .failed(let message):
+                SignatureMessagePane(
+                    symbol: "exclamationmark.triangle",
+                    title: "Signatures could not be loaded",
+                    message: message
+                ) {
+                    Button("Try Again") { Task { await model.load() } }
+                }
+            }
+        }
+        .task { await model.load() }
+        .sheet(item: $model.editor) { editor in
+            SignatureEditorSheet(model: model, editor: editor)
+        }
+        .confirmationDialog(
+            "Delete “\(model.pendingDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { model.pendingDeletion != nil },
+                set: { if !$0 { model.cancelDeletion() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { Task { await model.confirmDeletion() } }
+            Button("Cancel", role: .cancel) { model.cancelDeletion() }
+        } message: {
+            Text("Messages already sent keep the signature they were sent with.")
+        }
+    }
+
+    private var signatureList: some View {
+        Form {
+            if let actionError = model.actionError {
+                Section {
+                    Label(actionError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(MailTheme.failure)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            ForEach(model.groups) { group in
+                Section {
+                    ForEach(group.signatures) { signature in
+                        SignatureRow(model: model, signature: signature)
+                    }
+                } header: {
+                    // Both parts are in the heading VoiceOver reads before the
+                    // rows, so a "Work" signature is never ambiguous between two
+                    // mailboxes that both have one.
+                    Text("\(group.scope.displayName) · \(group.label)")
+                }
+            }
+            Section {
+                newSignatureButton
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var newSignatureButton: some View {
+        Button {
+            model.beginCreate()
+        } label: {
+            Label("New Signature", systemImage: "plus")
+        }
+        // With no scope to file it under, creating one could only ever fail. The
+        // hint says why rather than leaving a dead button.
+        .disabled(model.scopeOptions.isEmpty)
+        .accessibilityHint(
+            model.scopeOptions.isEmpty
+                ? "No mailbox or domain you can manage signatures for"
+                : ""
+        )
+    }
+}
+
+/// The loading/empty/error screens, which differ only in symbol, words and the
+/// action underneath.
+private struct SignatureMessagePane<Action: View>: View {
+    let symbol: String
+    let title: String
+    let message: String?
+    @ViewBuilder var action: Action
+
+    var body: some View {
+        VStack(spacing: MailTheme.Spacing.md) {
+            Image(systemName: symbol)
+                .font(MailTheme.Typography.largeGlyph)
+                .foregroundStyle(.secondary)
+                // Decorative: the title below says the same thing in words.
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.headline)
+            if let message {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            action
+        }
+        .padding(MailTheme.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(message.map { "\(title). \($0)" } ?? title)
+    }
+}
+
+/// One signature: name, default badge, and its two actions.
+private struct SignatureRow: View {
+    let model: SignatureSettingsModel
+    let signature: Signature
+
+    var body: some View {
+        HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                HStack(spacing: MailTheme.Spacing.sm) {
+                    Text(signature.name)
+                        .lineLimit(1)
+                    if signature.isDefault { defaultBadge }
+                }
+                if !preview.isEmpty {
+                    Text(preview)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: MailTheme.Spacing.sm) {
+                Button("Edit") { model.beginEdit(signature) }
+                Button {
+                    model.pendingDeletion = signature
+                } label: {
+                    Image(systemName: "trash")
+                }
+                // An icon-only button is an unlabelled element to VoiceOver and
+                // has no Voice Control name; both come from here.
+                .accessibilityLabel("Delete \(signature.name)")
+            }
+            .fixedSize()
+        }
+        .padding(.vertical, MailTheme.Spacing.xxs)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            signature.isDefault ? "\(signature.name), default" : signature.name
+        )
+    }
+
+    /// The server's plain-text rendering, first line only — enough to tell two
+    /// similarly named signatures apart without rendering HTML in a list row.
+    private var preview: String {
+        signature.text
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+    }
+
+    private var defaultBadge: some View {
+        Text("Default")
+            .font(.caption2)
+            .padding(.horizontal, MailTheme.Spacing.sm)
+            .padding(.vertical, MailTheme.Spacing.xxs)
+            .background(MailTheme.chipBackground, in: .rect(cornerRadius: MailTheme.Radius.sm))
+            .foregroundStyle(MailTheme.chipLabelForeground)
+            // Folded into the row's own label above, so VoiceOver says
+            // "Work, default" instead of stopping on a stray chip.
+            .accessibilityHidden(true)
+    }
+}
+
+/// Create/edit. Name, scope (new signatures only), the HTML source and a live
+/// rendering of it side by side, and the default toggle.
+private struct SignatureEditorSheet: View {
+    let model: SignatureSettingsModel
+    @Bindable var editor: SignatureEditor
+    /// The HTML the preview has actually rendered. Kept behind the field so the
+    /// web view is not reloaded on every keystroke.
+    @State private var previewHTML = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.lg) {
+            Text(editor.title)
+                .font(.headline)
+
+            Form {
+                TextField("Name", text: $editor.name)
+                    .accessibilityLabel("Signature name")
+
+                if editor.isEditingExisting {
+                    // `PATCH /signatures/{id}` has no scope field, so this is
+                    // stated rather than offered as a control that cannot work.
+                    LabeledContent("Scope", value: scopeLabel)
+                } else {
+                    Picker("Scope", selection: $editor.scope) {
+                        ForEach(model.scopeOptions) { option in
+                            Text("\(option.scope.displayName) · \(option.label)")
+                                .tag(SignatureScopeRef?.some(option.ref))
+                        }
+                    }
+                }
+
+                Toggle("Use as the default for this scope", isOn: $editor.isDefault)
+            }
+            .formStyle(.grouped)
+            .frame(height: 120)
+
+            HStack(alignment: .top, spacing: MailTheme.Spacing.lg) {
+                editorColumn(title: "HTML") {
+                    TextEditor(text: $editor.html)
+                        .font(.system(.body, design: .monospaced))
+                        .accessibilityLabel("Signature HTML")
+                        .overlay {
+                            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+                                .strokeBorder(.separator)
+                        }
+                }
+                editorColumn(title: "Preview") {
+                    SignaturePreviewView(html: previewHTML)
+                        .clipShape(.rect(cornerRadius: MailTheme.Radius.sm))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+                                .strokeBorder(.separator)
+                        }
+                }
+            }
+            .frame(minHeight: 200)
+
+            if let fieldError = editor.fieldError {
+                Label(fieldError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(MailTheme.failure)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Text("The server sanitises and appends this signature when the message is sent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { model.cancelEdit() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { Task { await model.save() } }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!editor.canSave)
+            }
+        }
+        .padding(MailTheme.Spacing.xl)
+        .frame(width: 720, height: 560)
+        // Debounced: re-rendering the web view on every keystroke would flicker
+        // the preview and recompile nothing useful.
+        .task(id: editor.html) {
+            // The first pass must paint immediately, or an edit sheet opens onto
+            // a blank preview of content it already has.
+            if !previewHTML.isEmpty || !editor.html.isEmpty {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard !Task.isCancelled else { return }
+            previewHTML = editor.html
+        }
+    }
+
+    private var scopeLabel: String {
+        guard let existing = editor.existing else { return "" }
+        return "\(existing.scope.displayName) · \(existing.scopeLabel)"
+    }
+
+    private func editorColumn(title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// A read-only rendering of one signature's HTML.
+///
+/// Same containment posture as the reading pane (``MessageWebView``): JavaScript
+/// off, a nil base URL, the compiled remote-content rule list in front of every
+/// network load, and every navigation but our own refused via ``NavigationPolicy``.
+/// Signature HTML is server-sanitised, but it is still markup this process did
+/// not author, and a preview that phoned home would be a tracking pixel with a
+/// different name.
+struct SignaturePreviewView: NSViewRepresentable {
+    let html: String
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = false
+        configuration.defaultWebpagePreferences = preferences
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsLinkPreview = false
+        webView.setAccessibilityLabel("Signature preview")
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.load(html, into: webView)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.load(html, into: webView)
+    }
+
+    /// Wraps the fragment so it renders at the system body font instead of
+    /// WebKit's default Times, and declares the document language for VoiceOver.
+    static func document(for html: String) -> String {
+        """
+        <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)">
+        <head><meta charset="utf-8"><title>Signature preview</title></head>
+        <body style="font: -apple-system-body; margin:12px; color-scheme: light dark">
+        \(html)
+        </body></html>
+        """
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        /// What was handed to WebKit, so an unrelated SwiftUI pass does not
+        /// reload identical content and flash the pane.
+        private var loaded: String?
+        private var loadTask: Task<Void, Never>?
+        /// Set immediately before `loadHTMLString` and consumed by the first
+        /// main-frame decision, so exactly one navigation per render is ours.
+        private var expectsOurLoad = false
+
+        func load(_ html: String, into webView: WKWebView) {
+            guard html != loaded else { return }
+            loaded = html
+            loadTask?.cancel()
+            loadTask = Task { [weak webView] in
+                let ruleList = await RemoteContentBlocker.ruleList()
+                guard let webView, !Task.isCancelled else { return }
+                webView.configuration.userContentController.removeAllContentRuleLists()
+                guard let ruleList else {
+                    // Without the blocker we refuse to render rather than render
+                    // unprotected — the reading pane's rule. Nothing is claimed
+                    // as loaded, so the next pass tries again.
+                    self.loaded = nil
+                    self.expectsOurLoad = true
+                    webView.loadHTMLString(Self.blockerFailureDocument, baseURL: nil)
+                    return
+                }
+                webView.configuration.userContentController.add(ruleList)
+                self.expectsOurLoad = true
+                webView.loadHTMLString(SignaturePreviewView.document(for: html), baseURL: nil)
+            }
+        }
+
+        /// Nothing navigates out of a preview — not even a clicked link, which in
+        /// the reading pane opens a browser but here would be a click on the
+        /// user's own draft markup.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
+            let decision = NavigationPolicy.decide(
+                url: navigationAction.request.url,
+                navigationType: navigationAction.navigationType,
+                isMainFrame: navigationAction.targetFrame?.isMainFrame ?? false,
+                isOurInitialLoad: expectsOurLoad
+            )
+            guard decision == .allow else { return .cancel }
+            expectsOurLoad = false
+            return .allow
+        }
+
+        static let blockerFailureDocument = """
+            <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)">
+            <head><meta charset="utf-8"><title>Preview unavailable</title></head>
+            <body style="font: -apple-system-body; margin:12px">
+            <p>Herald could not start its content blocker, so this preview was not displayed.</p>
+            </body></html>
+            """
+    }
+}

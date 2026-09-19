@@ -48,6 +48,33 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     /// DISPLAY ONLY — the compose preview reads it when the candidate list has
     /// nothing to say (a signature that was deleted after the draft was written).
     public private(set) var signatureSnapshot: SignatureSnapshot?
+    /// The `idempotencyKey` every send attempt for THIS message carries
+    /// (upstream 1.4.0+). Minted when the compose window opens and deliberately
+    /// NOT part of ``hasSameEditableContent(as:)`` — editing the text does not
+    /// start a new message.
+    ///
+    /// ## Rotation rule
+    /// The key rotates in exactly two places:
+    ///
+    /// 1. **after a send succeeds** — the window's next message (a reused
+    ///    composer, or the draft being sent a second time on purpose) must not
+    ///    be deduped away as a replay of the one that just went out; and
+    /// 2. **on `SEND_KEY_CONFLICT`**, followed by exactly one automatic retry
+    ///    (``OutboxService/send(_:)``).
+    ///
+    /// It deliberately does NOT rotate when the user edits after a failed send,
+    /// though that edit is what provokes the 409: the server's identity is a hash
+    /// of the body IT assembles — the authored text plus a signature and a quoted
+    /// original that Herald never sees — so a client-side "the content changed"
+    /// predicate is neither sound nor complete. It would rotate where the server
+    /// would have deduped (throwing away the protection on the retry that needs
+    /// it most, the one after a timeout) and still miss cases the server calls
+    /// different. Letting the 409 be the authority is exact, costs one extra
+    /// round trip on the rare edited retry, and keeps one code path instead of
+    /// two disagreeing definitions of "the same message".
+    ///
+    /// A UUID string: 36 characters, inside the server's 1–100 bound.
+    public private(set) var sendAttemptKey: String
     /// Files the user picked that are not uploaded yet.
     public private(set) var pendingAttachments: [URL]
     /// Files already uploaded to the server draft.
@@ -68,6 +95,7 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
         body: String = "",
         signature: SignatureSelection = .automatic,
         signatureSnapshot: SignatureSnapshot? = nil,
+        sendAttemptKey: String = UUID().uuidString,
         pendingAttachments: [URL] = [],
         uploadedAttachments: [DraftAttachment] = [],
         serverDraft: Draft? = nil,
@@ -84,6 +112,7 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
         self.body = body
         self.signature = signature
         self.signatureSnapshot = signatureSnapshot
+        self.sendAttemptKey = sendAttemptKey
         self.pendingAttachments = pendingAttachments
         self.uploadedAttachments = uploadedAttachments
         self.serverDraft = serverDraft
@@ -146,6 +175,20 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
 
     mutating func applyRemoval(attachmentID: String) {
         uploadedAttachments.removeAll { $0.id == attachmentID }
+    }
+
+    /// Starts a NEW send identity. See ``sendAttemptKey`` for when this is legal.
+    public mutating func rotateSendAttemptKey() {
+        sendAttemptKey = UUID().uuidString
+    }
+
+    /// Takes ONLY the send identity from a ``SendReceipt``'s draft.
+    ///
+    /// Deliberately not `self = receipt.draft`: that snapshot is what was SENT,
+    /// so assigning it would revert anything typed during the round trip — the
+    /// same data-loss bug ``adoptServerState(from:sent:)`` exists to avoid.
+    public mutating func adoptSendAttemptKey(from other: ComposeDraft) {
+        sendAttemptKey = other.sendAttemptKey
     }
 
     mutating func clearServerDraft() {

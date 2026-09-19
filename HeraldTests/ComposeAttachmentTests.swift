@@ -50,9 +50,11 @@ actor GatedOutbox: Outboxing {
     func discard(_ draft: ComposeDraft) async throws(OutboxError) {}
     func removeAttachment(_ id: String, from draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft { draft }
     @discardableResult
-    func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary {
+    func send(_ draft: ComposeDraft) async throws(OutboxError) -> SendReceipt {
         sendCount += 1
-        return MailFixtures.message(id: "sent")
+        var sent = draft
+        sent.rotateSendAttemptKey()
+        return SendReceipt(message: MailFixtures.message(id: "sent"), draft: sent)
     }
 }
 

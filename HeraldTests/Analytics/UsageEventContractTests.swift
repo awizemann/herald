@@ -43,6 +43,7 @@ import Testing
     static let outboxErrorKinds: Set<String> = [
         "invalid_recipient", "no_recipients", "attachment_too_large", "draft_too_large",
         "too_many_attachments", "draft_conflict", "file_unreadable",
+        "send_on_hold_recovering", "send_on_hold_storage_not_ready",
         "api_unauthorized", "api_insufficient_scope", "api_not_found", "api_cursor_expired",
         "api_server", "api_transport", "api_decoding", "api_other",
     ]

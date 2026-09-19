@@ -69,6 +69,26 @@ final class ComposeViewModel {
     private(set) var announcement: String?
     /// Set when the window should go away: send succeeded, or the user discarded.
     private(set) var isClosed = false
+    /// Non-nil once the server has told this window not to send again — the two
+    /// 1.4.0 503s. While it is set, ``send()`` refuses and the Send button is
+    /// disabled: the window stays open with every word in it, but Herald offers
+    /// no retry, automatic or otherwise.
+    ///
+    /// The two holds differ in what the server did with the message, so they lift
+    /// differently:
+    ///
+    /// - ``SendHold/recovering`` — the mail WAS accepted; a second copy is the
+    ///   failure mode. The hold never lifts for this window. The user's recourse
+    ///   is to close it once the message shows up in Sent.
+    /// - ``SendHold/storageNotReady`` — nothing was accepted, the server simply
+    ///   is not finished updating. Editing anything lifts the hold, so the user
+    ///   can try again deliberately once they have reason to think it is over.
+    ///   The send key is NOT rotated by that edit, so even a too-early retry
+    ///   cannot deliver twice.
+    private(set) var sendHold: SendHold?
+    /// Whether Send is refused right now. The button reads this and so does
+    /// ``send()`` — ⌘⇧D must not do what the disabled button will not.
+    var isSendBlocked: Bool { sendHold != nil }
     /// Drives the ⌘W confirmation sheet.
     var confirmsClose = false
 
@@ -336,6 +356,10 @@ final class ComposeViewModel {
 
     private func edited(_ changed: Bool) {
         guard changed else { return }
+        // An edit is the user acting on "not yet": it lifts the recoverable hold
+        // only. `.recovering` means a copy is already out, and no amount of
+        // typing makes a second one right.
+        if sendHold == .storageNotReady { sendHold = nil }
         if status.message != nil { status = .idle }
         scheduleAutosave()
     }
@@ -408,6 +432,12 @@ final class ComposeViewModel {
     /// trip and the error lands on the field instead of in an alert.
     @discardableResult
     func send() async -> Bool {
+        guard !isSendBlocked else {
+            // Reached only by ⌘⇧D while the button is disabled. Re-announce the
+            // reason rather than silently doing nothing.
+            if let sendHold { status = .failed(OutboxError.sendOnHold(sendHold).localizedDescription) }
+            return false
+        }
         autosaveTask?.cancel()
         // ⌘⇧D can beat a queued upload to the punch; the attachment ids only exist
         // once the uploads have landed.
@@ -432,7 +462,13 @@ final class ComposeViewModel {
         // show a draft that no longer exists until the next poll.
         let serverDraftID = draft.serverDraft?.id
         do {
-            _ = try await outbox.send(draft)
+            let receipt = try await outbox.send(draft)
+            // ONLY the send identity is taken from the receipt: it carries the
+            // ROTATED key, so a composer reused for a second message is not
+            // deduped away as a replay of the one that just went out. Assigning
+            // the receipt's whole draft would revert anything typed during the
+            // round trip — the rule `adoptServerState(from:sent:)` exists for.
+            draft.adoptSendAttemptKey(from: receipt.draft)
             isClosed = true
             // Counts and two booleans only — never an address, a subject or a
             // file name.
@@ -449,6 +485,7 @@ final class ComposeViewModel {
             // `send` throws a typed `OutboxError`, so there is nothing to unwrap
             // — and the kind is all that is kept.
             record(.sendFailed(kind: UsageOutboxErrorKind(error)))
+            if case .sendOnHold(let hold) = error { sendHold = hold }
             status = .failed(error.localizedDescription)
             return false
         }

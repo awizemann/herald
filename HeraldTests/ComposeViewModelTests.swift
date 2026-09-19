@@ -56,11 +56,15 @@ actor FakeOutbox: Outboxing {
     }
 
     @discardableResult
-    func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary {
+    func send(_ draft: ComposeDraft) async throws(OutboxError) -> SendReceipt {
         sendCount += 1
         lastSent = draft
         if let sendError { throw sendError }
-        return MailFixtures.message(id: "sent")
+        // The real service rotates the key on success; the fake has to as well,
+        // or the view-model test could not tell adoption from doing nothing.
+        var sent = draft
+        sent.rotateSendAttemptKey()
+        return SendReceipt(message: MailFixtures.message(id: "sent"), draft: sent)
     }
 }
 
@@ -201,6 +205,99 @@ actor FakeOutbox: Outboxing {
         // Idempotent: a second close does not save an unchanged draft again.
         await model.flushAndStop()
         #expect(await outbox.saveCount == 1)
+    }
+
+    // MARK: - Send holds (upstream 1.4.0 503s)
+
+    /// `SEND_RECOVERY_UNAVAILABLE` means the mail was ACCEPTED and the server
+    /// cannot confirm it. The compose window must therefore stop offering Send:
+    /// the one thing the server asks for is that the client not try again. Fails
+    /// if the window closes (the user would think nothing was sent), if Send stays
+    /// available, or if ⌘⇧D can still fire a second POST past the disabled button.
+    @Test func aRecoveryHoldDisablesSendAndNeverPostsAgain() async {
+        let outbox = FakeOutbox()
+        await outbox.setSendError(.sendOnHold(.recovering))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Already on its way"
+
+        #expect(await model.send() == false)
+        #expect(model.isClosed == false)
+        #expect(model.bodyText == "Already on its way")
+        #expect(model.sendHold == .recovering)
+        #expect(model.isSendBlocked)
+        #expect(model.status.message?.contains("again") == true)
+
+        // ⌘⇧D while the button is disabled: refused locally, no second attempt.
+        await outbox.setSendError(nil)
+        #expect(await model.send() == false)
+        #expect(await outbox.sendCount == 1, "A held send was posted a second time")
+
+        // And editing does NOT unlock it: a copy is already out there.
+        model.bodyText = "Already on its way, edited"
+        #expect(model.isSendBlocked)
+        #expect(await model.send() == false)
+        #expect(await outbox.sendCount == 1)
+    }
+
+    /// `SEND_STORAGE_NOT_READY` is the other half: nothing was accepted, the server
+    /// is mid-update. Send is still withdrawn — Herald offers no retry — but an
+    /// edit is the user deliberately picking the message back up, so it lifts.
+    /// Fails if the hold is permanent (the user could never send this message) or
+    /// if it never engaged at all.
+    @Test func aStorageHoldLiftsOnlyWhenTheUserEdits() async {
+        let outbox = FakeOutbox()
+        await outbox.setSendError(.sendOnHold(.storageNotReady))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Waiting on the server"
+
+        #expect(await model.send() == false)
+        #expect(model.sendHold == .storageNotReady)
+        #expect(model.isSendBlocked)
+
+        await outbox.setSendError(nil)
+        model.bodyText = "Waiting on the server, take two"
+        #expect(model.isSendBlocked == false)
+        #expect(await model.send() == true)
+        #expect(await outbox.sendCount == 2)
+    }
+
+    /// The send identity has to survive a retry of the SAME message and rotate
+    /// only once the message is really gone. Fails on a key re-minted per attempt
+    /// (the retry would deliver twice) and on one that never rotates (the next
+    /// message from this window would be deduped away).
+    @Test func theSendKeyIsStableAcrossRetriesAndRotatesOnSuccess() async {
+        let outbox = FakeOutbox()
+        await outbox.setSendError(.api(.transport(.init(URLError(.timedOut)))))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Hello"
+        let original = model.draft.sendAttemptKey
+
+        #expect(await model.send() == false)
+        #expect(model.draft.sendAttemptKey == original)
+        // Even after the user edits: rotating here is what would double-deliver.
+        model.bodyText = "Hello again"
+        #expect(model.draft.sendAttemptKey == original)
+        #expect(await outbox.lastSent?.sendAttemptKey == original)
+
+        await outbox.setSendError(nil)
+        #expect(await model.send() == true)
+        #expect(await outbox.lastSent?.sendAttemptKey == original, "The retry changed identity")
+        #expect(model.draft.sendAttemptKey != original, "A sent composer kept the delivered key")
     }
 
     /// Fails if the view-model hands the composer empty own-addresses: the user's

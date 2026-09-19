@@ -419,12 +419,24 @@ actor FakeMailAPIClient: MailAPIClient {
     private var draftSequence = 0
     private var forcedConflicts = 0
     private var sendFailure: MailAPIError?
+    /// Failures consumed ONE PER send attempt, before ``sendFailure``. `nil`
+    /// entries are successes, which is how "fail once, then succeed" is scripted
+    /// without a timer.
+    private var scriptedSendFailures: [MailAPIError?] = []
     private var attachmentFailure: MailAPIError?
     private var sentSummary: MessageSummary?
 
     /// The next `n` PATCHes answer 409 the way upstream's `DRAFT_CONFLICT` does.
     func setForcedConflicts(_ count: Int) { forcedConflicts = count }
     func setSendFailure(_ failure: MailAPIError?) { sendFailure = failure }
+    /// One entry per expected POST, in order.
+    func setSendFailureScript(_ script: [MailAPIError?]) { scriptedSendFailures = script }
+
+    /// The failure this attempt should answer with, consuming the script.
+    private func nextSendFailure() -> MailAPIError? {
+        guard !scriptedSendFailures.isEmpty else { return sendFailure }
+        return scriptedSendFailures.removeFirst()
+    }
     func setAttachmentFailure(_ failure: MailAPIError?) { attachmentFailure = failure }
     func setSentSummary(_ summary: MessageSummary?) { sentSummary = summary }
     func storedDraft(id: String) -> Draft? { storedDrafts[id] }
@@ -713,7 +725,7 @@ actor FakeMailAPIClient: MailAPIClient {
         lastSentSignature = try sentSignature(
             draftID: input.draftID, selection: input.signature, from: input.from
         )
-        if let sendFailure { throw sendFailure }
+        if let failure = nextSendFailure() { throw failure }
         return sentSummary ?? SyncFixtures.message("msg_sent", folder: .sent)
     }
 
@@ -722,7 +734,7 @@ actor FakeMailAPIClient: MailAPIClient {
         lastSentSignature = try sentSignature(
             draftID: input.draftID, selection: input.signature, from: input.from
         )
-        if let sendFailure { throw sendFailure }
+        if let failure = nextSendFailure() { throw failure }
         return sentSummary ?? SyncFixtures.message("msg_reply", folder: .sent)
     }
 
@@ -732,7 +744,7 @@ actor FakeMailAPIClient: MailAPIClient {
         lastSentSignature = try sentSignature(
             draftID: nil, selection: input.signature, from: input.from
         )
-        if let sendFailure { throw sendFailure }
+        if let failure = nextSendFailure() { throw failure }
         return sentSummary ?? SyncFixtures.message("msg_forward", folder: .sent)
     }
 }

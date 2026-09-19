@@ -96,10 +96,21 @@ public nonisolated struct MessageUpsertResult: Sendable, Hashable {
     public let changes: ChangeSet
     /// Keyed by message id; present only for rows that existed beforehand.
     public let previousScopes: [String: MessageScope]
+    /// Whether the summaries' EMBEDDED labels (`includeLabels=true`, upstream
+    /// 1.4.2+) changed the assignment table.
+    ///
+    /// Its own flag, not folded into ``changes``: a label-only edit bumps
+    /// `messages.updated_at` and so arrives as a journal upsert whose every
+    /// message FIELD is identical, which means ``changes`` is empty and no
+    /// `.changed` event is emitted — yet the chips on screen are now wrong. The
+    /// engine turns this into `.labelsChanged`, which is the event the
+    /// view-model already rebuilds the label index for.
+    public let labelsChanged: Bool
 
-    public init(changes: ChangeSet, previousScopes: [String: MessageScope]) {
+    public init(changes: ChangeSet, previousScopes: [String: MessageScope], labelsChanged: Bool = false) {
         self.changes = changes
         self.previousScopes = previousScopes
+        self.labelsChanged = labelsChanged
     }
 }
 
@@ -413,6 +424,15 @@ public actor MailStore {
     }
 
     /// Upserts one listing scope's conversations. Ids in the ``ChangeSet`` are thread ids.
+    ///
+    /// Deliberately does NOT write the embedded labels on `latest`, although an
+    /// `includeLabels` client receives them here too. A conversation row is a
+    /// denormalized copy of ONE message of the thread, and every message it can
+    /// name is also delivered as a message row in the same pass — by the journal
+    /// (which reports every change, including a label-only one) or by the folder
+    /// listing behind it. Writing membership from two places would mean two
+    /// definitions of "this message's labels" racing inside one pass for no
+    /// coverage the message path does not already have.
     @discardableResult
     public func upsertConversations(
         _ conversations: [ConversationSummary],
@@ -456,6 +476,12 @@ public actor MailStore {
 
     /// Upserts message summaries. A message's identity is its server id, so the
     /// scope arguments are not needed — a message that moved folder is an update.
+    ///
+    /// Embedded labels are written exactly as in
+    /// ``applyMessageUpserts(_:accountID:)``, but the `labelsChanged` flag is
+    /// DROPPED here because a `ChangeSet` has nowhere to carry it. A caller that
+    /// needs to know whether the chips moved — the sync engine, which turns it
+    /// into `.labelsChanged` — calls `applyMessageUpserts` instead.
     @discardableResult
     public func upsertMessages(_ messages: [MessageSummary], accountID: String) throws -> ChangeSet {
         try applyMessageUpserts(messages, accountID: accountID).changes
@@ -470,6 +496,15 @@ public actor MailStore {
     ///   otherwise un-star the row under their cursor.
     /// - The previous (mailbox, folder) is handed back so the caller can refresh
     ///   the listing the message MOVED OUT of, not just the one it landed in.
+    ///
+    /// It is ALSO where label membership lands. Since upstream 1.4.2 every
+    /// summary an `includeLabels` client receives states the message's labels,
+    /// and this is the one funnel every stored summary passes through — journal
+    /// upserts, folder listings and the authoritative answer to a triage action
+    /// alike — so writing them here is what makes rows, rather than the per-label
+    /// sweep, the membership source. Summaries whose `labels` is `nil` (an older
+    /// server said nothing) are skipped and leave the cache alone; see
+    /// ``applyEmbeddedLabels(from:accountID:)``.
     @discardableResult
     public func applyMessageUpserts(
         _ messages: [MessageSummary],
@@ -497,7 +532,15 @@ public actor MailStore {
                 }
             }
             if !changes.isEmpty { try save() }
-            return MessageUpsertResult(changes: changes, previousScopes: previousScopes)
+            // AFTER the rows exist: an assignment denormalizes the message's
+            // thread id, and for a brand-new message this upsert is what supplies
+            // it. (It reads the id off the summary, not the row, so the order is
+            // belt-and-braces rather than load-bearing — but a future join would
+            // depend on it.)
+            let labelsChanged = try applyEmbeddedLabels(from: messages, accountID: accountID)
+            return MessageUpsertResult(
+                changes: changes, previousScopes: previousScopes, labelsChanged: labelsChanged
+            )
         } catch {
             logger.error("Message upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error

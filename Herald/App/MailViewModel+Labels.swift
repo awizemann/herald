@@ -74,6 +74,28 @@ extension MailViewModel {
         await updateLabelSurfaceVisibility()
     }
 
+    /// Writes the label membership EMBEDDED in summaries the VIEW fetched
+    /// directly — the single-message route and the thread route — and redraws the
+    /// chips if anything moved.
+    ///
+    /// The sync engine covers every summary that goes through the cache; these
+    /// two routes do not, because the view reads them for display and never
+    /// stores the message. The membership they carry is still the freshest
+    /// statement the app has, and it is free — the request was made anyway.
+    ///
+    /// A no-op on a server that does not embed labels: every `labels` is `nil`
+    /// there and ``MailStore/applyEmbeddedLabels(from:accountID:)`` skips it.
+    func storeEmbeddedLabels(of summaries: [MessageSummary]) async {
+        do {
+            guard try await store.applyEmbeddedLabels(from: summaries, accountID: accountID) else { return }
+            guard !Task.isCancelled else { return }
+            await reloadLabelIndex()
+            await reloadSelectedMessageLabels()
+        } catch {
+            logger.error("Embedded label write failed: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+
     /// Rebuilds the thread → labels index the row chips read, AND the per-label
     /// counts the sidebar badges read.
     ///
@@ -96,9 +118,14 @@ extension MailViewModel {
     /// Tells the sync engine whether anything on screen is showing labels, which
     /// is what decides how often the membership sweep runs.
     ///
-    /// The sweep is one `GET /messages?labelId=` page-walk PER label and it is
-    /// the single most expensive idle thing Herald does, so it earns its 120s
-    /// cadence only while someone can see the result. Two ways that is true:
+    /// It only decides anything on a pre-1.4.2 server, where the sweep is the
+    /// only membership source: there it is one `GET /messages?labelId=` page-walk
+    /// PER label and the single most expensive idle thing Herald does, so it
+    /// earns its 120s cadence only while someone can see the result. Against a
+    /// server that embeds labels on message rows the engine ignores this signal
+    /// and holds the sweep to its reconciliation interval — which is the engine's
+    /// call to make, so the view-model keeps reporting the same fact either way.
+    /// Two ways the surface is visible:
     ///
     /// - a label LISTING is open — the rows on screen ARE the membership; or
     /// - the account has labels at all AND the app is frontmost — the sidebar is
@@ -132,7 +159,8 @@ extension MailViewModel {
         }
     }
 
-    /// A label sweep changed something: the list, the membership, or both.
+    /// Labels moved: the list, the membership, or both — from the reconciliation
+    /// sweep, or from the embedded labels a pass upserted with its message rows.
     func applyLabelsChanged() async {
         await reloadLabels()
         // Only the label listing is DERIVED from membership, so a folder listing
@@ -152,9 +180,11 @@ extension MailViewModel {
 
     /// Enters (or, with `nil`, leaves) a label listing.
     ///
-    /// Entering asks the engine for a fresh sweep, for the same reason opening
-    /// Drafts asks for a fresh drafts poll: the sweep runs on a deliberately slow
-    /// interval precisely because nobody is usually looking at it.
+    /// Entering asks the engine for a fresh reconciliation, for the same reason
+    /// opening Drafts asks for a fresh drafts poll: it runs on a deliberately slow
+    /// interval precisely because nobody is usually looking at it — and it is the
+    /// only thing that can bring in assignments for messages in folders this cache
+    /// has never listed, which a label listing is exactly where you notice.
     func showLabel(_ labelID: String?) {
         guard labelID != selectedLabelID else { return }
         selectedLabelID = labelID

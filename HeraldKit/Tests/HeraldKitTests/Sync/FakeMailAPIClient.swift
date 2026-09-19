@@ -763,7 +763,11 @@ nonisolated enum SyncFixtures {
         direction: MessageDirection = .inbound,
         readAt: Date? = nil,
         starredAt: Date? = nil,
-        subject: String = "Subject"
+        subject: String = "Subject",
+        // `nil` is what a pre-1.4.2 server returns (no `labels` key at all) and is
+        // therefore the DEFAULT, so every fixture that does not care about labels
+        // exercises the legacy path rather than silently clearing membership.
+        labels: [MailLabel]? = nil
     ) -> MessageSummary {
         MessageSummary(
             id: id,
@@ -780,7 +784,8 @@ nonisolated enum SyncFixtures {
             readAt: readAt,
             starredAt: starredAt,
             hasAttachments: false,
-            createdAt: Date(timeIntervalSince1970: 2_000)
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            labels: labels
         )
     }
 

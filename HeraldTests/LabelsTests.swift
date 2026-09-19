@@ -342,4 +342,42 @@ struct LabelsTests {
         await harness.model.setActive(false)
         #expect(await harness.sync.labelSurfaceVisibility.count == 4)
     }
+
+    // MARK: - Membership from rows (upstream 1.4.2)
+
+    /// The two routes the VIEW fetches directly — the single-message route and
+    /// the thread route — embed labels too, and nothing else stores their
+    /// summaries, so this is the only path that can carry them into the cache.
+    /// Fails if the chips the reading pane is drawing are left a reconciliation
+    /// behind the answer the app just received, and fails the other way if a
+    /// pre-1.4.2 answer (no `labels` key) is allowed to clear them.
+    @Test("A view-fetched summary's embedded labels reach the chips, and a silent one does not")
+    func viewFetchedLabelsReachTheChips() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.seed()
+        await harness.model.reloadLabels()
+        await harness.model.reloadLabelIndex()
+        #expect(harness.model.labelIDsByThread["thr_inbox"] == nil, "the inbox thread starts unlabelled")
+
+        // A detail/thread answer from a 1.4.2 server: the message states its set.
+        await harness.model.storeEmbeddedLabels(of: [
+            MailFixtures.message(
+                id: "m1", threadID: "thr_inbox",
+                labels: [LabelHarness.label("lbl_2", "Later", color: .amber)]
+            )
+        ])
+        #expect(
+            harness.model.labelIDsByThread["thr_inbox"] == ["lbl_2"],
+            "the freshest statement the app has must redraw the chips at once"
+        )
+
+        // The same answer from an older server says nothing at all.
+        await harness.model.storeEmbeddedLabels(of: [
+            MailFixtures.message(id: "m1", threadID: "thr_inbox")
+        ])
+        #expect(
+            harness.model.labelIDsByThread["thr_inbox"] == ["lbl_2"],
+            "an absent labels key is not 'no labels' and must not clear the chips"
+        )
+    }
 }

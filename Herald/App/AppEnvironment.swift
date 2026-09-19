@@ -423,7 +423,13 @@ final class AppEnvironment {
             let tokens = try await auth.tokenProvider(for: account)
             await install(
                 account: account,
-                api: HQBaseAPIClient(origin: account.origin, tokens: tokens),
+                // `includeLabels: true` asks every label-capable route to embed
+                // the message's own labels (upstream 1.4.2+). A server older than
+                // that IGNORES the parameter and answers without the key, which
+                // arrives as `MessageSummary.labels == nil` — "said nothing" — and
+                // leaves the per-label sweep as the membership source. So this is
+                // safe to send unconditionally and Herald never probes a version.
+                api: HQBaseAPIClient(origin: account.origin, tokens: tokens, includeLabels: true),
                 store: store,
                 select: select,
                 // The wake socket authenticates with the SAME provider as the

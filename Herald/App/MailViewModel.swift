@@ -1198,15 +1198,19 @@ final class MailViewModel {
     ///
     /// - `messages` — the change journal (a normal pass). Label MEMBERSHIP
     ///   changes arrive here too (verified live: assigning a label to a message
-    ///   publishes `messages`, not `labels`), and the v1 payload has no `labels`
-    ///   field, so this frame cannot fix membership and deliberately does not
-    ///   try: forcing a per-label sweep on every message frame would put one
-    ///   request per label behind every read/star in the workspace.
+    ///   publishes `messages`, not `labels`), and against a 1.4.2 server that is
+    ///   now ENOUGH: the journal upsert the pass reads carries the message's
+    ///   labels, so a plain refresh fixes the chips. It deliberately does NOT
+    ///   force the per-label reconciliation — doing so would put one request per
+    ///   label behind every read and every star in the workspace, which is what
+    ///   this frame is. Against an older server the frame identifies nothing and
+    ///   the reconciliation's own interval remains the only cure.
     /// - `mailboxes` — grants changed. A pass re-lists mailboxes anyway, so this
     ///   is the same refresh.
     /// - `drafts` — a whole-list drafts read, out of turn.
-    /// - `labels` — the workspace label LIST (create/rename/delete), so the sweep
-    ///   is forced.
+    /// - `labels` — the workspace label LIST (create/rename/delete). Forces the
+    ///   reconciliation, because a DELETED label touches no message and so is
+    ///   announced by nothing else: no row will ever mention it again.
     /// - `reconnected` — a gap in the socket is a gap in the frames, and nothing
     ///   is replayed across it, so every surface is re-read at once.
     func handleWakeSignal(_ signal: MailEventSignal) async {
@@ -1613,6 +1617,12 @@ final class MailViewModel {
         do {
             let details = try await api.thread(messageID: row.latest.id)
             let messages = details.map(\.summary)
+            // The thread route embeds labels as well. These messages are NOT in
+            // the message cache (that is why this path exists), but an assignment
+            // row does not need one — the reconciliation stores rows for uncached
+            // messages by design — so the chips are right the moment the thread
+            // opens instead of at the next reconciliation.
+            await storeEmbeddedLabels(of: messages)
             return messages.isEmpty ? [row.latest] : messages.sorted { $0.displayDate > $1.displayDate }
         } catch {
             logger.warning("Server-search thread load failed: \(error.localizedDescription, privacy: .private)")
@@ -1634,6 +1644,10 @@ final class MailViewModel {
             let loaded = try await api.message(id: messageID)
             guard !Task.isCancelled, selectedMessageID == messageID else { return }
             detail = loaded
+            // The single-message route embeds labels too, and this is the freshest
+            // statement about them the app ever gets — the user is looking at the
+            // chips right now. A no-op on a pre-1.4.2 server (`labels == nil`).
+            await storeEmbeddedLabels(of: [loaded.summary])
             await loadBody(for: loaded, allowRemote: false)
         } catch {
             logger.warning("Message detail failed: \(error.localizedDescription, privacy: .private)")

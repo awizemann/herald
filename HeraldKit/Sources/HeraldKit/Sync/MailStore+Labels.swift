@@ -103,13 +103,69 @@ extension MailStore {
 
     // MARK: - Assignments
 
+    /// Writes the membership EMBEDDED in message rows.
+    ///
+    /// Upstream 1.4.2 answers `includeLabels=true` with the message's own labels
+    /// on every `MessageSummary` it returns — listings, the thread route, the
+    /// single-message route, action results and, crucially, the `/changes`
+    /// journal. That makes ROWS the primary membership source: a label assigned
+    /// anywhere in the workspace bumps `messages.updated_at`, so the journal
+    /// already carries the message, and now it carries what its labels became.
+    ///
+    /// THE `nil` / `[]` DISTINCTION IS THE WHOLE CONTRACT. A summary whose
+    /// `labels` is `nil` is skipped entirely: the key was absent, either because
+    /// the client did not ask or — the case that matters — because the server
+    /// predates 1.4.2, and for those servers the per-label sweep is still the
+    /// only truth there is. Treating `nil` as "no labels" would wipe every chip
+    /// in the cache on the first pass against a 1.3.4 server. `[]` DOES clear the
+    /// message's labels, because that is the server saying so.
+    ///
+    /// Per-MESSAGE authoritative, never per-label: this replaces the label set of
+    /// the messages it is given and touches no other row, so it can never erase a
+    /// label's membership the way a truncated sweep could. The sweep remains for
+    /// the one thing rows cannot report — a label DELETED workspace-wide never
+    /// touches a message, so no row ever mentions it again (see
+    /// ``replaceAssignments(labelID:messages:accountID:)`` and
+    /// `SyncEngine.syncLabelsIfDue`).
+    @discardableResult
+    public func applyEmbeddedLabels(from summaries: [MessageSummary], accountID: String) throws -> Bool {
+        let stated = summaries.compactMap { summary in
+            summary.labels.map {
+                MessageLabelWrite(
+                    messageID: summary.id, threadID: summary.threadID, labelIDs: $0.map(\.id)
+                )
+            }
+        }
+        guard !stated.isEmpty else { return false }
+        do {
+            let changed = try writeMessageAssignments(stated, accountID: accountID)
+            if changed { try save() }
+            return changed
+        } catch {
+            logger.error("Embedded label write failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// One message's full label set, as ``writeMessageAssignments`` takes it.
+    private struct MessageLabelWrite {
+        let messageID: String
+        let threadID: String
+        let labelIDs: [String]
+    }
+
     /// Replaces the WHOLE membership of one label with `messages`.
     ///
-    /// This is what the per-label sweep writes: `GET /messages?labelId=…` is a
-    /// complete listing of that label, so anything missing from it no longer
-    /// carries the label. Only call it with a listing that reached its end —
-    /// a truncated page-walk would erase assignments the server never got to
-    /// return, exactly like the message tombstoning rule.
+    /// This is what the per-label RECONCILIATION sweep writes:
+    /// `GET /messages?labelId=…` is a complete listing of that label, so anything
+    /// missing from it no longer carries the label. Only call it with a listing
+    /// that reached its end — a truncated page-walk would erase assignments the
+    /// server never got to return, exactly like the message tombstoning rule.
+    ///
+    /// Since 1.4.2 this is no longer the primary path — embedded row labels are
+    /// (``applyEmbeddedLabels(from:accountID:)``). It stays because it is the
+    /// only write that can REMOVE a label from messages no row will ever mention
+    /// again, and because a pre-1.4.2 server has nothing else.
     ///
     /// ACCEPTED: the rows written here are NOT constrained to messages the cache
     /// holds. The label listing is the only membership source v1 offers and it
@@ -423,7 +479,11 @@ extension MailStore {
     ///
     /// `LabelAssignmentResult.labels` is the message's full set after the write,
     /// so this replaces rather than merges — an assignment made elsewhere since
-    /// the last sweep is picked up for free.
+    /// the last reconciliation is picked up for free.
+    ///
+    /// The thread id comes from the CACHED row here, because a
+    /// `LabelAssignmentResult` does not carry the message's summary; a message
+    /// the cache does not hold is a no-op, as it always was.
     @discardableResult
     public func setMessageLabels(
         _ labelIDs: [String],
@@ -432,30 +492,74 @@ extension MailStore {
     ) throws -> Bool {
         do {
             guard let message = try fetchMessage(id: messageID, accountID: accountID) else { return false }
-            let threadID = message.threadID
-            var changed = false
-            let existing = try modelContext.fetch(
-                FetchDescriptor<CachedLabelAssignment>(
-                    predicate: #Predicate { $0.accountID == accountID && $0.messageID == messageID }
-                )
+            let changed = try writeMessageAssignments(
+                [MessageLabelWrite(messageID: messageID, threadID: message.threadID, labelIDs: labelIDs)],
+                accountID: accountID
             )
-            var byLabel = Dictionary(existing.map { ($0.labelID, $0) }, uniquingKeysWith: { first, _ in first })
-            for labelID in labelIDs where byLabel.removeValue(forKey: labelID) == nil {
-                modelContext.insert(CachedLabelAssignment(
-                    accountID: accountID, labelID: labelID, messageID: messageID, threadID: threadID
-                ))
-                changed = true
-            }
-            for row in byLabel.values {
-                modelContext.delete(row)
-                changed = true
-            }
             if changed { try save() }
             return changed
         } catch {
             logger.error("Message label write failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+    }
+
+    /// Replaces the label set of each given message, in ONE fetch, WITHOUT
+    /// saving. The shared core of ``setMessageLabels(_:messageID:accountID:)``
+    /// (one message, from the server's assignment answer) and
+    /// ``applyEmbeddedLabels(from:accountID:)`` (a whole journal page).
+    ///
+    /// A page of 100 journal upserts each carrying labels would otherwise be 100
+    /// fetches and 100 saves. The existing rows are read by message id in chunks
+    /// (SQLite's bound-parameter ceiling, ``labelPredicateChunkSize``) and
+    /// matched in memory, the same shape ``setAssignments`` uses for a thread.
+    private func writeMessageAssignments(
+        _ writes: [MessageLabelWrite],
+        accountID: String
+    ) throws -> Bool {
+        guard !writes.isEmpty else { return false }
+        let messageIDs = Array(Set(writes.map(\.messageID)))
+        var existing: [String: [CachedLabelAssignment]] = [:]
+        for start in stride(from: 0, to: messageIDs.count, by: Self.labelPredicateChunkSize) {
+            let ids = Array(messageIDs[start ..< min(start + Self.labelPredicateChunkSize, messageIDs.count)])
+            let rows = try modelContext.fetch(
+                FetchDescriptor<CachedLabelAssignment>(
+                    predicate: #Predicate { $0.accountID == accountID && ids.contains($0.messageID) }
+                )
+            )
+            for row in rows { existing[row.messageID, default: []].append(row) }
+        }
+
+        var changed = false
+        for write in writes {
+            var byLabel = Dictionary(
+                (existing[write.messageID] ?? []).map { ($0.labelID, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for labelID in write.labelIDs {
+                guard let row = byLabel.removeValue(forKey: labelID) else {
+                    modelContext.insert(CachedLabelAssignment(
+                        accountID: accountID,
+                        labelID: labelID,
+                        messageID: write.messageID,
+                        threadID: write.threadID
+                    ))
+                    changed = true
+                    continue
+                }
+                // A message can be re-threaded server-side; the denormalized copy
+                // has to follow or the conversation chips point at a dead thread.
+                if row.threadID != write.threadID {
+                    row.threadID = write.threadID
+                    changed = true
+                }
+            }
+            for row in byLabel.values {
+                modelContext.delete(row)
+                changed = true
+            }
+        }
+        return changed
     }
 
     /// Settles ONE label across every cached message of a thread, after the

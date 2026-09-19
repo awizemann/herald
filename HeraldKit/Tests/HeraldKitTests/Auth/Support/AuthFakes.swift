@@ -301,6 +301,50 @@ nonisolated final class StaleReadingStore: AccountStore, @unchecked Sendable {
     func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
 }
 
+/// One process's view of the shared store whose READS start failing after N of
+/// them have succeeded.
+///
+/// The Keychain really does fail reads — a locked login keychain, an ACL the
+/// current code signature no longer matches, `errSecInteractionNotAllowed` —
+/// and the failure is NOT "there are no tokens". The count is what lets a test
+/// aim the failure at one specific re-read inside the refresh, with everything
+/// before it behaving normally.
+nonisolated final class FailingReadStore: AccountStore, @unchecked Sendable {
+    struct ReadFailure: Error {}
+
+    private let base: any AccountStore
+    private let lock = NSLock()
+    private var reads = 0
+    private var failAfter: Int
+
+    /// - Parameter failReadsAfter: how many reads succeed before the rest throw.
+    init(_ base: any AccountStore, failReadsAfter: Int) {
+        self.base = base
+        self.failAfter = failReadsAfter
+    }
+
+    var tokenReadCount: Int { lock.withLock { reads } }
+
+    func tokens(for accountID: Account.ID) throws -> OAuthTokens? {
+        let shouldFail = lock.withLock { () -> Bool in
+            reads += 1
+            return reads > failAfter
+        }
+        if shouldFail { throw ReadFailure() }
+        return try base.tokens(for: accountID)
+    }
+
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
+        try base.setTokens(tokens, for: accountID)
+    }
+
+    func accounts() throws -> [Account] { try base.accounts() }
+    func add(_ account: Account) throws { try base.add(account) }
+    func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
+    func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
+    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+}
+
 /// A ``TokenRefreshing`` that behaves like better-auth's oauth-provider: every
 /// successful refresh ROTATES (new access + new refresh token) and marks the redeemed
 /// refresh token revoked, with **no reuse grace**. Replaying a revoked token answers

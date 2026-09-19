@@ -93,7 +93,11 @@ public nonisolated struct OAuthSession: Sendable, TokenRefreshing {
             throw OAuthError.stateMismatch
         }
         if let error = value("error") {
-            logger.warning("authorization denied: \(error, privacy: .public)")
+            // The RAW value only in the thrown error, which the UI needs; the log
+            // gets the bounded name. The callback is attacker-reachable server
+            // free text, and `.public` on free text is how it reaches the device
+            // log verbatim.
+            logger.warning("authorization denied: \(Self.logName(forCallbackError: error), privacy: .public)")
             throw OAuthError.server(error: error, description: value("error_description"))
         }
         guard let code = value("code"), !code.isEmpty else {
@@ -161,6 +165,26 @@ public nonisolated struct OAuthSession: Sendable, TokenRefreshing {
             case expiresIn = "expires_in"
             case scope
         }
+    }
+
+    /// An authorization callback's `error` reduced to a bounded, log-safe name.
+    ///
+    /// Anything outside RFC 6749 §4.1.2.1 (plus `invalid_grant`, which HQBase
+    /// returns on a dead consent) becomes `other`, so an unbounded value from the
+    /// query string can never be written to the log at `.public`. The raw value
+    /// still travels in ``OAuthError/server(error:description:)`` for the UI.
+    static func logName(forCallbackError error: String) -> String {
+        let known: Set<String> = [
+            "access_denied",
+            "invalid_grant",
+            "invalid_request",
+            "invalid_scope",
+            "server_error",
+            "temporarily_unavailable",
+            "unauthorized_client",
+            "unsupported_response_type",
+        ]
+        return known.contains(error) ? error : "other"
     }
 
     /// 32 CSPRNG bytes, base64url — the same generator PKCE uses.

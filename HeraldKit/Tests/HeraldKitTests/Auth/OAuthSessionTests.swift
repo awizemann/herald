@@ -85,6 +85,41 @@ import Testing
         }
     }
 
+    /// The callback's `error` is attacker-reachable free text and used to be
+    /// logged at `.public` verbatim. Fails if the log name stops being drawn from
+    /// a bounded set — i.e. if anything off the RFC 6749 §4.1.2.1 list (plus
+    /// `invalid_grant`) is echoed instead of collapsing to `other`.
+    @Test(
+        "the callback error is bounded to a known set before it is logged",
+        arguments: [
+            ("access_denied", "access_denied"),
+            ("invalid_grant", "invalid_grant"),
+            ("server_error", "server_error"),
+            ("temporarily_unavailable", "temporarily_unavailable"),
+            // Free text, a spoofed code and an injection attempt all collapse.
+            ("user's session for alice@example.com expired", "other"),
+            ("ACCESS_DENIED", "other"),
+            ("", "other"),
+        ]
+    )
+    func callbackErrorIsBoundedForLogging(raw: String, expected: String) {
+        #expect(OAuthSession.logName(forCallbackError: raw) == expected)
+    }
+
+    /// The bounding is for the LOG only. Fails if it ever leaks into the thrown
+    /// error, which the sign-in UI shows the user.
+    @Test("the raw callback error still reaches the thrown error, unbounded")
+    func rawCallbackErrorSurvivesInTheThrownError() {
+        let oauth = session(FakeServer())
+        let request = oauth.makeAuthorizationRequest()
+        let denied = URL(string: "com.wizemann.herald:/oauth/callback?error=consent_revoked_upstream&state=\(request.state)")!
+
+        #expect(OAuthSession.logName(forCallbackError: "consent_revoked_upstream") == "other")
+        #expect(throws: OAuthError.server(error: "consent_revoked_upstream", description: nil)) {
+            _ = try oauth.authorizationCode(from: denied, for: request)
+        }
+    }
+
     // MARK: Token endpoint
 
     /// Fails if `code_verifier` is omitted (PKCE defeated), if `resource` is omitted

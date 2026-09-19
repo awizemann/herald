@@ -6,65 +6,19 @@ import SwiftData
 
 private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", category: "AppEnvironment")
 
-/// One account's live object graph: everything built from that account's API
-/// client, kept together so it can be started and torn down as a unit.
-///
-/// Every account has one of these for as long as it is signed in — including the
-/// accounts the window is NOT showing, so their sync keeps running and their
-/// unread counts stay live.
-@MainActor
-final class AccountGraph {
-    let account: Account
-    let sync: SyncEngine
-    let mail: MailViewModel
-    let outbox: OutboxService
-    /// Settings ▸ Signatures' client. Per-account like everything else here: two
-    /// accounts manage different signatures on different servers.
-    let signatures: SignatureManagementService
-    /// Per-account: its "already announced" history dies with the graph, so a
-    /// sign-out and a fresh sign-in cannot silence the new account's first mail.
-    let notifier: NewMailNotifier
-    /// This account's `GET /events` wake socket, when it has one.
-    let wake: MailEventSocket?
-
-    init(
-        account: Account,
-        sync: SyncEngine,
-        mail: MailViewModel,
-        outbox: OutboxService,
-        signatures: SignatureManagementService,
-        notifier: NewMailNotifier,
-        wake: MailEventSocket? = nil
-    ) {
-        self.account = account
-        self.sync = sync
-        self.mail = mail
-        self.outbox = outbox
-        self.signatures = signatures
-        self.notifier = notifier
-        self.wake = wake
-    }
-
-    /// `stopAndWait`, not `stop`: sign-out purges this account's rows immediately
-    /// afterwards, and a pass still unwinding would write them back in behind the
-    /// purge.
-    func stop() async {
-        mail.stop()
-        // Before the engine: a socket still up would keep asking a stopping
-        // engine for passes, and a superseded graph's socket left running is a
-        // second connection against the server's three-per-user limit — the
-        // server closes the OLDEST to make room, so a leak here would evict the
-        // live account's socket.
-        await wake?.stop()
-        await sync.stopAndWait()
-    }
-}
-
 /// The composition root: opens the cache, restores every signed-in account and
 /// wires Keychain → auth → API client → sync + actions → view-model per account.
 ///
 /// Nothing here blocks `App.init`: the container is opened on a detached task and
 /// the UI shows the real milestone it is waiting on.
+///
+/// Split across three files. This one owns the type, its state and the account
+/// lifecycle (launch, activate, install, stop); `AppEnvironment+SignIn.swift` owns
+/// onboarding, re-authentication and sign-out; `AppEnvironment+Compose.swift` owns
+/// the compose sessions. A Swift extension cannot hold stored properties, so the
+/// state the other two files read and write lives here — and is `internal` rather
+/// than `private` for exactly that reason, not because anything outside
+/// ``AppEnvironment`` is meant to touch it.
 @MainActor
 @Observable
 final class AppEnvironment {
@@ -128,12 +82,17 @@ final class AppEnvironment {
         }
     }
 
-    private(set) var phase: Phase = .openingCache
+    // These four were `private(set)`. They lost it to the file split and nothing
+    // else: `private` is FILE scope, and `AppEnvironment+SignIn.swift` is where
+    // the sign-in state is now driven from. They remain write-only-from-
+    // ``AppEnvironment`` by convention — views read them, and a view that
+    // assigned one would be a bug the compiler no longer catches.
+    var phase: Phase = .openingCache
     /// Set while the onboarding sheet is running a sign-in.
-    private(set) var isSigningIn = false
+    var isSigningIn = false
     /// The step the visible sign-in is on; `nil` when none is running. Only ever
     /// set by an INTERACTIVE sign-in — an automatic re-auth is silent by design.
-    private(set) var signInStage: SignInStage?
+    var signInStage: SignInStage?
     var signInError: String?
     /// Drives the "Add Account…" sheet over the mail UI.
     var presentsAddAccount = false
@@ -141,8 +100,10 @@ final class AppEnvironment {
     /// Every signed-in account's live graph, keyed by account id.
     private(set) var graphs: [Account.ID: AccountGraph] = [:]
     /// Presentation order of ``graphs`` — a dictionary has none, and the account
-    /// switcher must not reshuffle itself on every keystroke.
-    private(set) var accountIDs: [Account.ID] = []
+    /// switcher must not reshuffle itself on every keystroke. Not `private(set)`
+    /// for the same reason as ``phase`` above: sign-out, which removes an entry,
+    /// lives in `AppEnvironment+SignIn.swift`.
+    var accountIDs: [Account.ID] = []
 
     /// Which account the window is showing. Persisted, so a relaunch comes back
     /// to the account the user was last reading.
@@ -175,7 +136,7 @@ final class AppEnvironment {
     @ObservationIgnored private var isAssigningAccountProgrammatically = false
 
     /// Assigns ``selectedAccountID`` without counting it as an account switch.
-    private func selectAccount(_ id: Account.ID?) {
+    func selectAccount(_ id: Account.ID?) {
         isAssigningAccountProgrammatically = true
         defer { isAssigningAccountProgrammatically = false }
         selectedAccountID = id
@@ -189,7 +150,7 @@ final class AppEnvironment {
     /// and the ACCOUNT has to live here with it, or a composer opened from one
     /// account would send through whichever account happened to be selected when
     /// the user pressed Send.
-    private struct ComposeSession {
+    struct ComposeSession {
         let accountID: Account.ID
         let context: ComposeContext
         /// The live composer. Owned here so the window's `.task(id:)` — which
@@ -199,37 +160,37 @@ final class AppEnvironment {
         var model: ComposeViewModel?
     }
 
-    private var composeSessions: [ComposeRequest.ID: ComposeSession] = [:]
+    var composeSessions: [ComposeRequest.ID: ComposeSession] = [:]
     /// Watches app-level activation to drive the sync cadence.
     private var activityTask: Task<Void, Never>?
 
-    private let auth: AuthCoordinator
+    let auth: AuthCoordinator
     private let defaults: UserDefaults
     /// Whether Herald is the frontmost app. Injected so a test can drive the
     /// automatic re-auth gate without an `NSApplication` it cannot activate.
-    private let isApplicationActive: @MainActor @Sendable () -> Bool
+    let isApplicationActive: @MainActor @Sendable () -> Bool
     /// The rules for re-running consent by ourselves. Observed (not
     /// `@ObservationIgnored`): the banner renders its "signing you back in…"
     /// state straight off it.
-    private var autoReauth = AutoReauthPolicy()
+    var autoReauth = AutoReauthPolicy()
     /// The live automatic attempts, so a sign-out can cancel one instead of
     /// letting its `install` resurrect the account behind it. Observation-ignored:
     /// the banner reads ``autoReauth``, not this.
-    @ObservationIgnored private var automaticReauthTasks: [Account.ID: Task<Bool, Never>] = [:]
+    @ObservationIgnored var automaticReauthTasks: [Account.ID: Task<Bool, Never>] = [:]
     /// Cancels the live INTERACTIVE sign-in. Held as a closure rather than the
     /// task itself only because the two entry points (first sign-in, re-auth)
     /// return different values; what matters is that the handle is kept at all —
     /// discarding it is what made the reported hang unrecoverable.
-    @ObservationIgnored private var signInCancellation: (@Sendable () -> Void)?
+    @ObservationIgnored var signInCancellation: (@Sendable () -> Void)?
     /// Bumped by every cancel and every new interactive attempt. An attempt only
     /// owns the sign-in UI — and is only allowed to install its account — while
     /// its generation is still the current one, so a session that completes after
     /// the user gave up cannot reach back and change the screen under them.
-    @ObservationIgnored private var signInGeneration = 0
+    @ObservationIgnored var signInGeneration = 0
     /// The account a live INTERACTIVE re-auth is repairing, if any. Held so a
     /// cancel (or a sign-out) can release that account's ``AutoReauthPolicy``
     /// claim without waiting for a task that may never return.
-    @ObservationIgnored private var signInReauthAccountID: Account.ID?
+    @ObservationIgnored var signInReauthAccountID: Account.ID?
     /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
     /// so every test — and any caller that does not opt in — collects nothing.
     let usage: any UsageTracking
@@ -238,7 +199,19 @@ final class AppEnvironment {
     /// order a pile of unstructured tasks got scheduled.
     @ObservationIgnored private var pendingRecord: Task<Void, Never>?
     private var container: ModelContainer?
-    private var store: MailStore?
+    var store: MailStore?
+
+    /// The launch restore's background activation of the accounts queued behind
+    /// the first one. RETAINED: unowned, a sign-out landing while this loop was
+    /// awaiting a slower account's discovery round trip could not be seen by it,
+    /// and the purged account was activated — and re-installed with a live engine
+    /// — behind the removal (audit C10).
+    @ObservationIgnored private var restoreTask: Task<Void, Never>?
+    /// The accounts that restore has still to bring up. Membership is the loop's
+    /// permission slip: ``cancelPendingRestore(accountID:)`` removes an account
+    /// the moment it is signed out, which is how the loop learns both to skip it
+    /// and — when the removal lands mid-activation — to undo the install.
+    @ObservationIgnored private var pendingRestoreIDs: Set<Account.ID> = []
 
     /// The notification centre behind ``NewMailNotificationPosting``. ONE for the
     /// whole app (the system centre is a singleton), shared by every account's
@@ -417,7 +390,10 @@ final class AppEnvironment {
         await restoreAccounts()
     }
 
-    private func restoreAccounts() async {
+    /// Internal, not private, so a test can drive a restore without `start()`
+    /// opening the real store — the same seam ``install(account:api:store:)`` and
+    /// ``observeActivation()`` already offer. Assign ``store`` first.
+    func restoreAccounts() async {
         let accounts: [Account]
         do {
             accounts = try await auth.loadAccounts()
@@ -451,9 +427,53 @@ final class AppEnvironment {
         }
         guard !rest.isEmpty else { return }
         // The rest come up behind the live window, and must not steal it.
-        Task { [weak self] in
-            for account in rest { await self?.activate(account, select: false) }
+        restoreTask?.cancel()
+        pendingRestoreIDs = Set(rest.map(\.id))
+        restoreTask = Task { [weak self] in
+            for account in rest {
+                guard !Task.isCancelled, let self else { return }
+                // Checked BEFORE activating: the accounts are brought up one at a
+                // time, so an account near the back of the queue can be signed
+                // out — banner, menu or Settings — while a slow or unreachable
+                // server ahead of it is still being contacted. Activating it then
+                // would re-install an account the user has already removed.
+                guard self.pendingRestoreIDs.contains(account.id) else { continue }
+                await self.activate(account, select: false)
+                // Re-checked AFTER the await, because the sign-out can just as
+                // easily land while THIS account is the one activating: `install`
+                // has then published a graph behind the removal, and it has to
+                // come straight back out.
+                if self.pendingRestoreIDs.remove(account.id) == nil {
+                    await self.stopGraph(accountID: account.id)
+                }
+            }
+            self?.pendingRestoreIDs.removeAll()
         }
+    }
+
+    /// Drops one account from the launch restore's queue, so the restore loop
+    /// neither activates it nor keeps an install that raced the removal — and
+    /// stops the restore outright once it has nothing left to bring up.
+    ///
+    /// Only the queue is cancelled, never the accounts still waiting behind it:
+    /// signing one account out must not leave the others stranded on the launch
+    /// placeholder.
+    func cancelPendingRestore(accountID: Account.ID) {
+        pendingRestoreIDs.remove(accountID)
+        guard pendingRestoreIDs.isEmpty else { return }
+        restoreTask?.cancel()
+        restoreTask = nil
+    }
+
+    /// The accounts the launch restore has still to bring up. Test seam: the
+    /// queue is otherwise only observable by which graphs eventually appear.
+    var pendingRestoreAccountIDs: Set<Account.ID> { pendingRestoreIDs }
+
+    /// Test seam: waits for the launch restore to finish bringing up the
+    /// accounts queued behind the first one. No production caller — the restore
+    /// runs behind the live window by design.
+    func drainPendingRestore() async {
+        await restoreTask?.value
     }
 
     /// Builds one account's graph and hands its view-model its feeds.
@@ -465,7 +485,7 @@ final class AppEnvironment {
     ///   onboarding sheet nobody opened.
     /// - Returns: whether the account came up.
     @discardableResult
-    private func activate(_ account: Account, select: Bool = true, isAutomatic: Bool = false) async -> Bool {
+    func activate(_ account: Account, select: Bool = true, isAutomatic: Bool = false) async -> Bool {
         guard let store else { return false }
         do {
             let tokens = try await auth.tokenProvider(for: account)
@@ -567,8 +587,10 @@ final class AppEnvironment {
                 healthChanged: { [weak engine] connected in
                     await engine?.setWakeSocketConnected(connected)
                 },
+                // A plain `await` on the isolated method, not `MainActor.run`:
+                // `MailViewModel` is `@MainActor`, so the hop is the call.
                 reauthenticationRequired: { [weak viewModel] in
-                    await MainActor.run { viewModel?.wakeSocketRequiresReauthentication() }
+                    await viewModel?.wakeSocketRequiresReauthentication()
                 },
                 signal: { [weak viewModel] signal in
                     await viewModel?.handleWakeSignal(signal)
@@ -622,14 +644,18 @@ final class AppEnvironment {
     }
 
     /// Whether this graph is still the one ``graphs`` holds for its account.
-    private func isCurrent(_ graph: AccountGraph) -> Bool {
+    func isCurrent(_ graph: AccountGraph) -> Bool {
         graphs[graph.account.id] === graph
     }
 
     /// Stops and drops one account's graph, leaving the others alone. The
     /// account keeps its place in ``accountIDs`` so a re-install (re-auth) does
     /// not shuffle the switcher.
-    private func stopGraph(accountID: Account.ID) async {
+    func stopGraph(accountID: Account.ID) async {
+        // Before the `graphs` guard: an account the restore has QUEUED but not
+        // yet activated has no graph to remove, and leaving it in the queue is
+        // precisely how it would come back.
+        cancelPendingRestore(accountID: accountID)
         guard let graph = graphs.removeValue(forKey: accountID) else { return }
         closeComposeSessions(accountID: accountID)
         await graph.stop()
@@ -710,470 +736,6 @@ final class AppEnvironment {
             guard let notifier = graphs[id]?.notifier else { continue }
             await notifier.ensureAuthorized()
         }
-    }
-
-    // MARK: - Onboarding
-
-    /// Validates an origin the user typed. `nil` means "not a usable origin".
-    nonisolated static func normalizedOrigin(from text: String) -> URL? {
-        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if !trimmed.contains("://") { trimmed = "https://" + trimmed }
-        while trimmed.hasSuffix("/") { trimmed.removeLast() }
-        guard let url = URL(string: trimmed),
-              url.scheme?.lowercased() == "https",
-              let host = url.host, !host.isEmpty
-        else { return nil }
-        return Account.normalize(url)
-    }
-
-    /// Runs one interactive sign-in, retaining the task so it can be cancelled.
-    ///
-    /// Awaited by the caller so tests (and the view's task) still see it through,
-    /// but the work lives in the retained handle: cancelling the view's task would
-    /// otherwise leave the real sign-in running with nothing observing it.
-    func signIn(originText: String) async {
-        let generation = beginInteractiveSignIn()
-        let task = Task { [weak self] in
-            guard let self else { return }
-            let result = await self.performSignIn(originText: originText, generation: generation)
-            self.record(.accountAdded(outcome: result.outcome, kind: result.kind))
-        }
-        signInCancellation = { task.cancel() }
-        await task.value
-        // Only if nothing has taken the sign-in over since (a cancel, or the
-        // attempt the user started right after it).
-        if signInGeneration == generation { signInCancellation = nil }
-    }
-
-    /// Claims the sign-in UI for a new interactive attempt and returns its ticket.
-    ///
-    /// Whatever held the claim is CANCELLED first, not merely orphaned: the two
-    /// entry points can interleave (the re-auth banner clicked while an Add
-    /// Account sheet is signing in, or the reverse), and a dropped handle would
-    /// leave a browser window open that nothing could close.
-    private func beginInteractiveSignIn(reauthenticating accountID: Account.ID? = nil) -> Int {
-        cancelInteractiveSignIn()
-        signInGeneration &+= 1
-        signInReauthAccountID = accountID
-        return signInGeneration
-    }
-
-    /// Cancels the attempt that currently holds the claim and releases anything
-    /// it was holding open on its behalf. Does NOT touch the visible state — the
-    /// callers differ on that.
-    private func cancelInteractiveSignIn() {
-        signInCancellation?()
-        signInCancellation = nil
-        // A re-auth attempt claimed this account in `AutoReauthPolicy` and only
-        // releases it when its task returns — which, for the stall this whole
-        // change is about, may be never. Releasing it here is what keeps the
-        // banner from reading "Signing you back in…" forever with a dead retry
-        // button behind it.
-        if let accountID = signInReauthAccountID {
-            autoReauth.finish(accountID: accountID, succeeded: false)
-            signInReauthAccountID = nil
-        }
-    }
-
-    /// Abandons the running interactive sign-in and gives the screen back.
-    ///
-    /// Two separate jobs, because they can fail independently: cancelling the task
-    /// (which unwinds a presenter that honours cancellation) AND clearing the UI
-    /// state right here. The second is what makes the reported hang survivable —
-    /// a step that cannot be interrupted at all (a blocked `SecItem` call, an
-    /// authentication agent that never answers) still leaves the user with a
-    /// usable window and a working second attempt.
-    ///
-    /// Automatic re-auth is untouched: it never sets this state and its attempts
-    /// are tracked separately, so a user cancelling a manual sign-in cannot
-    /// abort a background repair, and vice versa.
-    func cancelSignIn() {
-        guard isSigningIn else { return }
-        logger.info("sign-in cancelled by the user at stage \(self.signInStage?.logName ?? "none", privacy: .public)")
-        // Orphans the attempt in flight: whatever it does from here cannot touch
-        // the sign-in UI or install an account.
-        signInGeneration &+= 1
-        cancelInteractiveSignIn()
-        isSigningIn = false
-        signInStage = nil
-        signInError = nil
-    }
-
-    /// Publishes a stage, if the attempt reporting it still owns the screen.
-    private func setSignInStage(_ stage: SignInStage, generation: Int?) {
-        guard ownsSignInUI(generation) else { return }
-        signInStage = stage
-        logger.info("sign-in stage: \(stage.logName, privacy: .public)")
-    }
-
-    /// Whether this attempt is still the one the sign-in UI belongs to. `nil` is
-    /// an automatic attempt, which never owns it.
-    private func ownsSignInUI(_ generation: Int?) -> Bool {
-        generation != nil && generation == signInGeneration
-    }
-
-    /// What one sign-in round trip produced. The ACCOUNT matters to re-auth: the
-    /// same origin can come back under a different id, and only the returned
-    /// account says so.
-    private struct SignInResult {
-        var outcome: UsageAccountOutcome
-        var kind: UsageOAuthErrorKind?
-        var account: Account?
-    }
-
-    /// The sign-in flow itself, reduced to the two values an event may carry.
-    /// Shared by ``signIn(originText:)`` and ``reauthenticate(accountID:)`` so the
-    /// same round trip is never reported as both an add AND a re-auth.
-    /// - Parameter generation: the interactive attempt's ticket, or `nil` for an
-    ///   attempt Herald started by itself. An automatic attempt leaves
-    ///   `isSigningIn`, `signInStage`, `signInError` and `presentsAddAccount`
-    ///   alone: nothing asked for the onboarding sheet, and a failure must land on
-    ///   the re-auth banner that is already up rather than raising sheet state
-    ///   over the mail the user is reading. A stale generation — the user
-    ///   cancelled — behaves the same way, and additionally refuses to install.
-    private func performSignIn(
-        originText: String,
-        generation: Int? = nil
-    ) async -> SignInResult {
-        let isAutomatic = generation == nil
-        guard let origin = Self.normalizedOrigin(from: originText) else {
-            if ownsSignInUI(generation) {
-                signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
-            }
-            // A typo in the address field, not an OAuth fault: there is no kind
-            // to report, and the text the user typed is never one.
-            return SignInResult(outcome: .failed)
-        }
-        if ownsSignInUI(generation) {
-            isSigningIn = true
-            signInStage = nil
-            signInError = nil
-        }
-        // Runs on every exit INCLUDING cancellation — but only clears state this
-        // attempt still owns, so a cancel that already reset the screen (and a
-        // second attempt started behind it) is not undone here.
-        defer {
-            if ownsSignInUI(generation) {
-                isSigningIn = false
-                signInStage = nil
-            }
-        }
-        do {
-            let account = try await auth.addAccount(origin: origin) { [weak self] step in
-                self?.setSignInStage(SignInStage(step), generation: generation)
-            }
-            // Consent finished, but the user may have given up while the browser
-            // window was open. Installing now would drag them into a mailbox they
-            // just cancelled out of.
-            guard isAutomatic || ownsSignInUI(generation), !Task.isCancelled else {
-                logger.info("sign-in completed after it was cancelled; undoing it")
-                // `addAccount` has ALREADY written the account and its tokens to
-                // the Keychain. Leaving them there would make Cancel a merely
-                // deferred sign-in: the next launch would restore the account and
-                // open the mailbox the user walked away from. Signing it back out
-                // also revokes the refresh token, which is the right end for
-                // consent nobody wanted.
-                do {
-                    try await auth.signOut(account)
-                } catch {
-                    logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
-                }
-                return SignInResult(outcome: .cancelled)
-            }
-            if ownsSignInUI(generation) {
-                presentsAddAccount = false
-                signInStage = .activating
-            }
-            // Consent alone is not a signed-in account: an activation that fails
-            // (unreachable server, unreadable tokens) leaves the user exactly as
-            // stuck as before, and reporting it as a success would also clear the
-            // automatic attempt's cooldown for a repair that did not happen.
-            let activated = await activate(account, isAutomatic: isAutomatic)
-            return SignInResult(
-                outcome: activated ? .success : .failed,
-                kind: activated ? nil : .other,
-                account: activated ? account : nil
-            )
-        } catch {
-            logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
-            if ownsSignInUI(generation) { signInError = error.localizedDescription }
-            // A failure that is not an `OAuthError` still failed: it counts as
-            // `other` rather than being dropped, and carries nothing of itself.
-            let kind = UsageOAuthErrorKind(anyError: error)
-            // Closing the browser window is a choice, not a failure.
-            return kind == .cancelled
-                ? SignInResult(outcome: .cancelled)
-                : SignInResult(outcome: .failed, kind: kind)
-        }
-    }
-
-    /// Re-runs the whole flow for the ONE account whose token died. The other
-    /// accounts keep syncing throughout.
-    func reauthenticate(accountID: Account.ID?) async {
-        guard let accountID, let account = graphs[accountID]?.account else {
-            if graphs.isEmpty { phase = .signedOut }
-            return
-        }
-        // A button press outranks the frontmost rule and the cooldown — the user
-        // is standing there — but not the one-window rule: clicking while an
-        // automatic attempt is running would open a second consent window over
-        // the first.
-        guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
-        // Retained and generation-stamped like a first sign-in: a re-auth is just
-        // as capable of stalling in the browser hand-off, and the banner's spinner
-        // has to be escapable too — the banner shows Cancel while
-        // ``isSigningIn`` and it lands on ``cancelSignIn()``.
-        let generation = beginInteractiveSignIn(reauthenticating: accountID)
-        let task = Task { [weak self] in
-            guard let self else { return false }
-            return await self.runReauthentication(account: account, generation: generation)
-        }
-        signInCancellation = { task.cancel() }
-        let succeeded = await task.value
-        // A cancel (or a second attempt) already released the policy claim and
-        // moved the generation on; finishing again here would write a stale
-        // result over whatever now owns the account.
-        guard signInGeneration == generation else { return }
-        signInCancellation = nil
-        signInReauthAccountID = nil
-        autoReauth.finish(accountID: accountID, succeeded: succeeded)
-    }
-
-    /// Whether the re-auth running for this account is the USER's, and therefore
-    /// has a Cancel to offer. False for an automatic attempt (nobody asked for it,
-    /// and it withdraws by itself) and for a sign-in belonging to another account
-    /// or to the Add Account sheet.
-    func isCancellableReauthentication(accountID: Account.ID) -> Bool {
-        isSigningIn && signInReauthAccountID == accountID
-    }
-
-    /// Whether a re-auth round trip is running for this account. The banner stays
-    /// up and says so, rather than offering a button that would open a second
-    /// authorization window over the first.
-    func isReauthenticating(accountID: Account.ID) -> Bool {
-        autoReauth.isAttempting(accountID: accountID)
-    }
-
-    /// Re-runs consent WITHOUT waiting for the banner to be clicked, when the
-    /// rules in ``AutoReauthPolicy`` allow it.
-    ///
-    /// HQBase binds Herald's tokens to the user's web session (7-day sliding), so
-    /// tokens die on a schedule that has nothing to do with anything the user
-    /// did. While that web session is still alive the consent page completes on
-    /// its own, so the whole repair is a window that flashes — worth doing for
-    /// the user, and only when they are actually here to see it.
-    ///
-    /// Scoped to the account the window is SHOWING. An account syncing behind the
-    /// window would have its sign-in select it (`install(select:)` follows a
-    /// sign-in), pulling the user off the mail they are reading; the others keep
-    /// the banner until ``retryAutomaticReauthentication()`` picks them up —
-    /// which is also how a session that died while Herald was in the background
-    /// (the common case: the binding expires on a 7-day timer) is repaired the
-    /// moment the user comes back.
-    func attemptAutomaticReauthentication(accountID: Account.ID) async {
-        guard accountID == selectedAccountID, let account = graphs[accountID]?.account else { return }
-        guard graphs[accountID]?.mail.status == .needsReauth else { return }
-        guard autoReauth.begin(
-            accountID: accountID,
-            isApplicationActive: isApplicationActive()
-        ) else { return }
-        // Held so a sign-out can CANCEL the attempt: its `install` would
-        // otherwise land after the account was removed and bring it — and its
-        // window selection — straight back.
-        let task = Task { [weak self] in
-            guard let self else { return false }
-            return await self.runReauthentication(account: account, generation: nil)
-        }
-        automaticReauthTasks[accountID] = task
-        let succeeded = await task.value
-        automaticReauthTasks[accountID] = nil
-        autoReauth.finish(accountID: accountID, succeeded: succeeded)
-    }
-
-    /// Re-offers the automatic repair for whatever the window is showing.
-    ///
-    /// The gates in ``attemptAutomaticReauthentication(accountID:)`` DEFER, they
-    /// do not consume: the expiry is announced once, by the sync pass that found
-    /// it, and that pass usually runs while Herald is in the background or on an
-    /// account the window is not showing. Herald becoming frontmost and the user
-    /// switching accounts are the two moments a deferred repair becomes possible.
-    func retryAutomaticReauthentication() async {
-        guard let accountID = selectedAccountID else { return }
-        await attemptAutomaticReauthentication(accountID: accountID)
-    }
-
-    /// The re-auth round trip both entry points share. Returns whether the
-    /// account is signed in again.
-    private func runReauthentication(account: Account, generation: Int?) async -> Bool {
-        let isAutomatic = generation == nil
-        let accountID = account.id
-        let result = await performSignIn(
-            originText: account.origin.absoluteString,
-            generation: generation
-        )
-        record(.accountReauthenticated(
-            outcome: result.outcome,
-            kind: result.kind,
-            automatic: isAutomatic
-        ))
-        // The same origin can come back under a DIFFERENT id (a different user
-        // signed in). `install` then keys the new graph elsewhere and the dead
-        // one would be left polling with a token nothing can refresh. Decided on
-        // the id the sign-in actually returned — the selection can move for
-        // reasons that have nothing to do with this round trip (the user clicking
-        // another account while an automatic attempt runs), and tearing an account
-        // down for that would drop a healthy account out of the switcher.
-        if let signedIn = result.account, signedIn.id != accountID {
-            await stopGraph(accountID: accountID)
-            accountIDs.removeAll { $0 == accountID }
-            autoReauth.forget(accountID: accountID)
-        }
-        return result.outcome == .success
-    }
-
-    /// Signs ONE account out: its graph stops, its cached rows are purged, and
-    /// the window falls back to whatever account is left.
-    func signOut(accountID: Account.ID?) async {
-        guard let accountID else { return }
-        // An account whose graph never came up (its server was unreachable at
-        // launch) is still signed in as far as the Keychain is concerned, so the
-        // account list is the fallback — otherwise it could never be removed.
-        var resolved = graphs[accountID]?.account
-        if resolved == nil {
-            resolved = (try? await auth.loadAccounts())?.first { $0.id == accountID }
-        }
-        guard let account = resolved else { return }
-        // An INTERACTIVE re-auth for this account would `install` it again — with
-        // a graph and the window selection — right after the sign-out removed it.
-        // Its automatic sibling is cancelled and awaited just below; this one is
-        // only cancelled, because the whole point of the handle is that its task
-        // may never return.
-        if signInReauthAccountID == accountID {
-            signInGeneration &+= 1
-            cancelInteractiveSignIn()
-            isSigningIn = false
-            signInStage = nil
-        }
-        // An automatic attempt still running would `install` this account again —
-        // selecting it — right after the sign-out removed it. Cancelled AND
-        // waited for, so nothing of it can land behind the removal.
-        if let attempt = automaticReauthTasks.removeValue(forKey: accountID) {
-            attempt.cancel()
-            _ = await attempt.value
-        }
-        record(.accountRemoved)
-        // Signing back in later must not inherit the dead session's cooldown.
-        autoReauth.forget(accountID: accountID)
-        await stopGraph(accountID: accountID)
-        accountIDs.removeAll { $0 == accountID }
-        // The window settles BEFORE the slow half. Revocation is a network round
-        // trip and the purge is a store write; leaving `selectedAccountID`
-        // pointing at a graph that is already gone renders a launch placeholder
-        // over the surviving account, and a switcher whose selection has no tag.
-        // A fallback, not a switch: `account_removed` already said what happened.
-        if selectedAccountID == accountID { selectAccount(accountIDs.first) }
-        if graphs.isEmpty { phase = .signedOut }
-        do {
-            try await auth.signOut(account)
-        } catch {
-            logger.error("Sign-out failed: \(error.localizedDescription, privacy: .private)")
-            signInError = error.localizedDescription
-        }
-        // Signing the same origin back in during the revoke round trip would
-        // otherwise have its freshly synced rows deleted underneath it.
-        guard graphs[accountID] == nil, let store else { return }
-        do {
-            // Scoped to this account: the other accounts' rows share the
-            // container and must survive.
-            try await store.deleteAll(accountID: accountID)
-        } catch {
-            logger.error("Cache purge failed: \(error.localizedDescription, privacy: .private)")
-        }
-    }
-
-    // MARK: - Compose
-
-    /// Resolves a compose request into a context and returns the id the compose
-    /// window should be opened with. `nil` means there is nothing to compose
-    /// (no account yet, or the message could not be loaded).
-    func prepareCompose(_ request: ComposeRequest) async -> ComposeRequest.ID? {
-        guard let graph = selectedGraph else { return nil }
-        guard let context = await graph.mail.composeContext(for: request),
-              // The account can be signed out inside that fetch; a session with
-              // no graph behind it can never build a composer, and never be
-              // released either.
-              isCurrent(graph)
-        else { return nil }
-        composeSessions[request.id] = ComposeSession(accountID: graph.account.id, context: context)
-        return request.id
-    }
-
-    /// The window's view-model: the same instance for the same request id, for as
-    /// long as that composer is open, and always wired to the `OutboxService` of
-    /// the account it was opened from. A closed composer is not resurrected — the
-    /// window shows "no longer available" rather than a copy of a sent message.
-    func makeComposeViewModel(id: ComposeRequest.ID) -> ComposeViewModel? {
-        guard var session = composeSessions[id] else { return nil }
-        if let existing = session.model {
-            guard existing.isClosed else { return existing }
-            releaseComposeViewModel(id: id)
-            return nil
-        }
-        guard let outbox = graphs[session.accountID]?.outbox else { return nil }
-        let accountID = session.accountID
-        let model = ComposeViewModel(context: session.context, outbox: outbox, record: recordUsage, draftCache: { [weak self] event in
-            // Routed to the account the composer was OPENED from — the same one
-            // whose `outbox` is saving the draft — never to whichever account the
-            // window happens to be showing: switching accounts with a composer up
-            // would otherwise file the draft in the wrong account's folder.
-            // Looked up fresh each time, because a composer can outlive its graph
-            // (sign-out with a window open), and the event then belongs to nobody.
-            guard let mail = self?.graphs[accountID]?.mail else { return }
-            Task { await mail.applyDraftCacheEvent(event) }
-        })
-        session.model = model
-        composeSessions[id] = session
-        return model
-    }
-
-    /// The account a composer sends through. Test seam: the binding is otherwise
-    /// only observable by watching which server the draft lands on.
-    func composeAccountID(for id: ComposeRequest.ID) -> Account.ID? {
-        composeSessions[id]?.accountID
-    }
-
-    /// Called when a compose window goes away. Drops the composer ONLY if it
-    /// really is closed: a window that is merely being rebuilt must find its
-    /// view-model — with its unsaved text — still here.
-    func releaseComposeViewModel(id: ComposeRequest.ID) {
-        guard composeSessions[id]?.model?.isClosed ?? false else { return }
-        composeSessions[id] = nil
-    }
-
-    /// Signing an account out takes its compose windows' view-models with it —
-    /// their `OutboxService` is gone, so leaving them alive leaves autosave tasks
-    /// running against a server the app no longer has a token for.
-    private func closeComposeSessions(accountID: Account.ID) {
-        for (id, session) in composeSessions where session.accountID == accountID {
-            session.model?.stop()
-            composeSessions[id] = nil
-        }
-    }
-
-    func setWindowActive(_ active: Bool) async {
-        // EVERY account follows the app's activation: an account the window is
-        // not showing still has to notice new mail at the active cadence, or its
-        // unread count goes stale until the user switches to it.
-        //
-        // A snapshot on purpose — an account signed out mid-loop just gets a
-        // cadence change on a stopped engine, and one installed mid-loop seeds
-        // its own cadence in `install`.
-        for graph in Array(graphs.values) { await graph.mail.setActive(active) }
-        // Herald coming to the front is the moment a deferred automatic re-auth
-        // becomes allowed: the session almost always dies while the user is
-        // somewhere else, and the sync pass that noticed announced it once.
-        if active { await retryAutomaticReauthentication() }
     }
 
     // MARK: - Activation

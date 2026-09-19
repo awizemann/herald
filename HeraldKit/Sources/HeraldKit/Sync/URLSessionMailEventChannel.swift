@@ -44,11 +44,11 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
         do {
             try await channel.open()
         } catch {
-            // A `URLSession` keeps a STRONG reference to its delegate — which is
-            // the channel — until it is invalidated, and only `close()` does
-            // that. Dropping a channel whose handshake failed would leak a
-            // session and a channel per attempt, on the one path that repeats
-            // forever by design: a server that is down, or a grant that is dying.
+            // A `URLSession` keeps a STRONG reference to its delegate until it is
+            // invalidated, and only `close()` does that. Dropping a channel whose
+            // handshake failed would leak a session per attempt, on the one path
+            // that repeats forever by design: a server that is down, or a grant
+            // that is dying.
             channel.close()
             throw error
         }
@@ -91,7 +91,15 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
 /// cookie-session request directly for the live-server test suite, which must
 /// not go through ``URLSessionMailEventChannels/open(token:)`` (that path now
 /// throws on an empty token by design — see ``MailEventChannelError``).
-nonisolated final class WebSocketChannel: NSObject, MailEventChannel, URLSessionWebSocketDelegate, @unchecked Sendable {
+///
+/// Every stored property is a `let`, which is what makes the `@unchecked
+/// Sendable` claim above hold for the whole type rather than only for `state`:
+/// nothing here is mutated after `init` returns, and the one piece of genuinely
+/// shared mutable state lives behind the lock. The session's delegate is a
+/// separate ``DelegateProxy`` for that reason alone — `URLSession(configuration:
+/// delegate:delegateQueue:)` wants the delegate before `super.init()` has run,
+/// which is exactly the two-phase-init knot that forced `var …!` before.
+nonisolated final class WebSocketChannel: MailEventChannel, @unchecked Sendable {
     /// Everything the delegate queue and the caller share.
     private struct State {
         var openContinuation: CheckedContinuation<Void, any Error>?
@@ -104,14 +112,21 @@ nonisolated final class WebSocketChannel: NSObject, MailEventChannel, URLSession
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
-    private var session: URLSession!
-    private var task: URLSessionWebSocketTask!
+    private let session: URLSession
+    private let task: URLSessionWebSocketTask
+    private let delegate: DelegateProxy
 
     init(request: URLRequest, configuration: URLSessionConfiguration) {
-        super.init()
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        // Built BEFORE the channel exists, so the session's delegate can be set
+        // at construction and never afterwards; `attach` closes the loop once
+        // `self` is available. Between those two lines no callback can arrive —
+        // the task has not been resumed yet.
+        let delegate = DelegateProxy()
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        self.delegate = delegate
         self.session = session
         self.task = session.webSocketTask(with: request)
+        delegate.attach(self)
     }
 
     /// Resumes the task and waits for the handshake to succeed or fail.
@@ -208,36 +223,68 @@ nonisolated final class WebSocketChannel: NSObject, MailEventChannel, URLSession
 
     // MARK: - URLSessionWebSocketDelegate
 
-    func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didOpenWithProtocol protocol: String?
-    ) {
-        finishOpen(with: nil)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-        reason: Data?
-    ) {
-        // A close BEFORE the handshake completed still has to unblock `open()`.
-        finishOpen(with: MailEventChannelError.closed(code: closeCode.rawValue))
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        let reason: MailEventChannelError
-        if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
-            // A rejected upgrade is an ordinary HTTP response: the server answers
-            // 401 with a `WWW-Authenticate: Bearer …` challenge, 403 on scope,
-            // 426 without the upgrade header, 503 when the event service is down.
-            reason = Self.rejection(status: response.statusCode)
-        } else if let error {
-            reason = .transport(Self.diagnostic(error))
-        } else {
-            reason = .closed(code: nil)
+    /// The session's delegate, kept off ``WebSocketChannel`` itself so the
+    /// channel's session and task can be `let` (see the channel's note).
+    ///
+    /// Holds the channel WEAKLY, and that is load-bearing. The channel owns the
+    /// proxy (it owns the session that owns it), so a strong link back would be a
+    /// cycle that nothing breaks: `close()` invalidates the session, which
+    /// releases only the SESSION's reference to the proxy, never the channel's.
+    /// The old arrangement — channel as its own delegate — had no such cycle,
+    /// because `invalidateAndCancel()` released the only strong edge.
+    ///
+    /// Weak is safe for every live callback: a caller awaiting `open()` or
+    /// `receive()` is holding the channel for the duration, and a callback that
+    /// finds `nil` belongs to a channel nobody is waiting on any more. The lock
+    /// hands back a strong reference for the call itself, so nothing can be
+    /// deallocated mid-callback.
+    fileprivate final class DelegateProxy: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+        private struct Target {
+            weak var channel: WebSocketChannel?
         }
-        finishOpen(with: reason)
+
+        /// Written once, by `attach`, before the task is resumed and therefore
+        /// before any callback can read it; the lock is what makes that
+        /// publication safe across the delegate queue.
+        private let state = OSAllocatedUnfairLock(initialState: Target())
+
+        func attach(_ channel: WebSocketChannel) {
+            state.withLock { $0.channel = channel }
+        }
+
+        private var target: WebSocketChannel? { state.withLock { $0.channel } }
+
+        func urlSession(
+            _ session: URLSession,
+            webSocketTask: URLSessionWebSocketTask,
+            didOpenWithProtocol protocol: String?
+        ) {
+            target?.finishOpen(with: nil)
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            webSocketTask: URLSessionWebSocketTask,
+            didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+            reason: Data?
+        ) {
+            // A close BEFORE the handshake completed still has to unblock `open()`.
+            target?.finishOpen(with: MailEventChannelError.closed(code: closeCode.rawValue))
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+            let reason: MailEventChannelError
+            if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
+                // A rejected upgrade is an ordinary HTTP response: the server answers
+                // 401 with a `WWW-Authenticate: Bearer …` challenge, 403 on scope,
+                // 426 without the upgrade header, 503 when the event service is down.
+                reason = WebSocketChannel.rejection(status: response.statusCode)
+            } else if let error {
+                reason = .transport(WebSocketChannel.diagnostic(error))
+            } else {
+                reason = .closed(code: nil)
+            }
+            target?.finishOpen(with: reason)
+        }
     }
 }

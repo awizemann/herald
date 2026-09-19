@@ -258,8 +258,14 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func listLabels() async throws -> [MailLabel] { labels }
 
+    /// Every call to the PER-LABEL sweep route (`GET /messages?labelId=`) — the
+    /// one request per label that membership-from-rows exists to avoid once a
+    /// server embeds labels on message/thread answers.
+    private(set) var labelListRequests: [String] = []
+
     func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage {
-        MessagePage(messages: [], nextCursor: nil)
+        labelListRequests.append(labelID)
+        return MessagePage(messages: [], nextCursor: nil)
     }
 
     @discardableResult

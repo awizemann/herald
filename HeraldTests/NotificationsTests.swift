@@ -118,6 +118,13 @@ struct NewMailWiringTests {
 
         let arrival = MailFixtures.message(id: "m1", threadID: "t1")
         try await store.upsertMessages([arrival], accountID: "acct")
+        // `.began` first, and wait for it to land as `.syncing`: `status` starts
+        // at `.idle` before any event is consumed, so waiting on `== .idle`
+        // without this is vacuously true from the moment the model exists — it
+        // proves nothing about whether the pass below actually ran before the
+        // assertion and the setting flip that follows it.
+        events.yield(.began)
+        try await wait("the pass to begin") { model.status == .syncing }
         events.yield(.changed(ChangeSet(inserted: ["m1"])))
         events.yield(.finished)
         try await wait("the pass to be consumed") { model.status == .idle }

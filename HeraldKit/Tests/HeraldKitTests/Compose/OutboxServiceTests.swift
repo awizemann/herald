@@ -515,10 +515,10 @@ import Testing
 
     /// The hold's text is what the user acts on, and both messages have one job:
     /// say "do not send this again". Fails if either becomes a generic "try again".
-    @Test func holdMessagesTellTheUserNotToResend() {
+    @Test func holdMessagesTellTheUserNotToResend() throws {
         for hold in SendHold.allCases {
-            let text = try? #require(OutboxError.sendOnHold(hold).errorDescription)
-            #expect(text?.lowercased().contains("again") == true)
+            let text = try #require(OutboxError.sendOnHold(hold).errorDescription)
+            #expect(text.lowercased().contains("again") == true)
             #expect(OutboxError.sendOnHold(hold).logCode == "send_on_hold(\(hold.rawValue))")
         }
         #expect(SendHold.code("SEND_RECOVERY_UNAVAILABLE") == .recovering)

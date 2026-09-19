@@ -380,4 +380,93 @@ struct LabelsTests {
             "an absent labels key is not 'no labels' and must not clear the chips"
         )
     }
+
+    /// Drives the PUBLIC message-load entry point (`selectedMessageID`, which
+    /// runs `loadDetail` — MailViewModel.swift:~1650) with a fake `message(id:)`
+    /// answer that embeds labels, instead of calling `storeEmbeddedLabels`
+    /// directly. Fails if the two production call sites (`loadThread` /
+    /// `loadDetail`) that are the only things exercising this path in the real
+    /// app were ever deleted or stopped reaching the store — the direct-call
+    /// unit test above would stay green even then.
+    ///
+    /// Also fails if reading a message falls back to the per-label sweep route
+    /// instead of trusting the embedded set: a real 1.4.2 answer never needs it.
+    @Test("Opening a message with embedded labels updates the chips index, with no per-label sweep")
+    func messageLoadUpdatesChipsFromEmbeddedLabels() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.store.replaceLabels(
+            [LabelHarness.label("lbl_1", "Billing"), LabelHarness.label("lbl_2", "Later")],
+            accountID: LabelHarness.account
+        )
+        await harness.model.reloadLabels()
+        #expect(harness.model.labelIDsByThread["t-m1"] == nil, "the thread starts unlabelled")
+
+        let summary = MailFixtures.message(
+            id: "m1", threadID: "t-m1",
+            labels: [LabelHarness.label("lbl_2", "Later", color: .amber)]
+        )
+        await harness.api.setDetail(MailFixtures.detail(summary))
+
+        harness.model.selectedMessageID = "m1"
+        try await wait("the chips index to pick up the embedded labels") {
+            harness.model.labelIDsByThread["t-m1"] == ["lbl_2"]
+        }
+        #expect(
+            await harness.api.labelListRequests.isEmpty,
+            "the embedded set is enough; nothing should fall back to the per-label sweep"
+        )
+    }
+
+    /// Drives the PUBLIC thread-open entry point (`selectedThreadID`, which runs
+    /// `loadThread` → the uncached-thread fallback that fetches
+    /// `api.thread(messageID:)` — MailViewModel.swift:~1625) with a fake answer
+    /// that embeds labels on both messages. Same rationale as the message-load
+    /// test above: this exercises the production wiring, not the helper it
+    /// calls, and asserts no per-label sweep request is made either.
+    @Test("Opening a server-found thread with embedded labels updates the chips index, with no per-label sweep")
+    func threadOpenUpdatesChipsFromEmbeddedLabels() async throws {
+        let harness = try await LabelHarness.make()
+        try await harness.store.replaceLabels(
+            [LabelHarness.label("lbl_1", "Billing"), LabelHarness.label("lbl_2", "Later")],
+            accountID: LabelHarness.account
+        )
+        await harness.model.reloadLabels()
+
+        // A thread the local cache has never listed — only the server search
+        // knows about it — which is the only way `loadThread` reaches the
+        // `api.thread(messageID:)` fallback that embeds labels.
+        let latest = MailFixtures.message(
+            id: "m9", threadID: "t9", mailboxID: "mbA", subject: "Zulu remote",
+            labels: [LabelHarness.label("lbl_1", "Billing")]
+        )
+        let older = MailFixtures.message(
+            id: "m8", threadID: "t9", mailboxID: "mbA", subject: "Zulu remote",
+            date: MailFixtures.epoch.addingTimeInterval(-60),
+            labels: [LabelHarness.label("lbl_1", "Billing")]
+        )
+        await harness.api.setConversationPage(
+            ConversationPage(
+                conversations: [MailFixtures.conversation(latest, messageCount: 2)],
+                nextCursor: nil,
+                totalCount: nil
+            )
+        )
+        await harness.api.setThread(
+            [MailFixtures.detail(latest), MailFixtures.detail(older)], forMessage: "m9"
+        )
+
+        harness.model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .inbox)
+        harness.model.searchQuery = "zulu"
+        harness.model.submitSearch()
+        await harness.model.serverSearchTask?.value
+
+        harness.model.selectedThreadID = "t9"
+        try await wait("the chips index to pick up the embedded labels") {
+            harness.model.labelIDsByThread["t9"] == ["lbl_1"]
+        }
+        #expect(
+            await harness.api.labelListRequests.isEmpty,
+            "the embedded set is enough; nothing should fall back to the per-label sweep"
+        )
+    }
 }

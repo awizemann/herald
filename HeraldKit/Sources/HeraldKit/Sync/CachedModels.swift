@@ -271,10 +271,14 @@ public nonisolated final class CachedLabel {
 
 /// One (label, message) assignment.
 ///
-/// A join row rather than a `[String]` column on ``CachedMessage``, because the
-/// sweep that keeps this current is per-LABEL (`GET /messages?labelId=…` — the
-/// only membership source v1 offers) and has to be able to replace one label's
-/// whole set without rewriting every message row.
+/// A join row rather than a `[String]` column on ``CachedMessage``, because two
+/// different writers keep it current and neither can be expressed as a column on
+/// the message: the per-MESSAGE write that lands with every embedded-label row
+/// (upstream 1.4.2's `includeLabels`, the primary path), and the per-LABEL
+/// RECONCILIATION (`GET /messages?labelId=…`), which has to replace one label's
+/// whole set without rewriting every message row — and which stores rows for
+/// messages this cache has never held at all, so there is no message row to hang
+/// them on.
 ///
 /// `threadID` is denormalized onto the row so a conversation's chips and the
 /// sidebar's by-label listing are one indexed fetch rather than a join against

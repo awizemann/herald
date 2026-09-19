@@ -2,13 +2,18 @@ import Foundation
 import Testing
 @testable import HeraldKit
 
-/// Labels (upstream 1.3.4), as the v1 API actually delivers them.
+/// Labels as the v1 API delivers them, on BOTH the servers Herald supports.
 ///
-/// The contract these pin down, verified live against a 1.3.4 instance:
-/// `GET /api/v1/messages`, `/conversations` and `/changes` carry NO `labels`
-/// field — the server gates that embed on `/api/v2` (`includeLabels` in
-/// `worker/features/messages/routes.ts`). So membership on v1 can only be derived
-/// by listing each label, and everything below is about doing that safely.
+/// Upstream 1.4.2 answers `includeLabels=true` by embedding `labels` on every
+/// `MessageSummary` — listings, the thread route, action results and the
+/// `/changes` journal alike — so membership rides in with the rows and the
+/// per-label sweep is demoted to a rare reconciliation. Servers at 1.3.4/1.4.0
+/// (still supported; production auto-update offered 1.4.0) ignore the parameter
+/// and answer without the key, and for those the sweep remains the ONLY
+/// membership source, on its original cadence. Which of the two is in force is
+/// decided by response shape, never by a version, and the suite below covers both
+/// halves — including the direction that would corrupt the cache: reading a
+/// missing `labels` key as "this message has no labels".
 @Suite("Label sync")
 struct LabelSyncTests {
     private static let account = SyncFixtures.account
@@ -27,6 +32,7 @@ struct LabelSyncTests {
         api: FakeMailAPIClient,
         store: MailStore,
         labelPollInterval: Duration = .seconds(3_600),
+        reconciliationLabelPollInterval: Duration = .seconds(3_600),
         maxMessagePages: Int = SyncEngine.defaultMaxMessagePages
     ) -> SyncEngine {
         SyncEngine(
@@ -36,7 +42,12 @@ struct LabelSyncTests {
             // An hour: nothing in these tests can plausibly elapse the drafts one,
             // so the drafts poll never competes for the assertions.
             draftPollInterval: .seconds(3_600),
-            labelPollInterval: labelPollInterval
+            labelPollInterval: labelPollInterval,
+            // The idle floor can never be shorter than the visible interval, so it
+            // has to follow it or a `.zero` visible interval would still be held to
+            // 750s the moment nothing is on screen — which is every test here.
+            idleLabelPollInterval: labelPollInterval,
+            reconciliationLabelPollInterval: reconciliationLabelPollInterval
         )
     }
 
@@ -208,6 +219,257 @@ struct LabelSyncTests {
         #expect(await recorder.failures == 0, "a missing labels route is not a sync failure")
         await engine.stopAndWait()
         consumer.cancel()
+    }
+
+    // MARK: - Membership from rows (upstream 1.4.2)
+
+    /// A journal-mode engine whose server has already handed out its checkpoint.
+    private func journalAPI(labels: [MailLabel]) async -> FakeMailAPIClient {
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setSupportsChanges(true)
+        await api.setLabels(labels)
+        return api
+    }
+
+    /// THE POINT OF THE WHOLE PHASE. Fails if membership still has to be derived
+    /// by listing every label: the journal upsert already states what the
+    /// message's labels became, so the chips must be right without a single extra
+    /// request. A regression here is silent — the chips would still be correct,
+    /// just one sweep interval late and at one request per label to get there.
+    @Test("A journal upsert carrying labels updates membership, with no sweep")
+    func journalLabelsUpdateMembershipWithoutASweep() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = await journalAPI(labels: [billing])
+        let store = try MailStore.inMemory()
+        let engine = engine(api: api, store: store)
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the first pass swept the (empty) label") {
+            await api.callCount { if case .listMessagesByLabel = $0 { return true } else { return false } } == 1
+        }
+        #expect(try await store.labelIDsByThread(accountID: Self.account).isEmpty)
+
+        // Someone labels a message elsewhere: upstream bumps `messages.updated_at`,
+        // so it arrives as an ordinary upsert — now carrying the labels.
+        await api.setChangePages([
+            ChangePage(
+                changes: [
+                    .upsert(SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing]))
+                ],
+                nextCursor: "chk_1",
+                hasMore: false
+            )
+        ])
+        await engine.refreshNow()
+        try await waitUntil("the journal upsert wrote the membership") {
+            (try? await store.labelIDsByThread(accountID: Self.account))?["thr_1"] == ["lbl_1"]
+        }
+        #expect(
+            await api.callCount { if case .listMessagesByLabel = $0 { return true } else { return false } } == 1,
+            "membership came from the row; the per-label sweep must not have run again"
+        )
+        await engine.stopAndWait()
+    }
+
+    /// Fails on the ONE mistake that corrupts the cache against a supported
+    /// server: reading an absent `labels` key as "this message has no labels".
+    /// A 1.3.4/1.4.0 server ignores `includeLabels` and answers without it on
+    /// EVERY row, so a `?? []` anywhere on this path would wipe every chip in the
+    /// workspace on the first pass — and the sweep would put them back, making it
+    /// look like a flicker rather than a bug.
+    @Test("A row with no labels key leaves membership alone and keeps the legacy cadence")
+    func absentLabelsKeyChangesNothing() async throws {
+        let api = await journalAPI(labels: [Self.label("lbl_1", name: "Billing")])
+        await api.setLabelMessages(
+            MessagePage(messages: [SyncFixtures.message("msg_1", threadID: "thr_1")], nextCursor: nil),
+            forLabel: "lbl_1"
+        )
+        let store = try MailStore.inMemory()
+        let engine = engine(api: api, store: store, labelPollInterval: .seconds(3_600))
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the sweep landed the assignment") {
+            (try? await store.labelIDsByThread(accountID: Self.account))?["thr_1"] == ["lbl_1"]
+        }
+
+        // The same message comes back through the journal — from a server that
+        // never heard of `includeLabels`, so `labels` is nil.
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("msg_1", threadID: "thr_1", subject: "Edited"))],
+                nextCursor: "chk_1",
+                hasMore: false
+            )
+        ])
+        await engine.refreshNow()
+        try await waitUntil("the upsert landed") {
+            (try? await store.message(id: "msg_1", accountID: Self.account))?.subject == "Edited"
+        }
+        #expect(
+            try await store.labelIDsByThread(accountID: Self.account)["thr_1"] == ["lbl_1"],
+            "a row that says nothing about labels must not clear them"
+        )
+        #expect(
+            await engine.serverEmbedsLabels == false,
+            "nil labels are not evidence of anything — the server stays undetected"
+        )
+        #expect(
+            await engine.currentLabelPollInterval == .seconds(3_600),
+            "and the sweep therefore stays on its legacy interval, the only source it has"
+        )
+        await engine.stopAndWait()
+    }
+
+    /// Fails if the demotion is unconditional. The reconciliation interval may
+    /// only take over once a row has PROVED the server embeds labels; deciding it
+    /// from a version, or up front, would starve a 1.3.4 workspace of the only
+    /// membership source it has for half an hour at a time.
+    @Test("The reconciliation interval takes over only once a row has embedded labels")
+    func embeddingIsDetectedFromTheFirstStatedRow() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = await journalAPI(labels: [billing])
+        let store = try MailStore.inMemory()
+        let engine = engine(
+            api: api, store: store,
+            labelPollInterval: .seconds(120),
+            reconciliationLabelPollInterval: .seconds(1_800)
+        )
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the first pass finished its sweep") {
+            await api.callCount { $0 == .listLabels } == 1
+        }
+        #expect(await engine.currentLabelPollInterval == .seconds(120), "undetected until a row says so")
+
+        await api.setChangePages([
+            ChangePage(
+                // `[]` is a STATEMENT — "this message has no labels" — and counts
+                // as proof of the capability just as much as a populated list.
+                changes: [.upsert(SyncFixtures.message("msg_1", threadID: "thr_1", labels: []))],
+                nextCursor: "chk_1",
+                hasMore: false
+            )
+        ])
+        await engine.refreshNow()
+        try await waitUntil("the row arrived") {
+            (try? await store.message(id: "msg_1", accountID: Self.account)) != nil
+        }
+        #expect(await engine.serverEmbedsLabels)
+        #expect(
+            await engine.currentLabelPollInterval == .seconds(1_800),
+            "rows are the source now; the sweep drops to the reconciliation interval"
+        )
+        await engine.stopAndWait()
+    }
+
+    /// Fails if a label-list change is answered with a digest-skipped sweep. The
+    /// digest suppresses a membership write that matches the previous sweep's own
+    /// output, which is right while nothing has moved — but a list that changed
+    /// means a label was created, renamed or DELETED, and a deletion is precisely
+    /// the event no message row can report, so the full authoritative write has
+    /// to happen.
+    @Test("A change to the label list forces a full reconciliation")
+    func labelListChangeForcesReconciliation() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = FakeMailAPIClient()
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        await api.setLabels([billing])
+        await api.setLabelMessages(
+            MessagePage(messages: [SyncFixtures.message("msg_1", threadID: "thr_1")], nextCursor: nil),
+            forLabel: "lbl_1"
+        )
+        let store = try MailStore.inMemory()
+        // Zero: every pass is due, so only the digest can hold the write count
+        // down and only the list change can push it back up.
+        let engine = engine(api: api, store: store, labelPollInterval: .zero)
+        let recorder = LabelEventRecorder()
+        let consumer = Task { await recorder.consume(engine.events) }
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the first sweep wrote the membership") {
+            await engine.labelAssignmentWrites == 1
+        }
+
+        // A pass over an unchanged workspace: the digest skips the store write.
+        await engine.refreshNow()
+        try await waitUntil("two passes have finished") { await recorder.finished >= 2 }
+        #expect(
+            await engine.labelAssignmentWrites == 1,
+            "an unmoved membership must not be rewritten"
+        )
+
+        // Now the workspace gains a label. The LIST changed, so every label is
+        // re-derived — including the one whose digest still matches.
+        await api.setLabels([billing, Self.label("lbl_2", name: "Later")])
+        await engine.refreshNow()
+        try await waitUntil("the reconciliation wrote both labels") {
+            await engine.labelAssignmentWrites >= 2
+        }
+        #expect(
+            await engine.labelAssignmentWrites == 3,
+            "a list change drops the digests, so both labels are written authoritatively"
+        )
+        await engine.stopAndWait()
+        consumer.cancel()
+    }
+
+    /// Fails if demoting the sweep also declawed it. Rows can only ever ADD to
+    /// the picture — a message no row mentions keeps whatever the cache last
+    /// believed — so the reconciliation must still REPLACE a label's whole set,
+    /// which is the only thing that can drop an assignment for a message this
+    /// cache does not hold and no journal entry will ever name again.
+    @Test("The reconciliation still replaces a label's set on an embedding server")
+    func reconciliationStillReplacesOnAnEmbeddingServer() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = await journalAPI(labels: [billing])
+        await api.setLabelMessages(
+            MessagePage(
+                messages: [
+                    SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing]),
+                    // A message in a folder this cache has never listed. Only the
+                    // per-label walk will ever mention it.
+                    SyncFixtures.message("msg_ghost", threadID: "thr_ghost", labels: [billing]),
+                ],
+                nextCursor: nil
+            ),
+            forLabel: "lbl_1"
+        )
+        let store = try MailStore.inMemory()
+        let engine = engine(api: api, store: store)
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the first sweep landed both assignments") {
+            (try? await store.labelIDsByThread(accountID: Self.account))?.count == 2
+        }
+        // Prove the server is the embedding kind, so this is the demoted path.
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing]))],
+                nextCursor: "chk_1",
+                hasMore: false
+            )
+        ])
+        await engine.refreshNow()
+        try await waitUntil("the embedding server was detected") { await engine.serverEmbedsLabels }
+
+        // The ghost loses the label. No row will ever say so.
+        await api.setLabelMessages(
+            MessagePage(
+                messages: [SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing])],
+                nextCursor: nil
+            ),
+            forLabel: "lbl_1"
+        )
+        await engine.refreshLabelsNow()
+        try await waitUntil("the reconciliation dropped it") {
+            (try? await store.labelIDsByThread(accountID: Self.account))?["thr_ghost"] == nil
+        }
+        #expect(
+            try await store.labelIDsByThread(accountID: Self.account)["thr_1"] == ["lbl_1"],
+            "and left the membership the rows do confirm"
+        )
+        await engine.stopAndWait()
     }
 }
 
@@ -418,6 +680,52 @@ struct LabelCacheTests {
         #expect(all.count == total, "every thread, exactly once")
     }
 
+    /// The `nil` / `[]` contract at the level that enforces it, and the fact that
+    /// an embedded write is per-MESSAGE: it may replace the labels of the messages
+    /// it names and must touch no other row, or an upsert of one message would
+    /// truncate a label's membership the way only a completed sweep may.
+    @Test("An embedded-label write is per-message: nil says nothing, [] clears, siblings are untouched")
+    func embeddedLabelsAreScopedToTheirMessages() async throws {
+        let store = try MailStore.inMemory()
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        try await store.replaceLabels([billing], accountID: Self.account)
+        try await store.replaceAssignments(
+            labelID: "lbl_1",
+            messages: [
+                LabelRowKey(messageID: "msg_1", threadID: "thr_1"),
+                LabelRowKey(messageID: "msg_2", threadID: "thr_2"),
+            ],
+            accountID: Self.account
+        )
+
+        // A row that says NOTHING changes nothing — not even its own message.
+        #expect(
+            try await store.applyEmbeddedLabels(
+                from: [SyncFixtures.message("msg_1", threadID: "thr_1")], accountID: Self.account
+            ) == false
+        )
+        #expect(try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"])
+
+        // An EMPTY list is the server saying "no labels", and does clear — but
+        // only for the message it names.
+        #expect(
+            try await store.applyEmbeddedLabels(
+                from: [SyncFixtures.message("msg_1", threadID: "thr_1", labels: [])],
+                accountID: Self.account
+            )
+        )
+        #expect(try await store.labelIDs(messageID: "msg_1", accountID: Self.account).isEmpty)
+        #expect(
+            try await store.labelIDs(messageID: "msg_2", accountID: Self.account) == ["lbl_1"],
+            "a per-message write must never truncate the label's wider membership"
+        )
+
+        // Idempotent: a second pass over the same rows reports no change, so an
+        // unchanged poll cannot invalidate the UI.
+        let restated = [SyncFixtures.message("msg_2", threadID: "thr_2", labels: [billing])]
+        #expect(try await store.applyEmbeddedLabels(from: restated, accountID: Self.account) == false)
+    }
+
     /// Fails if a tombstoned message keeps its assignments: the row would go on
     /// appearing in the label's listing, and nothing would ever clean it up.
     @Test("Deleting a message drops its label assignments")
@@ -609,6 +917,59 @@ struct LabelActionTests {
             try await store.labelIDs(messageID: "msg_1", accountID: Self.account).sorted()
                 == ["lbl_1", "lbl_other"],
             "a label assigned elsewhere since the last sweep rides in on the answer"
+        )
+    }
+
+    /// The invariant the upgrade plan calls out by name: a conversation-level PUT
+    /// answers with the DISTINCT UNION across the thread, and the union Herald
+    /// computes locally — `labelIndex.idsByThread`, which is what the row chips
+    /// draw — has to agree with it afterwards. Fails if `settleThreadLabel` writes
+    /// the toggled label to only some of the thread's messages, or if the index
+    /// double-counts a thread whose messages disagree: either way the chips on the
+    /// row would differ from what the server just said the thread carries.
+    @Test("The conversation union agrees with the server's answer after a thread PUT")
+    func conversationUnionMatchesTheServerAnswer() async throws {
+        let store = try await seededStore()
+        // msg_1 already carries a second label; msg_2 does not. The thread's union
+        // is therefore both labels, and neither message's own set is the union.
+        try await store.replaceLabels(
+            [
+                LabelSyncTests.label("lbl_1", name: "Billing"),
+                LabelSyncTests.label("lbl_2", name: "Later"),
+            ],
+            accountID: Self.account
+        )
+        try await store.replaceAssignments(
+            labelID: "lbl_2",
+            messages: [LabelRowKey(messageID: "msg_1", threadID: "thr_1")],
+            accountID: Self.account
+        )
+
+        let api = FakeMailAPIClient()
+        let answer = LabelAssignment(
+            affected: 2,
+            assigned: true,
+            labelID: "lbl_1",
+            threadID: "thr_1",
+            labels: [
+                LabelSyncTests.label("lbl_1", name: "Billing"),
+                LabelSyncTests.label("lbl_2", name: "Later"),
+            ]
+        )
+        await api.setLabelAssignmentResult(answer)
+        let actions = MailActionService(api: api, store: store)
+        try await actions.setLabel(
+            "lbl_1", onConversation: "thr_1", accountID: Self.account, assigned: true
+        )
+
+        let index = try await store.labelIndex(accountID: Self.account)
+        #expect(
+            index.idsByThread["thr_1"] == Set(answer.labels.map(\.id)),
+            "the locally computed thread union must equal LabelAssignmentResult.labels"
+        )
+        #expect(
+            try await store.labelIDs(messageID: "msg_2", accountID: Self.account) == ["lbl_1"],
+            "and the sibling got the toggled label only — not the whole union"
         )
     }
 }

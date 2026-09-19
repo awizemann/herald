@@ -349,7 +349,11 @@ nonisolated enum MailFixtures {
         read: Bool = false,
         starred: Bool = false,
         hasAttachments: Bool = false,
-        date: Date = epoch
+        date: Date = epoch,
+        // `nil` is what a server older than 1.4.2 returns (no `labels` key), so it
+        // is the default: a fixture that says nothing about labels exercises the
+        // legacy path rather than silently clearing cached membership.
+        labels: [MailLabel]? = nil
     ) -> MessageSummary {
         MessageSummary(
             id: id,
@@ -366,7 +370,8 @@ nonisolated enum MailFixtures {
             readAt: read ? date : nil,
             starredAt: starred ? date : nil,
             hasAttachments: hasAttachments,
-            createdAt: date
+            createdAt: date,
+            labels: labels
         )
     }
 

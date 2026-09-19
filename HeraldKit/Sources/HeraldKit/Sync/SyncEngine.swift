@@ -13,7 +13,9 @@ public nonisolated enum SyncEvent: Sendable {
     /// against the message cache by the view-model, and a draft id would resolve
     /// to nothing and be mistaken for a brand-new mailbox.
     case draftsChanged(ChangeSet)
-    /// The LABELS table (or its assignments) changed. Its own case for the same
+    /// The LABELS table (or its assignments) changed — either the reconciliation
+    /// wrote something, or a pass upserted message rows whose EMBEDDED labels
+    /// moved. Its own case for the same
     /// reason as `draftsChanged`: label ids and assignment rows are not message
     /// ids, so folding them into a ``ChangeSet`` would have the view-model
     /// resolving them against the message cache and reloading the wrong slices.
@@ -86,9 +88,10 @@ public nonisolated enum SyncCadence: Sendable, Hashable {
     ///
     /// Not "never": these are the safety net for a frame the server dropped, a
     /// socket that is half-open without knowing it, and the two surfaces whose
-    /// staleness a frame cannot fix (label MEMBERSHIP arrives as a `messages`
-    /// frame that identifies nothing, and the drafts/labels sweeps only run
-    /// inside a pass). Active stays at two minutes for exactly that reason.
+    /// staleness a frame cannot fix (the drafts poll and the label reconciliation
+    /// only ever run inside a pass, and a label DELETED workspace-wide is
+    /// announced by nothing the message journal carries). Active stays at two
+    /// minutes for exactly that reason.
     var stretchedInterval: Duration {
         switch self {
         case .active: .seconds(120)
@@ -119,33 +122,61 @@ public actor SyncEngine {
     /// never waiting on this; it only catches drafts written elsewhere.
     public static let defaultDraftPollInterval: Duration = .seconds(60)
 
-    /// How rarely the label sweep runs. Labels are the OTHER surface with no
-    /// delta: the v1 change journal reports a label-only edit as an upsert of the
-    /// message (the server bumps `messages.updated_at`), but the v1 message
-    /// payload carries no `labels` field, so the journal entry says "something
-    /// about this message changed" and nothing about which labels it now has.
-    /// Membership therefore has to be re-derived by listing each label, which is
-    /// one request per label — far too much for the 15s message cadence.
+    /// LEGACY (pre-1.4.2 server) label sweep interval, while labels are on screen.
     ///
-    /// The user's OWN assignments never wait for this: they are written straight
-    /// into the cache and reconciled from the server's `LabelAssignmentResult`.
+    /// Before upstream 1.4.2 labels were a surface with no delta at all: the v1
+    /// change journal reported a label-only edit as an upsert of the message (the
+    /// server bumps `messages.updated_at`), but the v1 payload carried no
+    /// `labels` field, so the entry said "something about this message changed"
+    /// and nothing about which labels it now has. Membership had to be re-derived
+    /// by listing every label, one request each.
+    ///
+    /// Against a server that DOES embed labels this interval is not used at all —
+    /// see ``defaultReconciliationLabelPollInterval``. It survives unchanged for
+    /// 1.3.4/1.4.0 servers, which remain supported and for which it is still the
+    /// only membership source there is.
+    ///
+    /// The user's OWN assignments never wait for it either way: they are written
+    /// straight into the cache and settled from the server's
+    /// `LabelAssignmentResult`.
     public static let defaultLabelPollInterval: Duration = .seconds(120)
 
-    /// The label sweep's interval while NOTHING on screen shows labels.
+    /// LEGACY (pre-1.4.2 server) label sweep interval while NOTHING on screen
+    /// shows labels.
     ///
     /// 120s buys freshness for chips and badges the user can actually see. When
     /// the app is not frontmost — or the account has no labels at all — that
-    /// freshness is bought for nobody, and the sweep is the single most expensive
-    /// idle thing Herald does: one `GET /messages?labelId=` page-walk PER label,
-    /// forever, whatever else is happening. Twelve and a half minutes is still
-    /// far inside any session and cuts the idle request rate by ~6×.
+    /// freshness is bought for nobody, and on such a server the sweep is the
+    /// single most expensive idle thing Herald does: one
+    /// `GET /messages?labelId=` page-walk PER label, forever, whatever else is
+    /// happening. Twelve and a half minutes is still far inside any session and
+    /// cuts the idle request rate by ~6×.
     ///
-    /// Deliberately not "never": the surface has no delta (see
-    /// ``defaultLabelPollInterval``), so a sweep that stops entirely is a cache
-    /// that diverges silently until the user next opens a label. And the moment
-    /// the user DOES ask about labels, ``refreshLabelsNow()`` sweeps immediately
-    /// regardless of either interval.
+    /// Deliberately not "never": on those servers the surface has no delta, so a
+    /// sweep that stops entirely is a cache that diverges silently until the user
+    /// next opens a label. And the moment the user DOES ask about labels,
+    /// ``refreshLabelsNow()`` sweeps immediately regardless of any interval.
     public static let defaultIdleLabelPollInterval: Duration = .seconds(750)
+
+    /// The sweep's interval once the server is known to EMBED labels on message
+    /// rows (upstream 1.4.2's `includeLabels=true`).
+    ///
+    /// On such a server membership arrives with the rows themselves — every
+    /// listing, every journal upsert, every action answer — so the sweep stops
+    /// being the source of truth and becomes a RECONCILIATION. It is kept, and
+    /// kept on a timer rather than retired, for exactly one thing rows cannot
+    /// report: DELETING a label workspace-wide touches no message, so no row ever
+    /// mentions it again and nothing in the journal says it is gone. The other
+    /// two triggers are prompt — the `labels` wake frame and any change to the
+    /// label LIST both force a full reconciliation — and this timer is the
+    /// backstop for a frame that was dropped (they are best-effort and never
+    /// replayed) or a socket that was never up.
+    ///
+    /// Half an hour: long enough that the per-label page-walks stop mattering as
+    /// a cost at all, short enough that a divergence nobody notices is bounded.
+    /// It deliberately does NOT vary with the on-screen label surface the way the
+    /// legacy intervals do — at this rarity the distinction buys nothing.
+    public static let defaultReconciliationLabelPollInterval: Duration = .seconds(1800)
 
     /// How rarely a rejected change cursor may be answered with a full
     /// re-bootstrap. See ``journalSync(accountID:)`` — the recovery looks like a
@@ -161,6 +192,7 @@ public actor SyncEngine {
     private let draftPollInterval: Duration
     private let labelPollInterval: Duration
     private let idleLabelPollInterval: Duration
+    private let reconciliationLabelPollInterval: Duration
     private let rebootstrapCooldown: Duration
 
     /// When the drafts list was last read. `nil` means "never", which is what
@@ -170,8 +202,48 @@ public actor SyncEngine {
     private var lastLabelPoll: ContinuousClock.Instant?
 
     /// Whether anything on screen currently shows labels. Drives which of the two
-    /// label intervals applies — see ``setLabelSurfaceVisible(_:)``.
+    /// LEGACY label intervals applies — see ``setLabelSurfaceVisible(_:)``.
     private var isLabelSurfaceVisible = false
+
+    /// Accounts whose server has been SEEN to embed label membership on message
+    /// rows, which is what demotes the sweep to a reconciliation.
+    ///
+    /// HOW THE CAPABILITY IS DETECTED — deliberately by RESPONSE SHAPE, never by
+    /// a version number (the spec's `info.version` is the API version and useless
+    /// for this, and no capability endpoint exists): the FIRST `MessageSummary`
+    /// this session whose `labels` is non-`nil` proves it. The client always asks
+    /// (`includeLabels: true` in `AppEnvironment`); a server at 1.4.2 or newer
+    /// answers with the key on every row — `[]` when the message has no labels,
+    /// which is still a statement and still counts — and a server older than that
+    /// ignores the parameter entirely and answers without it, so every row is
+    /// `nil` and the flag is never set.
+    ///
+    /// Therefore `nil` is NEVER evidence of anything. A pass that upserted no
+    /// messages at all, or one that ran before the first row arrived, simply
+    /// leaves the account undetected and the legacy sweep cadence in force — the
+    /// conservative direction: more requests, never a wrong cache.
+    ///
+    /// Per SESSION and per account, not persisted. The cache is rebuildable and a
+    /// server can be downgraded between launches, so re-deciding from the first
+    /// row of the first pass costs nothing and can never be stale. Cleared by
+    /// ``start(accountID:)`` for the same reason.
+    private var labelEmbeddingAccounts: Set<String> = []
+
+    /// Records what a batch of summaries says about the server's label embedding.
+    /// See ``labelEmbeddingAccounts`` for why only a non-`nil` proves anything.
+    private func noteLabelEmbedding(in summaries: [MessageSummary], accountID: String) {
+        guard !labelEmbeddingAccounts.contains(accountID),
+              summaries.contains(where: { $0.labels != nil })
+        else { return }
+        logger.info("Server embeds label membership on message rows; the per-label sweep is now a reconciliation")
+        labelEmbeddingAccounts.insert(accountID)
+    }
+
+    /// Whether the CURRENT account's server embeds labels on message rows.
+    var serverEmbedsLabels: Bool {
+        guard let accountID else { return false }
+        return labelEmbeddingAccounts.contains(accountID)
+    }
 
     /// What the last COMPLETED sweep wrote for each label, as a digest.
     ///
@@ -214,6 +286,10 @@ public actor SyncEngine {
     private var isWakeSocketConnected = false
     private var consecutiveFailures = 0
 
+    /// Whether THIS pass wrote any embedded label membership. Raised by the
+    /// upsert paths, drained into one `.labelsChanged` at the end of the pass.
+    private var passLabelsChanged = false
+
     /// Coalescing state: a refresh asked for while a pass is in flight becomes
     /// exactly ONE more pass, not one per request.
     private var isSyncing = false
@@ -246,6 +322,7 @@ public actor SyncEngine {
         draftPollInterval: Duration = SyncEngine.defaultDraftPollInterval,
         labelPollInterval: Duration = SyncEngine.defaultLabelPollInterval,
         idleLabelPollInterval: Duration = SyncEngine.defaultIdleLabelPollInterval,
+        reconciliationLabelPollInterval: Duration = SyncEngine.defaultReconciliationLabelPollInterval,
         rebootstrapCooldown: Duration = SyncEngine.defaultRebootstrapCooldown
     ) {
         self.api = api
@@ -259,6 +336,7 @@ public actor SyncEngine {
         // shorter number; the idle interval is a FLOOR on rarity, never a way to
         // sweep more often than the visible surface asked for.
         self.idleLabelPollInterval = max(idleLabelPollInterval, labelPollInterval)
+        self.reconciliationLabelPollInterval = reconciliationLabelPollInterval
         self.rebootstrapCooldown = rebootstrapCooldown
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
         self.eventStream = stream
@@ -289,6 +367,10 @@ public actor SyncEngine {
         // The digests describe the PREVIOUS account's membership; keeping them
         // would let the first sweep of a new account skip a write it must make.
         lastSweepDigests.removeAll()
+        // Re-decided from this account's own first row (see
+        // ``labelEmbeddingAccounts``): a server can be upgraded — or rolled back —
+        // between one engine and the next, and the answer costs one field test.
+        labelEmbeddingAccounts.removeAll()
         loopTask = Task { [weak self] in
             await self?.runLoop(accountID: accountID)
         }
@@ -337,9 +419,11 @@ public actor SyncEngine {
         refreshNow()
     }
 
-    /// Asks for a pass that also re-sweeps label membership, whatever the label
-    /// interval says. For the moments the user is actually asking about labels —
-    /// opening a label in the sidebar, or pressing Refresh while inside one.
+    /// Asks for a pass that also reconciles labels, whatever the label interval
+    /// says. Three callers: opening a label in the sidebar, pressing Refresh while
+    /// inside one, and the `labels` wake frame — which is the server announcing
+    /// that a label was created, renamed or DELETED, the one change no message row
+    /// can report.
     public func refreshLabelsNow() {
         lastLabelPoll = nil
         // This is the "the user is asking about labels RIGHT NOW" path, so it is
@@ -353,9 +437,14 @@ public actor SyncEngine {
 
     /// Tells the loop whether anything on screen is showing labels.
     ///
-    /// The sweep is one request PER LABEL and it is the dominant idle cost, so it
-    /// runs at ``defaultLabelPollInterval`` only while the answer is worth having
-    /// promptly and at ``defaultIdleLabelPollInterval`` otherwise.
+    /// LEGACY-SERVER SIGNAL ONLY. On a pre-1.4.2 server the sweep is one request
+    /// PER LABEL and the dominant idle cost, so it runs at
+    /// ``defaultLabelPollInterval`` only while the answer is worth having promptly
+    /// and at ``defaultIdleLabelPollInterval`` otherwise. Once the server is known
+    /// to embed labels on message rows this signal stops affecting anything: the
+    /// sweep is then the rare reconciliation and membership comes in with the rows
+    /// regardless of what is on screen. The view-model still pushes it — deciding
+    /// which server it is talking to is the engine's job, not the UI's.
     ///
     /// Deliberately NOT wired to wake the loop when it flips true, unlike
     /// ``setWakeSocketConnected(_:)``: waking costs a whole mail pass, and the
@@ -488,6 +577,7 @@ public actor SyncEngine {
     private func runPass(accountID: String) async {
         isSyncing = true
         runningPassGeneration = passGeneration
+        passLabelsChanged = false
         defer { isSyncing = false }
         emit(.began)
         do {
@@ -495,6 +585,13 @@ public actor SyncEngine {
             try checkPassIsCurrent()
             consecutiveFailures = 0
             if !changes.isEmpty { emit(.changed(changes)) }
+            // Coalesced to ONE event for the whole pass: a journal page can carry
+            // a hundred label edits and the view-model's answer to each is the
+            // same whole-account index reload.
+            if passLabelsChanged {
+                passLabelsChanged = false
+                emit(.labelsChanged)
+            }
             // Deliberately AFTER the mail sync and outside its result: drafts are
             // a separate surface on a separate cadence, and their own failure
             // mode must not decide whether the mail pass succeeded.
@@ -598,16 +695,25 @@ public actor SyncEngine {
     /// the change journal.
     private var labelCapableAccounts: Set<String> = []
 
-    /// Re-derives label membership.
+    /// Reconciles the label list and, behind it, label membership.
     ///
     /// Two halves, in order:
     /// 1. `GET /labels` — the workspace's labels (shared, not per-user), replacing
-    ///    the cached list wholesale.
-    /// 2. one `GET /messages?labelId=…` page-walk PER label — the only membership
-    ///    source the v1 API has (see ``defaultLabelPollInterval``). A walk that
-    ///    hits the page cap does NOT write: `replaceAssignments` is authoritative
-    ///    by construction, so a truncated listing would erase the assignments the
+    ///    the cached list wholesale. A label the server no longer lists takes its
+    ///    assignments with it.
+    /// 2. one `GET /messages?labelId=…` page-walk PER label. A walk that hits the
+    ///    page cap does NOT write: `replaceAssignments` is authoritative by
+    ///    construction, so a truncated listing would erase the assignments the
     ///    server had not got round to returning.
+    ///
+    /// WHAT THIS IS FOR HAS CHANGED. Against a server that embeds labels on
+    /// message rows (1.4.2+) half 2 is no longer the membership source — the rows
+    /// are, written by ``MailStore/applyEmbeddedLabels(from:accountID:)`` on every
+    /// upsert — and this runs rarely, as the reconciliation for what rows cannot
+    /// say: a label deleted workspace-wide, and messages in folders this cache has
+    /// never listed. Against an older server it is still the ONLY source and still
+    /// runs on ``defaultLabelPollInterval``. Which of the two applies is decided
+    /// per account, by response shape, in ``labelEmbeddingAccounts``.
     ///
     /// Never throws: a label failure is not a sync failure, and `lastLabelPoll` is
     /// only advanced on success so a transient error retries next pass.
@@ -647,6 +753,12 @@ public actor SyncEngine {
             logger.warning("Label list could not be cached: \(error.localizedDescription, privacy: .private)")
             return
         }
+        // A CHANGE TO THE LABEL LIST FORCES A FULL RECONCILIATION. It is the one
+        // event rows cannot describe: a deleted label never touches a message, so
+        // no upsert mentions it and the digests still describe a membership the
+        // workspace has dismantled. Renames and creations come through here too
+        // and cost nothing extra — the list only moves when a human moved it.
+        if changed { lastSweepDigests.removeAll() }
 
         var swept = 0
         for label in labels {
@@ -738,8 +850,14 @@ public actor SyncEngine {
 
     /// The interval the label sweep is currently held to. Also the test seam for
     /// the gating, mirroring ``currentPollInterval``.
+    ///
+    /// Once the server is known to embed labels the on-screen surface stops
+    /// mattering: membership rides in with the rows the pass is already fetching,
+    /// so the sweep is only ever the slow reconciliation. Until then — and
+    /// forever, on a pre-1.4.2 server — the legacy visible/idle pair applies.
     var currentLabelPollInterval: Duration {
-        isLabelSurfaceVisible ? labelPollInterval : idleLabelPollInterval
+        if serverEmbedsLabels { return reconciliationLabelPollInterval }
+        return isLabelSurfaceVisible ? labelPollInterval : idleLabelPollInterval
     }
 
     /// Test seam, same purpose as ``lastDraftPollInstant``.
@@ -1054,7 +1172,12 @@ public actor SyncEngine {
         let upserts = batch
         batch.removeAll(keepingCapacity: true)
         try checkPassIsCurrent()
+        noteLabelEmbedding(in: upserts, accountID: accountID)
         let result = try await store.applyMessageUpserts(upserts, accountID: accountID)
+        // A label-only edit is a journal upsert whose message fields are all
+        // identical, so `result.changes` is empty and `.changed` is never emitted
+        // — this flag is the only thing that will tell the UI its chips moved.
+        if result.labelsChanged { passLabelsChanged = true }
         for summary in upserts {
             touched.formUnion(conversationScopes(mailboxID: summary.mailboxID, folder: summary.folder))
             guard let previous = result.previousScopes[summary.id],
@@ -1185,7 +1308,10 @@ public actor SyncEngine {
                 paginates = true
             }
             seen.formUnion(page.messages.map(\.id))
-            changes.formUnion(try await store.upsertMessages(page.messages, accountID: accountID))
+            noteLabelEmbedding(in: page.messages, accountID: accountID)
+            let upserted = try await store.applyMessageUpserts(page.messages, accountID: accountID)
+            changes.formUnion(upserted.changes)
+            if upserted.labelsChanged { passLabelsChanged = true }
             guard let next = page.nextCursor else {
                 // No next link: the end of a paginated walk, or a whole listing
                 // from a server that cannot paginate at all.

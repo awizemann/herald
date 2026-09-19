@@ -12,10 +12,22 @@ struct SettingsView: View {
                 .tabItem { Label("Notifications", systemImage: "bell") }
             MailboxSettingsPane(model: environment.mail)
                 .tabItem { Label("Mailboxes", systemImage: "tray.2") }
+            // Keyed by account: switching accounts must build a NEW model against
+            // the new account's service, not keep showing the old one's list.
+            if let signatures = environment.signatureSettingsModel() {
+                SignatureSettingsPane(
+                    model: signatures,
+                    reauthenticate: { environment.reauthenticateSelectedAccount() }
+                )
+                .id(environment.selectedAccountID)
+                .tabItem { Label("Signatures", systemImage: "signature") }
+            }
             PrivacySettingsPane(model: UsagePrivacyModel(usage: environment.usage))
                 .tabItem { Label("Privacy", systemImage: "hand.raised") }
         }
-        .frame(width: 640, height: 320)
+        // Taller than the three original panes needed: the Signatures list is a
+        // scrolling Form with per-scope sections, and 320pt showed barely a row.
+        .frame(width: 640, height: 420)
     }
 }
 

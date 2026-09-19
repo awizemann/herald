@@ -67,6 +67,11 @@ private struct ComposeWindowRoot: View {
 struct ComposeView: View {
     @Bindable var model: ComposeViewModel
     @Environment(\.dismiss) private var dismiss
+    /// Optional on purpose: the non-optional form TRAPS when the value is absent,
+    /// and this view is also built in previews and tests that have no
+    /// `AppEnvironment`. Only the signature-refresh key reads it, and `nil` there
+    /// just means "never invalidated from Settings".
+    @Environment(AppEnvironment.self) private var environment: AppEnvironment?
     @State private var isDropTarget = false
 
     var body: some View {
@@ -103,7 +108,13 @@ struct ComposeView: View {
         }
         // Keyed on the From address: it can arrive after the first layout, and a
         // bare `.task` would then leave the window without a picker for good.
-        .task(id: model.draft.fromAddress) { await model.loadSignatures() }
+        // Also keyed on the signature revision, which Settings ▸ Signatures bumps
+        // after every mutation — an already-open composer would otherwise keep
+        // offering a signature that was just renamed or deleted.
+        .task(id: SignatureFetchKey(
+            fromAddress: model.draft.fromAddress,
+            revision: environment?.signatureRevision ?? 0
+        )) { await model.loadSignatures() }
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
         .background(pasteShortcut)
@@ -385,4 +396,14 @@ private struct LabeledField<Content: View>: View {
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
     }
+}
+
+/// What one signature-candidate fetch depends on.
+///
+/// A struct rather than a string built by interpolation: an address containing
+/// the separator would otherwise be able to collide with a different
+/// address/revision pair and silently skip a refetch.
+nonisolated struct SignatureFetchKey: Hashable {
+    let fromAddress: String
+    let revision: Int
 }

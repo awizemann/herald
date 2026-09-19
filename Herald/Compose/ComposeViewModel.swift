@@ -57,7 +57,7 @@ final class ComposeViewModel {
     private(set) var status: Status = .idle {
         didSet {
             guard status != oldValue, let message = status.message else { return }
-            announcement = message
+            announce(message)
         }
     }
 
@@ -67,6 +67,21 @@ final class ComposeViewModel {
     /// no reason to visit the bottom of a compose window, so an error that is
     /// only drawn there is an error a blind user never learns about.
     private(set) var announcement: String?
+    /// Bumped on EVERY announcement, including one that repeats the words already
+    /// in ``announcement``. The window observes this rather than the string: a
+    /// held Send pressed twice says the same sentence both times, and an
+    /// `onChange` on the string alone would speak it once and then go silent —
+    /// which is exactly the "⌘⇧D does nothing" the hold is supposed to explain.
+    private(set) var announcementCount = 0
+
+    /// Publishes a message for VoiceOver. Two calls inside one synchronous body
+    /// coalesce into a single `onChange` delivery, so the belt-and-braces
+    /// re-announce in ``send()`` cannot speak twice.
+    private func announce(_ message: String) {
+        announcement = message
+        announcementCount += 1
+    }
+
     /// Set when the window should go away: send succeeded, or the user discarded.
     private(set) var isClosed = false
     /// Non-nil once the server has told this window not to send again — the two
@@ -89,6 +104,29 @@ final class ComposeViewModel {
     /// Whether Send is refused right now. The button reads this and so does
     /// ``send()`` — ⌘⇧D must not do what the disabled button will not.
     var isSendBlocked: Bool { sendHold != nil }
+
+    /// Why Send is unavailable, or `nil` when it is not. The Send control drives
+    /// BOTH its tooltip and its accessibility hint off this: a `.disabled` button
+    /// whose only explanation is an error bar at the other end of the window
+    /// announces "dimmed" and nothing else.
+    var sendHoldReason: String? { Self.sendHoldReason(sendHold) }
+
+    /// Static and payload-free so the sentence the tooltip shows and the sentence
+    /// VoiceOver speaks are provably the same one, assertable without a rendered
+    /// window — the `ReauthBanner.message`/`announcement` pattern.
+    nonisolated static func sendHoldReason(_ hold: SendHold?) -> String? {
+        hold.map { OutboxError.sendOnHold($0).localizedDescription }
+    }
+
+    /// The Send control's tooltip: the verb when it works, the reason when it
+    /// does not.
+    ///
+    /// The shortcut is spelled out because the button no longer carries the key
+    /// equivalent itself (it lives on an always-enabled proxy, so a hold cannot
+    /// withdraw it) and SwiftUI therefore no longer draws "⌘⇧D" in the tooltip.
+    nonisolated static func sendHelp(_ hold: SendHold?) -> String {
+        sendHoldReason(hold) ?? "Send (⌘⇧D)"
+    }
     /// Drives the ⌘W confirmation sheet.
     var confirmsClose = false
 
@@ -433,9 +471,17 @@ final class ComposeViewModel {
     @discardableResult
     func send() async -> Bool {
         guard !isSendBlocked else {
-            // Reached only by ⌘⇧D while the button is disabled. Re-announce the
-            // reason rather than silently doing nothing.
-            if let sendHold { status = .failed(OutboxError.sendOnHold(sendHold).localizedDescription) }
+            // Reached only by ⌘⇧D while the button is disabled — which is why the
+            // shortcut lives on an always-enabled proxy in `ComposeWindow`:
+            // SwiftUI withdraws a disabled control's key equivalent, so the user
+            // pressed ⌘⇧D, nothing happened, and nothing said why.
+            if let reason = sendHoldReason {
+                // `status` may already BE this failure, and its `didSet` only
+                // announces on a change, so the re-announcement is posted
+                // explicitly. Every press says why.
+                status = .failed(reason)
+                announce(reason)
+            }
             return false
         }
         autosaveTask?.cancel()

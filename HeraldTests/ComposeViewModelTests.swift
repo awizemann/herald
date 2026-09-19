@@ -271,6 +271,76 @@ actor FakeOutbox: Outboxing {
         #expect(await outbox.sendCount == 2)
     }
 
+    /// A held Send is a `.disabled` button, and "dimmed" is all VoiceOver says
+    /// about one. The reason has to reach both the tooltip and the accessibility
+    /// hint, and it has to be the hold's OWN sentence rather than the verb.
+    /// Fails if the control goes back to advertising itself as "Send" while the
+    /// server has forbidden sending, or if the two surfaces drift apart.
+    @Test func aHeldSendStatesItsReasonInBothTheTooltipAndTheHint() async {
+        #expect(ComposeViewModel.sendHoldReason(nil) == nil)
+        // The shortcut is spelled out: the button no longer carries the key
+        // equivalent, so SwiftUI no longer draws it in the tooltip.
+        #expect(ComposeViewModel.sendHelp(nil) == "Send (⌘⇧D)")
+
+        for hold in SendHold.allCases {
+            let reason = ComposeViewModel.sendHoldReason(hold)
+            #expect(reason == OutboxError.sendOnHold(hold).localizedDescription)
+            #expect(reason?.isEmpty == false)
+            // One sentence, two surfaces: the tooltip must not say "Send" while
+            // the hint explains a hold.
+            #expect(ComposeViewModel.sendHelp(hold) == reason)
+            #expect(ComposeViewModel.sendHelp(hold) != ComposeViewModel.sendHelp(nil))
+        }
+
+        let outbox = FakeOutbox()
+        await outbox.setSendError(.sendOnHold(.recovering))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Already on its way"
+        #expect(model.sendHoldReason == nil, "Nothing is held before the first attempt")
+
+        #expect(await model.send() == false)
+        #expect(model.sendHoldReason == OutboxError.sendOnHold(.recovering).localizedDescription)
+    }
+
+    /// ⌘⇧D stays bound while the Send button is disabled (the shortcut lives on
+    /// an always-enabled proxy), so pressing it has to SAY why nothing happened —
+    /// every time, not just the first. Fails on the implementation where the
+    /// re-announcement rode on `status`, whose `didSet` only fires on a change:
+    /// the second and every later press were silent.
+    @Test func everyBlockedSendAttemptReAnnouncesTheReason() async {
+        let outbox = FakeOutbox()
+        await outbox.setSendError(.sendOnHold(.recovering))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Already on its way"
+
+        #expect(await model.send() == false)
+        let reason = OutboxError.sendOnHold(.recovering).localizedDescription
+        #expect(model.announcement == reason)
+        let afterFirst = model.announcementCount
+
+        // The status is ALREADY this failure, so nothing about it changes here.
+        #expect(await model.send() == false)
+        #expect(model.announcement == reason)
+        #expect(model.announcementCount > afterFirst, "A repeated ⌘⇧D announced nothing")
+
+        let afterSecond = model.announcementCount
+        #expect(await model.send() == false)
+        #expect(model.announcementCount > afterSecond)
+        // Still no second POST: the shortcut being reachable must not make the
+        // send reachable.
+        #expect(await outbox.sendCount == 1)
+    }
+
     /// The send identity has to survive a retry of the SAME message and rotate
     /// only once the message is really gone. Fails on a key re-minted per attempt
     /// (the retry would deliver twice) and on one that never rotates (the next

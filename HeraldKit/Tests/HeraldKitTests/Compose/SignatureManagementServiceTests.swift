@@ -259,4 +259,39 @@ import Testing
     func emptyGrouping() {
         #expect(SignatureScopeGroup.group([]).isEmpty)
     }
+
+    /// The Settings pane logs every failure. `String(describing:)` on this enum
+    /// prints the wrapped `MailAPIError`'s server-chosen `message` — free text
+    /// from the network — where every other Herald call site logs a payload-free
+    /// `logCode`. Fails the moment a server message can reach a log.
+    @Test("logCode carries no server message")
+    func logCodeIsPayloadFree() {
+        #expect(SignatureManagementError.notAuthorized.logCode == "not_authorized")
+        #expect(SignatureManagementError.unsupportedByServer.logCode == "unsupported_by_server")
+        #expect(SignatureManagementError.signatureGone.logCode == "signature_gone")
+        #expect(SignatureManagementError.scopeForbidden.logCode == "scope_forbidden")
+        #expect(SignatureManagementError.duplicateName.logCode == "duplicate_name")
+        #expect(SignatureManagementError.nameRequired.logCode == "name_required")
+        #expect(SignatureManagementError.nameTooLong.logCode == "name_too_long")
+        #expect(SignatureManagementError.htmlTooLarge.logCode == "html_too_large")
+
+        // The wrapped case forwards `MailAPIError.logCode`, which is itself
+        // payload-free: the code, never the message.
+        let wrapped = SignatureManagementError.api(
+            .server(code: "SIGNATURE_INVALID", message: "ada@example.net is not a valid signer")
+        )
+        #expect(wrapped.logCode == "api(server(SIGNATURE_INVALID))")
+        #expect(!wrapped.logCode.contains("ada@example.net"))
+
+        // Every case, mechanically: none may echo its own description, which is
+        // exactly what `String(describing:)` leaked.
+        for error: SignatureManagementError in [
+            .notAuthorized, .unsupportedByServer, .signatureGone, .scopeForbidden,
+            .duplicateName, .nameRequired, .nameTooLong, .htmlTooLarge,
+            .api(.server(code: "X", message: "Subject: Q3 layoffs")),
+        ] {
+            #expect(!error.logCode.contains("layoffs"))
+            #expect(error.logCode != String(describing: error))
+        }
+    }
 }

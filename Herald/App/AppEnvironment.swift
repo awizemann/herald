@@ -344,7 +344,12 @@ final class AppEnvironment {
             // Read through the view-model on every load, so a mailbox that has
             // synced since the pane opened is offered as a scope.
             mailboxes: { [weak graph] in graph?.mail.mailboxes ?? [] },
-            didMutate: { [weak self] in self?.signatureRevision += 1 }
+            didMutate: { [weak self] in self?.signatureRevision += 1 },
+            // The GRANTED scopes (the server echoes them on the token response),
+            // re-read on every load so a re-auth that widened or refused the
+            // grant is seen: this is what lets the pane stop offering "Sign In
+            // Again" once the server has demonstrably not granted the scope.
+            grantedScopes: { [weak graph] in graph?.account.scopes ?? [] }
         )
         signatureSettingsModels[id] = model
         return model

@@ -17,12 +17,29 @@ public nonisolated struct LabelActionUndo: Sendable, Hashable {
     /// message that already had the label contributes nothing: reverting it would
     /// take away a label the action never granted.
     public let messages: [LabelRowKey]
+    /// This action's identity in the label fence. Two actions can hold the same
+    /// pair at once, so a release names the token that took it.
+    public let token: UUID
+    /// The message ids this action PINNED — deliberately a superset of
+    /// ``messages``: a message of the thread that already had the label moved no
+    /// row and so owns no undo, but a stale journal page must not strip the label
+    /// off it either, and the settle is about to state it authoritatively.
+    public let pinned: [String]
 
-    public init(accountID: String, labelID: String, assigned: Bool, messages: [LabelRowKey]) {
+    public init(
+        accountID: String,
+        labelID: String,
+        assigned: Bool,
+        messages: [LabelRowKey],
+        token: UUID = UUID(),
+        pinned: [String] = []
+    ) {
         self.accountID = accountID
         self.labelID = labelID
         self.assigned = assigned
         self.messages = messages
+        self.token = token
+        self.pinned = pinned
     }
 
     public var isEmpty: Bool { messages.isEmpty }
@@ -127,6 +144,12 @@ extension MailStore {
     /// touches a message, so no row ever mentions it again (see
     /// ``replaceAssignments(labelID:messages:accountID:)`` and
     /// `SyncEngine.syncLabelsIfDue`).
+    ///
+    /// FENCED. Being per-message authoritative is exactly what made a stale page
+    /// dangerous: a `/changes` page cut before the user's toggle states the
+    /// PRE-toggle set, and applying it strips the label the user just added with
+    /// no `.changed` and no re-announcement behind it. Pairs an in-flight label
+    /// action owns are therefore left alone here — see ``MailStore/pinnedLabels``.
     @discardableResult
     public func applyEmbeddedLabels(from summaries: [MessageSummary], accountID: String) throws -> Bool {
         let stated = summaries.compactMap { summary in
@@ -138,7 +161,7 @@ extension MailStore {
         }
         guard !stated.isEmpty else { return false }
         do {
-            let changed = try writeMessageAssignments(stated, accountID: accountID)
+            let changed = try writeMessageAssignments(stated, accountID: accountID, respectingPins: true)
             if changed { try save() }
             return changed
         } catch {
@@ -196,7 +219,14 @@ extension MailStore {
                 )
             )
             var byMessage = Dictionary(existing.map { ($0.messageID, $0) }, uniquingKeysWith: { first, _ in first })
-            for message in messages {
+            // The label fence applies here too, and for a sharper reason: this
+            // listing was fetched at some point in the past and a toggle made
+            // since is NEWER than it in both directions — an add the listing has
+            // not got, and a remove it still has. The A3 race (a sweep that
+            // started before a local toggle deleting the just-confirmed row) is
+            // exactly this. Pinned pairs stay as the cache has them.
+            let pinned = pinnedMessages(labelID: labelID, accountID: accountID)
+            for message in messages where !pinned.contains(message.messageID) {
                 guard let row = byMessage.removeValue(forKey: message.messageID) else {
                     modelContext.insert(CachedLabelAssignment(
                         accountID: accountID,
@@ -214,7 +244,9 @@ extension MailStore {
                     changed = true
                 }
             }
-            for row in byMessage.values {
+            // `byMessage` still holds every pinned row too (the loop above never
+            // removed them), so the same guard keeps them from being deleted.
+            for row in byMessage.values where !pinned.contains(row.messageID) {
                 modelContext.delete(row)
                 changed = true
             }
@@ -426,9 +458,20 @@ extension MailStore {
             let keys = messages.map { LabelRowKey(messageID: $0.id, threadID: $0.threadID) }
             let touched = try setAssignments(labelID: labelID, rows: keys, accountID: accountID, assigned: assigned)
             if !touched.isEmpty { try save() }
-            return LabelActionUndo(
-                accountID: accountID, labelID: labelID, assigned: assigned, messages: touched
+            // Pinned only once the write has actually landed: a `save()` that
+            // threw leaves no optimistic state to protect, and a pin taken before
+            // it would be one this action never returns an undo for and so never
+            // releases. The fan-out is the WHOLE thread, not just `touched` —
+            // see ``LabelActionUndo/pinned``.
+            let undo = LabelActionUndo(
+                accountID: accountID,
+                labelID: labelID,
+                assigned: assigned,
+                messages: touched,
+                pinned: keys.map(\.messageID)
             )
+            pinLabels(messageIDs: undo.pinned, labelID: labelID, accountID: accountID, token: undo.token)
+            return undo
         } catch {
             logger.error("Local label change failed: \(error.localizedDescription, privacy: .private)")
             throw error
@@ -449,9 +492,15 @@ extension MailStore {
             let key = LabelRowKey(messageID: message.id, threadID: message.threadID)
             let touched = try setAssignments(labelID: labelID, rows: [key], accountID: accountID, assigned: assigned)
             if !touched.isEmpty { try save() }
-            return LabelActionUndo(
-                accountID: accountID, labelID: labelID, assigned: assigned, messages: touched
+            let undo = LabelActionUndo(
+                accountID: accountID,
+                labelID: labelID,
+                assigned: assigned,
+                messages: touched,
+                pinned: [key.messageID]
             )
+            pinLabels(messageIDs: undo.pinned, labelID: labelID, accountID: accountID, token: undo.token)
+            return undo
         } catch {
             logger.error("Local label change failed: \(error.localizedDescription, privacy: .private)")
             throw error
@@ -513,11 +562,22 @@ extension MailStore {
     /// fetches and 100 saves. The existing rows are read by message id in chunks
     /// (SQLite's bound-parameter ceiling, ``labelPredicateChunkSize``) and
     /// matched in memory, the same shape ``setAssignments`` uses for a thread.
+    ///
+    /// `respectingPins` is the LABEL FENCE. An EMBEDDED write (a journal page, a
+    /// folder listing) states what the server believed when the page was cut,
+    /// which may be older than the toggle the user just made — and since this
+    /// write is per-message authoritative it would strip the label straight back
+    /// off, with nothing to re-announce it. So an embedded write passes `true`
+    /// and leaves every pinned pair exactly as the cache has it. The action's OWN
+    /// settle passes `false`: it is the newer statement, and it is what takes the
+    /// fence down.
     private func writeMessageAssignments(
         _ writes: [MessageLabelWrite],
-        accountID: String
+        accountID: String,
+        respectingPins: Bool = false
     ) throws -> Bool {
         guard !writes.isEmpty else { return false }
+        let pins = respectingPins ? pinnedLabelsByMessage(accountID: accountID) : [:]
         let messageIDs = Array(Set(writes.map(\.messageID)))
         var existing: [String: [CachedLabelAssignment]] = [:]
         for start in stride(from: 0, to: messageIDs.count, by: Self.labelPredicateChunkSize) {
@@ -536,7 +596,13 @@ extension MailStore {
                 (existing[write.messageID] ?? []).map { ($0.labelID, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
-            for labelID in write.labelIDs {
+            let pinned = pins[write.messageID] ?? []
+            // A pinned pair is skipped in BOTH directions — the insert this
+            // listing would make and, below, the delete. That includes the
+            // re-thread fixup: leaving one stale `threadID` on a row the settle
+            // is about to rewrite anyway is far cheaper than reasoning about a
+            // half-applied fence.
+            for labelID in write.labelIDs where !pinned.contains(labelID) {
                 guard let row = byLabel.removeValue(forKey: labelID) else {
                     modelContext.insert(CachedLabelAssignment(
                         accountID: accountID,
@@ -554,7 +620,7 @@ extension MailStore {
                     changed = true
                 }
             }
-            for row in byLabel.values {
+            for row in byLabel.values where !pinned.contains(row.labelID) {
                 modelContext.delete(row)
                 changed = true
             }

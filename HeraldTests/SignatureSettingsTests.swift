@@ -65,12 +65,14 @@ import Testing
     static func model(
         _ service: FakeSignatureManaging,
         mailboxes: [Mailbox] = [],
-        didMutate: @escaping @MainActor () -> Void = {}
+        didMutate: @escaping @MainActor () -> Void = {},
+        grantedScopes: [String] = []
     ) -> SignatureSettingsModel {
         SignatureSettingsModel(
             service: service,
             mailboxes: { mailboxes },
-            didMutate: didMutate
+            didMutate: didMutate,
+            grantedScopes: { grantedScopes }
         )
     }
 
@@ -338,6 +340,160 @@ import Testing
         #expect(service.deletes.isEmpty)
     }
 
+    // MARK: - The re-auth loop (P3)
+
+    /// "Sign In Again" is honest exactly once. Fails on the implementation that
+    /// re-offered it after a sign-in had already come back without the scope —
+    /// a button whose only effect is to send the user round the OAuth flow again.
+    @Test("A sign-in that still yields no manage scope reaches a terminal state")
+    func reauthorizationStopsBeingOfferedOnceItHasFailed() async {
+        let service = FakeSignatureManaging(listResult: .failure(.notAuthorized))
+
+        // Before any sign-in: recoverable, because the account plausibly
+        // consented before `signatures:manage` existed.
+        let first = Self.model(service, grantedScopes: ["mail:read", "mail:write"])
+        await first.load()
+        #expect(first.state == .needsReauthorization)
+
+        // The user signs in again, and the new grant STILL lacks the scope.
+        first.signInAgainRequested()
+        await first.load()
+        #expect(first.state == .cannotManage)
+
+        // The other terminal shape: the token DOES carry the scope and the server
+        // refuses it anyway, so an identical new token cannot help. Terminal on
+        // the very first load — there is nothing to sign in for.
+        let contradicted = Self.model(
+            service, grantedScopes: ["mail:read", SignatureSettingsModel.manageScope]
+        )
+        await contradicted.load()
+        #expect(contradicted.state == .cannotManage)
+
+        // Unknown grant (nothing injected) must stay recoverable: the pane must
+        // not declare a terminal state on the strength of missing information.
+        let unknown = Self.model(service)
+        unknown.signInAgainRequested()
+        await unknown.load()
+        #expect(unknown.state == .needsReauthorization)
+    }
+
+    // MARK: - Announcements (C5)
+
+    /// Both failure surfaces sit where the cursor is not: the action banner at the
+    /// top of the Form, the field error at the bottom of the sheet. Fails if a
+    /// mutation failure stops being announced, or if the SAME failure reported
+    /// twice announces only once (an `onChange` on the string alone would).
+    @Test("Mutation and field failures are announced, every time")
+    func failuresAreAnnounced() async {
+        let service = FakeSignatureManaging(listResult: .success([
+            Self.signature(id: "sig-1", name: "Work")
+        ]))
+        service.deleteResult = .failure(.scopeForbidden)
+        // A mailbox, so `beginCreate` has a scope to file the new signature
+        // under and the save reaches the SERVICE rather than the local
+        // "choose a scope" guard.
+        let model = Self.model(
+            service,
+            mailboxes: [Self.mailbox(id: "mbx_1", address: "help@example.com", domainID: "dom_1")]
+        )
+        await model.load()
+        #expect(model.announcement == nil)
+
+        model.pendingDeletion = Self.signature(id: "sig-1", name: "Work")
+        await model.confirmDeletion()
+        let message = SignatureManagementError.scopeForbidden.localizedDescription
+        #expect(model.actionError == message)
+        #expect(model.announcement == SignatureSettingsModel.actionErrorAnnouncement(message))
+        // The announcement has to carry its own context: the bare server sentence
+        // never says that anything failed.
+        #expect(model.announcement != message)
+        let afterDelete = model.announcementCount
+        #expect(afterDelete > 0)
+
+        // A field error from a save is announced too, and it is a different
+        // sentence from the banner's.
+        service.createResult = .failure(.duplicateName)
+        model.beginCreate()
+        model.editor?.name = "Work"
+        await model.save()
+        let fieldMessage = SignatureManagementError.duplicateName.localizedDescription
+        #expect(model.editor?.fieldError == fieldMessage)
+        #expect(model.announcement == SignatureSettingsModel.fieldErrorAnnouncement(fieldMessage))
+        #expect(model.announcementCount > afterDelete)
+
+        // The identical failure again: still announced.
+        let afterSave = model.announcementCount
+        await model.save()
+        #expect(model.announcementCount > afterSave, "A repeated failure announced nothing")
+    }
+
+    // MARK: - Sheet reentrancy (C9)
+
+    /// A save resumes after an `await`, and by then the sheet it belongs to may
+    /// be gone and a NEW one open in its place. Fails on the unconditional
+    /// `self.editor = nil`, which closed whatever sheet happened to be up —
+    /// discarding a signature the user had just started writing.
+    @Test("A save that lands late does not close the sheet opened since")
+    func saveOnlyClosesItsOwnSheet() async {
+        let service = FakeSignatureManaging(listResult: .success([]))
+        let model = Self.model(
+            service,
+            mailboxes: [Self.mailbox(id: "mbx_1", address: "help@example.com", domainID: "dom_1")]
+        )
+        await model.load()
+
+        model.beginCreate()
+        model.editor?.name = "First"
+        model.editor?.html = "<p>one</p>"
+        let first = model.editor
+
+        // Mid-save, the user cancels and starts a second signature.
+        service.duringCreate = {
+            model.beginCreate()
+            model.editor?.name = "Second"
+        }
+        await model.save()
+
+        #expect(service.creates.map(\.name) == ["First"])
+        #expect(model.editor !== first)
+        #expect(model.editor != nil, "The sheet opened during the save was closed by it")
+        #expect(model.editor?.name == "Second")
+
+        // And the ordinary case still closes: a save with no sheet swap under it.
+        service.duringCreate = nil
+        model.editor?.html = "<p>two</p>"
+        await model.save()
+        #expect(model.editor == nil)
+    }
+
+    // MARK: - Delete confirmation title (P8)
+
+    /// The dialog is titled from the model while SwiftUI animates it away, and
+    /// confirming clears `pendingDeletion` at once. Fails on titling off
+    /// `pendingDeletion?.name`, which retitled the dialog “Delete “”?” in front
+    /// of the user on the way out.
+    @Test("The delete confirmation keeps its name through dismissal")
+    func deletionPromptNameSurvivesDismissal() async {
+        let service = FakeSignatureManaging(listResult: .success([
+            Self.signature(id: "sig-1", name: "Work")
+        ]))
+        let model = Self.model(service)
+        await model.load()
+
+        model.pendingDeletion = Self.signature(id: "sig-1", name: "Work")
+        #expect(model.deletionPromptName == "Work")
+
+        await model.confirmDeletion()
+        #expect(model.pendingDeletion == nil)
+        #expect(model.deletionPromptName == "Work", "The title emptied mid-dismiss")
+
+        // Cancelling keeps it too — same animation, same re-read.
+        model.pendingDeletion = Self.signature(id: "sig-2", name: "Personal")
+        #expect(model.deletionPromptName == "Personal")
+        model.cancelDeletion()
+        #expect(model.deletionPromptName == "Personal")
+    }
+
     // MARK: - Compose invalidation
 
     @Test("A successful create refreshes compose candidates")
@@ -377,6 +533,9 @@ final class FakeSignatureManaging: SignatureManaging, @unchecked Sendable {
     private(set) var creates: [CreateSignatureInput] = []
     private(set) var updates: [(id: String, input: UpdateSignatureInput)] = []
     private(set) var deletes: [String] = []
+    /// Runs INSIDE `create`, before it returns — the seam a test needs to act as
+    /// the user would while a save is still in flight.
+    var duringCreate: (@MainActor () -> Void)?
 
     init(listResult: Result<[Signature], SignatureManagementError> = .success([])) {
         self.listResult = listResult
@@ -392,6 +551,7 @@ final class FakeSignatureManaging: SignatureManaging, @unchecked Sendable {
         // refused it" stay distinguishable in these tests.
         try Self.requireName(input.name)
         creates.append(input)
+        if let duringCreate { await duringCreate() }
         if let createResult { return try createResult.get() }
         return Signature(
             id: "sig-new",

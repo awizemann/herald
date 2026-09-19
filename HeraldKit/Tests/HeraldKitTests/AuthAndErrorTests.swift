@@ -108,6 +108,36 @@ import Testing
         #expect(server.requests(path: "/api/v1/send").count == 1)
     }
 
+    /// A challenge with no `scope=` still has to give the pane something to show,
+    /// and the only thing left is the body's free-text `message`. That value goes
+    /// in the ERROR and must never be what gets logged — only the challenge's
+    /// bounded `scope` token is loggable. Fails if the fallback stops reaching the
+    /// error (the pane would show an empty reason) or if the two are conflated
+    /// back into one value the logger prints.
+    @Test("A scope-less challenge falls back to the body message for the ERROR only")
+    func insufficientScopeWithoutAScopeParameter() async throws {
+        let server = FakeServer()
+        server.route(
+            "POST",
+            "/api/v1/send",
+            .error(
+                403,
+                code: "INSUFFICIENT_SCOPE",
+                message: "ada@example.net may not send as support@example.com",
+                headers: ["WWW-Authenticate": #"Bearer error="insufficient_scope""#]
+            )
+        )
+        let tokens = FakeTokenProvider()
+        let input = SendInput(from: "support@example.com", to: ["a@b.test"], subject: "Hi", text: "Hello")
+
+        await #expect(
+            throws: MailAPIError.insufficientScope("ada@example.net may not send as support@example.com")
+        ) {
+            _ = try await makeClient(server, tokens: tokens).send(input)
+        }
+        #expect(await tokens.refreshCallCount == 0)
+    }
+
     @Test("A server error body maps to .server(code:message:) with the real code")
     func serverErrorBody() async throws {
         let server = FakeServer()

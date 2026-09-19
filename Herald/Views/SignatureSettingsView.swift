@@ -8,7 +8,11 @@ import WebKit
 /// and the preview web view together are longer than the other three panes put
 /// together.
 struct SignatureSettingsPane: View {
-    @State var model: SignatureSettingsModel
+    /// `let`, not `@State`: `AppEnvironment` owns one of these per account and
+    /// keeps it. `@State` would have latched the FIRST account's model and gone
+    /// on showing its signatures after a switch — which is what the
+    /// `.id(selectedAccountID)` reset in `SettingsView` was papering over.
+    let model: SignatureSettingsModel
     /// The re-auth action, for the "signed in before this existed" screen. `nil`
     /// in tests and previews, which hides the button rather than offering one
     /// that does nothing.
@@ -44,10 +48,23 @@ struct SignatureSettingsPane: View {
                     message: "This account was signed in before signature management existed — sign in again to manage signatures."
                 ) {
                     if let reauthenticate {
-                        Button("Sign In Again", action: reauthenticate)
-                            .buttonStyle(.borderedProminent)
+                        Button("Sign In Again") {
+                            // Recorded BEFORE the sign-in starts: if the new
+                            // token still does not carry `signatures:manage`,
+                            // the next load draws the terminal screen instead of
+                            // offering this button again forever.
+                            model.signInAgainRequested()
+                            reauthenticate()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
+            case .cannotManage:
+                SignatureMessagePane(
+                    symbol: "person.badge.key",
+                    title: "This account cannot manage signatures",
+                    message: "The server did not grant Herald permission to manage signatures for this account. Ask whoever administers it to grant the account signature management."
+                ) {}
             case .unsupportedByServer:
                 SignatureMessagePane(
                     symbol: "exclamationmark.triangle",
@@ -64,12 +81,26 @@ struct SignatureSettingsPane: View {
                 }
             }
         }
-        .task { await model.load() }
-        .sheet(item: $model.editor) { editor in
+        // Keyed on the model's identity rather than reset with `.id(…)`: a new
+        // account hands this pane a different model, and the load has to re-run
+        // for it. A bare `.task` would keep showing the previous account's list.
+        .task(id: ObjectIdentifier(model)) { await model.load() }
+        .sheet(item: Bindable(model).editor) { editor in
             SignatureEditorSheet(model: model, editor: editor)
         }
+        // Posted for the same reason every other Herald banner is: this one
+        // appears at the top of a Form the cursor is not in, so VoiceOver would
+        // otherwise never mention that the delete or the save failed.
+        .onChange(of: model.announcementCount) { _, _ in
+            guard let message = model.announcement else { return }
+            AccessibilityNotification.Announcement(message).post()
+        }
         .confirmationDialog(
-            "Delete “\(model.pendingDeletion?.name ?? "")”?",
+            // `deletionPromptName`, not `pendingDeletion?.name`: confirming clears
+            // `pendingDeletion` immediately, and SwiftUI re-reads the title while
+            // the dialog is still animating out — which retitled it “Delete “”?”
+            // in front of the user.
+            "Delete “\(model.deletionPromptName)”?",
             isPresented: Binding(
                 get: { model.pendingDeletion != nil },
                 set: { if !$0 { model.cancelDeletion() } }
@@ -234,6 +265,9 @@ private struct SignatureEditorSheet: View {
     /// The HTML the preview has actually rendered. Kept behind the field so the
     /// web view is not reloaded on every keystroke.
     @State private var previewHTML = ""
+    /// Whether the preview has painted at all yet. The debounce is for KEYSTROKES;
+    /// the first pass has nothing to debounce against and must paint at once.
+    @State private var hasRenderedPreview = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.lg) {
@@ -260,7 +294,10 @@ private struct SignatureEditorSheet: View {
                 Toggle("Use as the default for this scope", isOn: $editor.isDefault)
             }
             .formStyle(.grouped)
-            .frame(height: 120)
+            // `minHeight`, not `height`: at the larger accessibility text sizes
+            // three fixed-120pt rows clipped the default toggle out of the sheet.
+            .frame(minHeight: 120)
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .top, spacing: MailTheme.Spacing.lg) {
                 editorColumn(title: "HTML") {
@@ -281,7 +318,10 @@ private struct SignatureEditorSheet: View {
                         }
                 }
             }
-            .frame(minHeight: 200)
+            // 160, not 200: the editor is presented from a 640×420 Settings
+            // window, and the sheet's natural height has to land inside it or
+            // macOS clips the Save button off the bottom. It still grows.
+            .frame(minHeight: 160)
 
             if let fieldError = editor.fieldError {
                 Label(fieldError, systemImage: "exclamationmark.triangle")
@@ -304,17 +344,24 @@ private struct SignatureEditorSheet: View {
             }
         }
         .padding(MailTheme.Spacing.xl)
-        .frame(width: 720, height: 560)
+        // A sheet cannot be bigger than the window it is presented from: at a
+        // fixed 720×560 inside the 640×420 Settings window the editor was
+        // clipped on both axes. Sized to FIT the host, and with `min`/`ideal`
+        // bounds rather than a fixed frame so the sheet GROWS with the larger
+        // accessibility text sizes instead of cutting the Save button off.
+        .frame(minWidth: 520, idealWidth: 600, maxWidth: .infinity, minHeight: 340, maxHeight: .infinity)
         // Debounced: re-rendering the web view on every keystroke would flicker
         // the preview and recompile nothing useful.
         .task(id: editor.html) {
-            // The first pass must paint immediately, or an edit sheet opens onto
-            // a blank preview of content it already has.
-            if !previewHTML.isEmpty || !editor.html.isEmpty {
+            // Only a KEYSTROKE is debounced. The first pass has content the sheet
+            // already holds, so sleeping here opened every Edit sheet onto 250ms
+            // of blank preview.
+            if hasRenderedPreview {
                 try? await Task.sleep(for: .milliseconds(250))
             }
             guard !Task.isCancelled else { return }
             previewHTML = editor.html
+            hasRenderedPreview = true
         }
     }
 
@@ -365,16 +412,27 @@ struct SignaturePreviewView: NSViewRepresentable {
         context.coordinator.load(html, into: webView)
     }
 
-    /// Wraps the fragment so it renders at the system body font instead of
-    /// WebKit's default Times, and declares the document language for VoiceOver.
-    static func document(for html: String) -> String {
-        """
-        <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)">
-        <head><meta charset="utf-8"><title>Signature preview</title></head>
-        <body style="font: -apple-system-body; margin:12px; color-scheme: light dark">
-        \(html)
-        </body></html>
-        """
+    /// Closing the sheet mid-load left a Task holding the web view and waiting on
+    /// the rule-list compile, which then touched a torn-down view.
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.cancel()
+    }
+
+    /// The preview document — the SAME one the reading pane builds for a message
+    /// body.
+    ///
+    /// Not a lookalike: `MailViewModel.document(wrapping:)` is the shared emitter,
+    /// so the preview carries the identical locked-down CSP meta (`default-src
+    /// 'none'`, remote images blocked, no framing, no forms, no base-uri), the
+    /// identical `MailTheme.Web` palette variables for light and dark, and the
+    /// identical `@media (prefers-contrast: more)` overrides. A preview with its
+    /// own inline styles told the user their signature looked like something it
+    /// would never look like once sent — and quietly had no CSP at all.
+    nonisolated static func document(for html: String) -> String {
+        MailViewModel.document(
+            wrapping: MailViewModel.composeBody(html: html),
+            title: "Signature preview"
+        )
     }
 
     @MainActor
@@ -394,20 +452,32 @@ struct SignaturePreviewView: NSViewRepresentable {
             loadTask = Task { [weak webView] in
                 let ruleList = await RemoteContentBlocker.ruleList()
                 guard let webView, !Task.isCancelled else { return }
-                webView.configuration.userContentController.removeAllContentRuleLists()
                 guard let ruleList else {
                     // Without the blocker we refuse to render rather than render
                     // unprotected — the reading pane's rule. Nothing is claimed
                     // as loaded, so the next pass tries again.
+                    //
+                    // The rule list already installed is deliberately NOT removed
+                    // first: dropping a known-good blocker before finding out
+                    // whether a replacement exists leaves the view strictly less
+                    // protected than it was a moment earlier.
                     self.loaded = nil
                     self.expectsOurLoad = true
                     webView.loadHTMLString(Self.blockerFailureDocument, baseURL: nil)
                     return
                 }
+                // Swapped only now that the replacement is in hand.
+                webView.configuration.userContentController.removeAllContentRuleLists()
                 webView.configuration.userContentController.add(ruleList)
                 self.expectsOurLoad = true
                 webView.loadHTMLString(SignaturePreviewView.document(for: html), baseURL: nil)
             }
+        }
+
+        /// Ends any load in flight. Called from `dismantleNSView`.
+        func cancel() {
+            loadTask?.cancel()
+            loadTask = nil
         }
 
         /// Nothing navigates out of a preview — not even a clicked link, which in
@@ -428,12 +498,16 @@ struct SignaturePreviewView: NSViewRepresentable {
             return .allow
         }
 
-        static let blockerFailureDocument = """
-            <!doctype html><html lang="\(Locale.current.language.minimalIdentifier)">
-            <head><meta charset="utf-8"><title>Preview unavailable</title></head>
-            <body style="font: -apple-system-body; margin:12px">
-            <p>Herald could not start its content blocker, so this preview was not displayed.</p>
-            </body></html>
-            """
+        /// The failure screen goes through the shared emitter too. It is the
+        /// document most likely to be rendered with NO rule list in front of it,
+        /// so it is the one that can least afford to be the hand-rolled one
+        /// without a CSP.
+        nonisolated static let blockerFailureDocument = MailViewModel.document(
+            wrappingPlainText: Coordinator.blockerFailureText,
+            title: "Preview unavailable"
+        )
+
+        nonisolated static let blockerFailureText =
+            "Herald could not start its content blocker, so this preview was not displayed."
     }
 }

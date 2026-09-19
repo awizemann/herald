@@ -32,6 +32,10 @@ final class SignatureSettingsModel {
         case ready
         /// 403 `insufficient_scope`: consented before the feature shipped.
         case needsReauthorization
+        /// 403 `insufficient_scope` that a fresh sign-in has already failed to
+        /// clear, or that the account's own granted scope contradicts. Terminal:
+        /// offering "Sign In Again" a second time is the loop P3 found.
+        case cannotManage
         /// 404 on the list route: server predates 1.4.2.
         case unsupportedByServer
         /// Anything else, with a retry.
@@ -46,6 +50,14 @@ final class SignatureSettingsModel {
     /// their candidate list — a signature renamed here is otherwise still shown
     /// under its old name by a composer that is already open.
     private let didMutate: @MainActor () -> Void
+    /// The scopes the account's CURRENT token actually carries, re-read on every
+    /// load so a token replaced by a re-auth is seen. Empty means "unknown",
+    /// which keeps the pane on the retryable ``State/needsReauthorization``
+    /// screen rather than declaring a terminal state it cannot justify.
+    private let grantedScopes: @MainActor () -> [String]
+
+    /// The OAuth scope `GET /signatures/manage` demands.
+    nonisolated static let manageScope = "signatures:manage"
 
     private(set) var state: State = .loading
     private(set) var groups: [SignatureScopeGroup] = []
@@ -53,19 +65,63 @@ final class SignatureSettingsModel {
     /// The create/edit sheet, or `nil` when none is up.
     var editor: SignatureEditor?
     /// The signature the delete confirmation is about.
-    var pendingDeletion: Signature?
+    var pendingDeletion: Signature? {
+        didSet {
+            // Deliberately NOT cleared when this goes back to nil: SwiftUI keeps
+            // the confirmation on screen through its dismissal animation and
+            // re-reads the title, so clearing here retitled it “Delete “”?” on
+            // the way out.
+            if let pendingDeletion { deletionPromptName = pendingDeletion.name }
+        }
+    }
+
+    /// The name the delete confirmation is titled with. Outlives
+    /// ``pendingDeletion`` on purpose — see its `didSet`.
+    private(set) var deletionPromptName = ""
+
     /// A failure from a MUTATION (not the load), shown as an inline banner so the
     /// list stays on screen and the row the user was working on is still there.
-    private(set) var actionError: String?
+    private(set) var actionError: String? {
+        didSet {
+            guard actionError != oldValue, let actionError else { return }
+            announce(Self.actionErrorAnnouncement(actionError))
+        }
+    }
+
+    /// The message VoiceOver should speak, and a counter that changes even when
+    /// the words do not. A banner that appears under a cursor that is not on it
+    /// is a banner a blind user never meets; the counter exists so the SAME
+    /// failure reported twice is spoken twice.
+    private(set) var announcement: String?
+    private(set) var announcementCount = 0
+
+    private func announce(_ message: String) {
+        announcement = message
+        announcementCount += 1
+    }
+
+    /// One source for what the banner DRAWS and what VoiceOver SPEAKS. The
+    /// spoken form is prefixed because an announcement arrives with no context:
+    /// "That scope already has a signature with this name" on its own does not
+    /// say that the save failed.
+    nonisolated static func actionErrorAnnouncement(_ message: String) -> String {
+        "Signature change failed. \(message)"
+    }
+
+    nonisolated static func fieldErrorAnnouncement(_ message: String) -> String {
+        "Signature not saved. \(message)"
+    }
 
     init(
         service: any SignatureManaging,
         mailboxes: @escaping @MainActor () -> [Mailbox],
-        didMutate: @escaping @MainActor () -> Void = {}
+        didMutate: @escaping @MainActor () -> Void = {},
+        grantedScopes: @escaping @MainActor () -> [String] = { [] }
     ) {
         self.service = service
         self.mailboxes = mailboxes
         self.didMutate = didMutate
+        self.grantedScopes = grantedScopes
     }
 
     // MARK: - Loading
@@ -82,17 +138,50 @@ final class SignatureSettingsModel {
         } catch {
             groups = []
             scopeOptions = []
-            state = Self.state(for: error)
-            logger.error("Signature list failed: \(String(describing: error), privacy: .public)")
+            state = Self.state(for: error, grantedScopes: grantedScopes(), hasRetriedSignIn: hasRetriedSignIn)
+            // `logCode` is payload-free: the server's free-text `message` is for
+            // the user on screen and never for the log.
+            logger.error("Signature list failed: \(error.logCode, privacy: .public)")
         }
     }
 
+    /// Records that the user has been sent through a fresh sign-in from this
+    /// pane, so the NEXT `insufficient_scope` is terminal rather than an
+    /// invitation to sign in again forever.
+    ///
+    /// Survives the re-auth because it is written before it starts and the pane's
+    /// model is rebuilt only when the account graph is replaced — which is why
+    /// the granted-scope comparison below is the real authority and this flag is
+    /// only the second of the two signals.
+    func signInAgainRequested() {
+        hasRetriedSignIn = true
+    }
+
+    @ObservationIgnored private var hasRetriedSignIn = false
+
     /// Which screen a load failure draws.
-    static func state(for error: SignatureManagementError) -> State {
+    ///
+    /// `insufficient_scope` splits in two. It is RECOVERABLE only while there is
+    /// reason to think a fresh token would differ: the account consented before
+    /// `signatures:manage` existed, so its grant lacks the scope and it has not
+    /// yet been asked to sign in again. It is TERMINAL when the grant already
+    /// carries the scope (the server is refusing a scope it issued — another
+    /// identical token changes nothing) or when a sign-in has already been
+    /// through and the new grant still does not carry it.
+    static func state(
+        for error: SignatureManagementError,
+        grantedScopes: [String] = [],
+        hasRetriedSignIn: Bool = false
+    ) -> State {
         switch error {
-        case .notAuthorized: .needsReauthorization
-        case .unsupportedByServer: .unsupportedByServer
-        default: .failed(error.localizedDescription)
+        case .notAuthorized:
+            if grantedScopes.contains(manageScope) { return .cannotManage }
+            // An empty grant is "unknown", not "lacks the scope": the pane must
+            // not call a state terminal on the strength of missing information.
+            if hasRetriedSignIn, !grantedScopes.isEmpty { return .cannotManage }
+            return .needsReauthorization
+        case .unsupportedByServer: return .unsupportedByServer
+        default: return .failed(error.localizedDescription)
         }
     }
 
@@ -183,7 +272,9 @@ final class SignatureSettingsModel {
                 _ = try await service.update(id: existing.id, with: editor.update(from: existing))
             } else {
                 guard let scope = editor.scope else {
-                    editor.fieldError = "Choose where this signature belongs."
+                    let message = "Choose where this signature belongs."
+                    editor.fieldError = message
+                    announce(Self.fieldErrorAnnouncement(message))
                     return
                 }
                 _ = try await service.create(
@@ -197,9 +288,14 @@ final class SignatureSettingsModel {
             }
         } catch {
             editor.fieldError = error.localizedDescription
+            announce(Self.fieldErrorAnnouncement(error.localizedDescription))
+            logger.error("Signature save failed: \(error.logCode, privacy: .public)")
             return
         }
-        self.editor = nil
+        // Identity, not existence: a save that finishes AFTER the user cancelled
+        // and opened a second sheet would otherwise close the new one out from
+        // under them. Only the sheet this call belongs to is dismissed.
+        if self.editor === editor { self.editor = nil }
         await finishMutation()
     }
 
@@ -219,7 +315,7 @@ final class SignatureSettingsModel {
             // The row stays: nothing was removed server-side, so removing it
             // here would show a deletion that did not happen.
             actionError = error.localizedDescription
-            logger.error("Signature delete failed: \(String(describing: error), privacy: .public)")
+            logger.error("Signature delete failed: \(error.logCode, privacy: .public)")
             return
         }
         await finishMutation()

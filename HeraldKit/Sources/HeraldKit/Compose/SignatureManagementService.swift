@@ -43,6 +43,24 @@ public nonisolated enum SignatureManagementError: Error, Sendable, Hashable {
             true
         }
     }
+
+    /// A stable, PAYLOAD-FREE token for logs — the same rule `OutboxError` and
+    /// `MailAPIError` follow. `String(describing:)` on this enum prints the
+    /// wrapped `MailAPIError`'s server-chosen message, which is free text from
+    /// the network and must never reach the log.
+    public var logCode: String {
+        switch self {
+        case .notAuthorized: "not_authorized"
+        case .unsupportedByServer: "unsupported_by_server"
+        case .signatureGone: "signature_gone"
+        case .scopeForbidden: "scope_forbidden"
+        case .duplicateName: "duplicate_name"
+        case .nameRequired: "name_required"
+        case .nameTooLong: "name_too_long"
+        case .htmlTooLarge: "html_too_large"
+        case .api(let error): "api(\(error.logCode))"
+        }
+    }
 }
 
 nonisolated extension SignatureManagementError: LocalizedError {

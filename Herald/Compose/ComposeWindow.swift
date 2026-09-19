@@ -118,12 +118,16 @@ struct ComposeView: View {
         .navigationTitle(model.windowTitle)
         .background(closeShortcut)
         .background(pasteShortcut)
+        .background(sendShortcut)
         .background(WindowCloseInterceptor(shouldClose: closeRequested))
         .onChange(of: model.isClosed) { _, closed in
             if closed { dismiss() }
         }
-        .onChange(of: model.announcement) { _, message in
-            guard let message else { return }
+        // Keyed on the COUNTER, not the string: a held Send pressed twice
+        // announces the same sentence twice, and an `onChange` on the string
+        // would speak it once and then stay silent.
+        .onChange(of: model.announcementCount) { _, _ in
+            guard let message = model.announcement else { return }
             AccessibilityNotification.Announcement(message).post()
         }
         .confirmationDialog(
@@ -155,12 +159,16 @@ struct ComposeView: View {
             Button { Task { await model.send() } } label: {
                 Label("Send", systemImage: "paperplane.fill")
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
             // `isSendBlocked`: the server asked for no further attempt at this
             // message (it may already be delivered). The window stays open with
             // everything in it; only the verb that would duplicate it is gone.
             .disabled(model.isBusy || model.isSendBlocked)
-            .help("Send")
+            // Both say the SAME sentence, and it is the hold's own reason rather
+            // than the verb: a dimmed Send with no explanation is announced as
+            // "Send, dimmed" and leaves the user guessing whether the message
+            // went. The shortcut is deliberately NOT here — see `sendShortcut`.
+            .help(ComposeViewModel.sendHelp(model.sendHold))
+            .accessibilityHint(model.sendHoldReason ?? "")
 
             Button { Task { await model.addAttachments() } } label: {
                 Image(systemName: "paperclip")
@@ -357,6 +365,21 @@ struct ComposeView: View {
     private var closeShortcut: some View {
         Button("Close") { _ = closeRequested() }
             .keyboardShortcut("w", modifiers: .command)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+
+    /// ⌘⇧D lives here, not on the Send button, because SwiftUI withdraws a
+    /// DISABLED control's key equivalent along with the control: once a 503 held
+    /// the send, pressing ⌘⇧D did nothing at all — no send (right) and no
+    /// explanation (wrong). This proxy is never disabled by the hold, so the
+    /// shortcut always reaches ``ComposeViewModel/send()``, which refuses and
+    /// re-announces the reason. `isBusy` still disables it: a send already in
+    /// flight is a different thing from one the server has forbidden.
+    private var sendShortcut: some View {
+        Button("Send") { Task { await model.send() } }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(model.isBusy)
             .opacity(0)
             .accessibilityHidden(true)
     }

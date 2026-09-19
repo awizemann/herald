@@ -104,6 +104,45 @@ import WebKit
         #expect(trusted.contains("frame-src 'none'"))
     }
 
+    /// The Settings ▸ Signatures preview is a second WKWebView rendering markup
+    /// this process did not author, and it must not be a weaker one. Fails on the
+    /// hand-rolled document it used to emit: no CSP meta at all (a preview that
+    /// phoned home was a tracking pixel with a different name), inline styles
+    /// instead of the `MailTheme.Web` variables, and no Increase Contrast block —
+    /// so the preview also lied about what the signature would look like once the
+    /// server appended it to a real message.
+    @Test func theSignaturePreviewDocumentIsTheSameHardenedDocumentAsTheReadingPane() {
+        let preview = SignaturePreviewView.document(for: "<p>Ada Lovelace</p>")
+
+        // The SAME policy string, not a lookalike.
+        #expect(preview.contains(#"http-equiv="Content-Security-Policy""#))
+        #expect(preview.contains(MailViewModel.contentSecurityPolicy(allowsRemote: false)))
+        // A preview never gets the widened image source: nothing here is a
+        // sender the user could have trusted.
+        #expect(!preview.contains(MailViewModel.contentSecurityPolicy(allowsRemote: true)))
+
+        // The palette variables and the Increase Contrast overrides both ride
+        // along, because they come from the shared emitter's stylesheet.
+        #expect(preview.contains("--fg:"))
+        #expect(preview.contains("--link:"))
+        #expect(preview.contains("@media (prefers-color-scheme: dark)"))
+        #expect(preview.contains("@media (prefers-contrast: more)"))
+        // No hand-rolled inline body styling left behind.
+        #expect(!preview.contains("margin:12px"))
+
+        // Named and language-tagged, so VoiceOver does not call it "HTML content".
+        #expect(preview.contains("<title>Signature preview</title>"))
+        #expect(preview.contains("<html lang="))
+        #expect(preview.contains("Ada Lovelace"))
+
+        // The failure document is the one most likely to render with NO rule list
+        // in front of it, so it is the one that can least afford to skip the CSP.
+        let failure = SignaturePreviewView.Coordinator.blockerFailureDocument
+        #expect(failure.contains(MailViewModel.contentSecurityPolicy(allowsRemote: false)))
+        #expect(failure.contains("<title>Preview unavailable</title>"))
+        #expect(failure.contains("content blocker"))
+    }
+
     /// `cid:` parts are substituted as `data:` URLs, which the web view renders
     /// with the MIME type the part claims. Fails if a part claiming `text/html`
     /// (or anything scriptable) can still be substituted into the body.

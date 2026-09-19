@@ -77,9 +77,15 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
             logger.warning("unauthorized on \(operationID, privacy: .public)")
             return .unauthorized
         case 403 where challenge.map({ authParameter("error", in: $0) == "insufficient_scope" }) == true:
-            let scope = challenge.flatMap { authParameter("scope", in: $0) } ?? payload?.message ?? ""
-            logger.warning("insufficient scope \(scope, privacy: .public) on \(operationID, privacy: .public)")
-            return .insufficientScope(scope)
+            // Two different values, deliberately. The challenge's `scope` is a
+            // bounded token from the server's own scope vocabulary and is safe to
+            // log; `payload?.message` is free text the server chose, so it is
+            // carried in the ERROR (where the pane shows it to the user) and
+            // never written to the log.
+            let challengeScope = challenge.flatMap { authParameter("scope", in: $0) }
+            let loggedScope = challengeScope ?? "unstated"
+            logger.warning("insufficient scope \(loggedScope, privacy: .public) on \(operationID, privacy: .public)")
+            return .insufficientScope(challengeScope ?? payload?.message ?? "")
         case 404:
             logger.warning("not found on \(operationID, privacy: .public)")
             return .notFound

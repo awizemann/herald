@@ -63,15 +63,17 @@ public nonisolated struct ComposeDraft: Sendable, Hashable, Identifiable {
     ///    (``OutboxService/send(_:)``).
     ///
     /// It deliberately does NOT rotate when the user edits after a failed send,
-    /// though that edit is what provokes the 409: the server's identity is a hash
-    /// of the body IT assembles — the authored text plus a signature and a quoted
-    /// original that Herald never sees — so a client-side "the content changed"
-    /// predicate is neither sound nor complete. It would rotate where the server
-    /// would have deduped (throwing away the protection on the retry that needs
-    /// it most, the one after a timeout) and still miss cases the server calls
-    /// different. Letting the 409 be the authority is exact, costs one extra
-    /// round trip on the rare edited retry, and keeps one code path instead of
-    /// two disagreeing definitions of "the same message".
+    /// though that edit is what provokes the 409. The server's identity is a
+    /// hash of the REQUEST it received (`canonicalJson({kind, input})` in
+    /// upstream `send/operations.ts` — the parsed body, not the assembled mail),
+    /// so Herald could in principle predict a conflict. It does not, on purpose:
+    /// a second, client-side definition of "the same message" would have to
+    /// track every field the server hashes (recipients, subject, text, the
+    /// attachment id list, the signature selection, the draft id) and drift the
+    /// moment upstream adds one, and it would rotate where the server would have
+    /// deduped — throwing away the protection on the retry that needs it most,
+    /// the one after a timeout. Letting the 409 be the authority is exact, costs
+    /// one extra round trip on the rare edited retry, and keeps one code path.
     ///
     /// A UUID string: 36 characters, inside the server's 1–100 bound.
     public private(set) var sendAttemptKey: String

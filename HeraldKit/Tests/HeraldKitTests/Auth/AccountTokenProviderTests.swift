@@ -322,4 +322,73 @@ import Testing
         #expect(Set(drawn).count > 1, "Every provider woke on the same schedule")
         #expect(provider(store: keychain.store, refresher: refresher).refreshLeeway == 60)
     }
+
+    // MARK: - Keychain read failures (audit P2)
+
+    /// (f) The arbitration in (a)–(d) is only as good as the read it is built on.
+    /// A `try?` there turned "the Keychain would not answer" into "there is
+    /// nothing stored", which reads as "nobody rotated anything" and sends the
+    /// provider on to spend a grant another process may already have redeemed.
+    ///
+    /// Fails on the old `(try? store.tokens(for:)) ?? nil`: the refresher would be
+    /// called once instead of not at all.
+    @Test("an unreadable store aborts the refresh instead of spending the grant blind")
+    func unreadableStoreAbortsBeforeSpendingTheGrant() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(expiredTokens(), for: accountID)
+        // Read 1 is `accessToken()`'s own; read 2 is the pre-spend re-read inside
+        // `performRefresh`, which is the one this aims at.
+        let store = FailingReadStore(keychain.store, failReadsAfter: 1)
+        let refresher = RotatingRefresher()
+        let p = provider(store: store, refresher: refresher)
+
+        let error = await #expect(throws: OAuthError.self) { _ = try await p.accessToken() }
+        #expect(error?.isRetryable == true, "An unreadable Keychain is a retryable condition, not a dead grant")
+        #expect(error != .reauthenticationRequired, "A failed read must not sign the user out")
+        #expect(refresher.sentTokens.isEmpty, "The grant was spent on the strength of a read that failed")
+        // And the item is untouched, so the process that CAN read it still works.
+        #expect(try keychain.store.tokens(for: accountID)?.refreshToken == "refresh-0")
+    }
+
+    /// (g) The same read backs the `invalid_grant` arbitration in (b)/(c), where
+    /// getting it wrong is destructive: unable to tell "somebody else rotated this"
+    /// from "this grant is dead", the provider must not clear the shared item.
+    ///
+    /// Fails on the old code, which read `nil`, concluded nobody had rotated, and
+    /// deleted the tokens out from under the other process.
+    @Test("invalid_grant with an unreadable store does not clear the shared tokens")
+    func unreadableStoreOnInvalidGrantKeepsTheTokens() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(expiredTokens(), for: accountID)
+        // Reads 1 and 2 succeed (accessToken, the pre-spend re-read); the refresh
+        // is then rejected and read 3 — the post-rejection arbitration — fails.
+        let store = FailingReadStore(keychain.store, failReadsAfter: 2)
+        let refresher = RotatingRefresher(revoked: ["refresh-0"])
+        let p = provider(store: store, refresher: refresher)
+
+        let error = await #expect(throws: OAuthError.self) { _ = try await p.accessToken() }
+        #expect(error?.isRetryable == true)
+        #expect(error != .reauthenticationRequired)
+        #expect(try keychain.store.tokens(for: accountID) != nil, "The shared Keychain item was cleared on a guess")
+    }
+
+    /// (h) The confirmation read AFTER a successful write is the one place the
+    /// failure must NOT abort: the new grant is already persisted and already
+    /// ours, so throwing would send the caller back around to spend it again.
+    ///
+    /// Fails if P2's `throws` is applied uniformly to every read site.
+    @Test("a read failure after the new tokens are persisted still returns them")
+    func unreadableStoreAfterPersistingStillReturnsTheFreshTokens() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(expiredTokens(), for: accountID)
+        // Reads 1 and 2 succeed; the refresh then lands, and read 3 — the "did
+        // anyone overtake us" confirmation — fails.
+        let store = FailingReadStore(keychain.store, failReadsAfter: 2)
+        let refresher = RotatingRefresher()
+        let p = provider(store: store, refresher: refresher)
+
+        #expect(try await p.accessToken() == "access-1")
+        #expect(refresher.sentTokens == ["refresh-0"], "The grant was spent more than once")
+        #expect(try keychain.store.tokens(for: accountID)?.refreshToken == "refresh-1")
+    }
 }

@@ -425,6 +425,82 @@ import Testing
         #expect(environment.phase == .signedOut)
     }
 
+    // MARK: Launch restore (audit C10)
+
+    /// The launch restore brings the accounts behind the first one up ONE AT A
+    /// TIME, each behind a discovery round trip, and it used to do so from an
+    /// unretained `Task` that consulted nothing. An account signed out while a
+    /// slower one ahead of it was still being contacted was therefore activated
+    /// anyway — and came back with a live `SyncEngine` that no sign-out would
+    /// ever stop, because `graphs` had been purged before the install landed.
+    ///
+    /// Fails on the unretained loop: `b` is still in the queue when the sign-out
+    /// lands, so the loop activates it and a second `launch_failed` is recorded
+    /// for an account the user had already removed.
+    @Test func signingOutAnAccountQueuedBehindASlowOneKeepsItOut() async throws {
+        // Three unreachable accounts: the first is restored inline, the second
+        // holds the loop on a real (refused) connection, and `b` is the one
+        // queued behind it. Every activation fails, which is what makes an
+        // attempt on `b` observable as a `launch_failed` event.
+        let first = Self.unreachableAccount()
+        let slow = Account(origin: URL(string: "https://127.0.0.1:10")!, clientID: "cid", scopes: [])
+        let b = Account(origin: URL(string: "https://127.0.0.1:11")!, clientID: "cid", scopes: [])
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, slow, b])),
+            defaults: Self.scratchDefaults(),
+            usage: tracker,
+            isApplicationActive: { false }
+        )
+        environment.store = try MailStore.inMemory()
+
+        await environment.restoreAccounts()
+        // Returns as soon as the background loop is spawned; the loop is now
+        // suspended inside `slow`'s discovery.
+        #expect(environment.pendingRestoreAccountIDs == [slow.id, b.id])
+
+        // The user signs `b` out while it is still queued. `signOut` drops it
+        // from the queue before its first suspension point, so the loop cannot
+        // be mid-decision about it.
+        await environment.signOut(accountID: b.id)
+        #expect(environment.pendingRestoreAccountIDs.contains(b.id) == false)
+
+        await environment.drainPendingRestore()
+        await environment.drainPendingUsage()
+
+        #expect(environment.graphs[b.id] == nil, "the signed-out account was restored anyway")
+        #expect(environment.accountIDs.contains(b.id) == false)
+        let launchFailures = await tracker.events.filter { $0.name == "launch_failed" }
+        #expect(
+            launchFailures.count == 2,
+            "activation was attempted for an account that had been signed out"
+        )
+    }
+
+    /// The other half of C10: cancelling the restore must be surgical. Fails if
+    /// signing one account out stops the loop for the accounts still behind it,
+    /// which would strand them on the launch placeholder until relaunch.
+    @Test func signingOneAccountOutLeavesTheRestOfTheRestoreQueued() async throws {
+        let first = Self.unreachableAccount()
+        let b = Account(origin: URL(string: "https://127.0.0.1:11")!, clientID: "cid", scopes: [])
+        let c = Account(origin: URL(string: "https://127.0.0.1:12")!, clientID: "cid", scopes: [])
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, b, c])),
+            defaults: Self.scratchDefaults(),
+            isApplicationActive: { false }
+        )
+        environment.store = try MailStore.inMemory()
+
+        await environment.restoreAccounts()
+        await environment.signOut(accountID: b.id)
+
+        #expect(
+            environment.pendingRestoreAccountIDs.contains(c.id),
+            "signing one account out cancelled the restore of another"
+        )
+        await environment.drainPendingRestore()
+    }
+
     /// A throwaway suite, so a test never writes the developer's real pick.
     private static func scratchDefaults() -> UserDefaults {
         let suite = "AppEnvironmentTests.\(UUID().uuidString)"

@@ -99,7 +99,9 @@ public actor AccountTokenProvider: BearerTokenProvider {
         for attempt in 1...Self.maxRefreshAttempts {
             // (1) Re-read and compare BEFORE spending the grant. Between deciding to
             // refresh and getting here, another process may have rotated it.
-            if let rotated = rotatedTokens(past: sending) {
+            // OUTSIDE the `do` on purpose: a store that cannot be read must abort
+            // the refresh rather than be retried into spending the grant blind.
+            if let rotated = try rotatedTokens(past: sending) {
                 logger.warning("adopting externally rotated tokens for \(self.accountID, privacy: .public); refresh skipped")
                 return rotated
             }
@@ -116,7 +118,12 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // tokens: a process that rotated while we were in flight wrote after us
                 // only if its write landed later, and its grant is the live one.
                 try store.setTokens(fresh, for: accountID)
-                if let newer = rotatedTokens(past: fresh) {
+                // `try?` HERE, and only here: the write above already succeeded,
+                // so `fresh` is a live grant we own. This read is the optional
+                // "did somebody land after us" confirmation — throwing on it
+                // would send the caller back around the loop to spend the token
+                // we just minted. The failure is still logged by `currentTokens`.
+                if let newer = try? rotatedTokens(past: fresh) {
                     logger.warning("newer tokens landed for \(self.accountID, privacy: .public); adopting them over ours")
                     return newer
                 }
@@ -124,13 +131,24 @@ public actor AccountTokenProvider: BearerTokenProvider {
             } catch let error as OAuthError where error.isInvalidGrant {
                 // (2) invalid_grant may just mean "another process rotated this grant
                 // first". Destroying the item would strand THAT process too.
-                if let rotated = tokens(replacing: refreshToken) {
+                // Throws (rather than assuming "no competing rotation") when the
+                // store cannot be read: without that read there is no way to tell
+                // a dead grant from somebody else's successful rotation, and
+                // clearing the item on a guess strands the other process too.
+                if let rotated = try tokens(replacing: refreshToken) {
                     logger.warning("invalid_grant for \(self.accountID, privacy: .public) was stale; adopting the rotated tokens")
                     return rotated
                 }
                 logger.warning("refresh rejected for \(self.accountID, privacy: .public); re-auth required")
                 // The grant really is dead; drop it so nothing retries with it.
-                try? store.setTokens(nil, for: accountID)
+                do {
+                    try store.setTokens(nil, for: accountID)
+                } catch {
+                    // Not fatal — the caller is being sent to re-auth either way —
+                    // but a clear that silently failed leaves a dead grant on disk
+                    // for the next launch to retry, which is worth seeing in a log.
+                    logger.error("could not clear the dead grant for \(self.accountID, privacy: .public)")
+                }
                 throw OAuthError.reauthenticationRequired
             } catch {
                 let oauth = OAuthError.wrapTransport(error)
@@ -152,8 +170,22 @@ public actor AccountTokenProvider: BearerTokenProvider {
 
     // MARK: - Store arbitration
 
-    private nonisolated func currentTokens() -> OAuthTokens? {
-        (try? store.tokens(for: accountID)) ?? nil
+    /// The stored tokens, or `nil` when the store genuinely holds none.
+    ///
+    /// A read FAILURE is not "nothing stored" and must never be flattened into
+    /// it: the Keychain is the arbiter of which grant is live, so a caller that
+    /// treated an unreadable item as an empty one would go on to spend a refresh
+    /// token another process may have already rotated — and replaying a rotated
+    /// token invalidates the whole family. The error is logged here and thrown so
+    /// the refresh aborts; it is `.transport`, hence retryable, because the grant
+    /// itself is very probably still good.
+    private nonisolated func currentTokens() throws -> OAuthTokens? {
+        do {
+            return try store.tokens(for: accountID)
+        } catch {
+            logger.error("token store unreadable for \(self.accountID, privacy: .public); refresh aborted")
+            throw OAuthError.transport(MailAPIError.TransportFailure(error))
+        }
     }
 
     /// The stored tokens when another process has moved past `ours`, else `nil`.
@@ -161,8 +193,10 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// "Moved past" is a different refresh token (the grant was rotated), or a
     /// different access token that is itself still usable (rotated, and the new
     /// access token is good enough to use as-is).
-    private nonisolated func rotatedTokens(past ours: OAuthTokens) -> OAuthTokens? {
-        guard let stored = currentTokens() else { return nil }
+    ///
+    /// Throws when the store could not be read — see ``currentTokens()``.
+    private nonisolated func rotatedTokens(past ours: OAuthTokens) throws -> OAuthTokens? {
+        guard let stored = try currentTokens() else { return nil }
         if stored.refreshToken != ours.refreshToken { return stored }
         if stored.accessToken != ours.accessToken, stored.isUsable(at: now(), leeway: refreshLeeway) {
             return stored
@@ -176,8 +210,8 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// Deliberately stricter than ``rotatedTokens(past:)``: while the *rejected*
     /// refresh token is still the stored one, the whole family is dead no matter what
     /// the access token says.
-    private nonisolated func tokens(replacing rejected: String) -> OAuthTokens? {
-        guard let stored = currentTokens(), stored.refreshToken != rejected else { return nil }
+    private nonisolated func tokens(replacing rejected: String) throws -> OAuthTokens? {
+        guard let stored = try currentTokens(), stored.refreshToken != rejected else { return nil }
         return stored
     }
 }

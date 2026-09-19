@@ -15,9 +15,30 @@ public nonisolated protocol Outboxing: Sendable {
     func attach(_ fileURL: URL, to draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
     func removeAttachment(_ attachmentID: String, from draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft
     @discardableResult
-    func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary
+    func send(_ draft: ComposeDraft) async throws(OutboxError) -> SendReceipt
     /// Signatures usable from `address`, for the compose picker.
     func signatures(from address: String) async throws(OutboxError) -> SignatureCandidates
+}
+
+/// What a successful send hands back: the message the server created, and the
+/// draft with its send identity advanced.
+///
+/// The draft comes back because the send is where ``ComposeDraft/sendAttemptKey``
+/// rotates: the caller has to adopt it, or a second message composed in the same
+/// window would replay the key that just delivered and be deduped away.
+///
+/// `id` forwards to the message so a caller that only wanted the summary reads
+/// the same as before.
+public nonisolated struct SendReceipt: Sendable, Hashable, Identifiable {
+    public let message: MessageSummary
+    public let draft: ComposeDraft
+
+    public init(message: MessageSummary, draft: ComposeDraft) {
+        self.message = message
+        self.draft = draft
+    }
+
+    public var id: String { message.id }
 }
 
 extension OutboxService: Outboxing {}
@@ -236,8 +257,26 @@ public actor OutboxService {
     /// When the draft was persisted its id rides along as `draftId` so the server
     /// consumes it. On failure nothing is deleted — the server draft is still the
     /// user's text. On success the draft is deleted if it still exists.
+    ///
+    /// ## Retry identity (upstream 1.4.0)
+    /// Every route carries ``ComposeDraft/sendAttemptKey`` as `idempotencyKey`,
+    /// so a retry after a timeout replays the stored 201 instead of delivering a
+    /// second copy. It matters most on `POST /forward`, which has no `draftId`
+    /// and so no other identity at all; a server older than 1.4.0 strips the
+    /// unknown field, which is exactly the behaviour Herald had before.
+    ///
+    /// `SEND_KEY_CONFLICT` (the same key with a body the server hashes
+    /// differently) rotates the key and retries EXACTLY once — never a loop. The
+    /// rotation is local to this call: if the retry fails too, the caller's draft
+    /// keeps the old key, its next attempt 409s once more and rotates again. That
+    /// costs a round trip but can never invent a fresh identity for a message the
+    /// server may already hold.
+    ///
+    /// The two 503s become ``OutboxError/sendOnHold(_:)`` and are NOT retried
+    /// here, automatically or otherwise: one of them means the mail is already
+    /// accepted.
     @discardableResult
-    public func send(_ draft: ComposeDraft) async throws(OutboxError) -> MessageSummary {
+    public func send(_ draft: ComposeDraft) async throws(OutboxError) -> SendReceipt {
         try validateAddresses(draft.allRecipients)
         var draft = draft
         // A send that names a draft uses the SNAPSHOT stored on that draft and
@@ -256,7 +295,57 @@ public actor OutboxService {
             draft = try await saveDraft(draft)
         }
 
-        let sent: MessageSummary
+        let sent = try await postSend(draft)
+        draft.rotateSendAttemptKey()
+
+        if let draftID = draft.serverDraft?.id {
+            // Best effort: the send already succeeded, so a stale draft is a
+            // cosmetic problem and must not turn into a send failure.
+            do {
+                try await deleteDraft(id: draftID)
+            } catch {
+                logger.warning("Sent, but draft \(draftID, privacy: .public) could not be deleted")
+            }
+        }
+        logger.info("Sent message \(sent.id, privacy: .public)")
+        return SendReceipt(message: sent, draft: draft)
+    }
+
+    /// The POST itself, with the idempotency rules around it.
+    ///
+    /// `key` overrides the draft's own — that is how the single `SEND_KEY_CONFLICT`
+    /// retry re-posts under a rotated identity without mutating anything the
+    /// caller can see.
+    private func postSend(_ draft: ComposeDraft, key: String? = nil) async throws(OutboxError) -> MessageSummary {
+        do {
+            return try await postOnce(draft, key: key ?? draft.sendAttemptKey)
+        } catch {
+            // Matched on the server's CODE, never the status: the middleware maps
+            // every non-401/403/404 to `.server`, so 409 alone would also catch
+            // `DRAFT_CONFLICT`, and 503 a plain outage.
+            guard case .api(.server(let code, _)) = error else { throw error }
+            if let hold = SendHold.code(code) {
+                // Deliberately not retried, here or upstairs:
+                // `SEND_RECOVERY_UNAVAILABLE` means the mail is already accepted,
+                // and a second POST is the one thing the server asks the client
+                // not to do.
+                logger.error("Send held by the server: \(hold.rawValue, privacy: .public)")
+                throw OutboxError.sendOnHold(hold)
+            }
+            // The key is spoken for by a DIFFERENT body — the user edited after a
+            // failed attempt. Only the first attempt may rotate: a non-nil `key`
+            // means this IS the retry, so the conflict surfaces instead.
+            guard Self.isKeyConflict(code), key == nil else { throw error }
+            logger.warning("Send key conflicted; rotating the key and retrying once")
+            return try await postSend(draft, key: UUID().uuidString)
+        }
+    }
+
+    /// One attempt, on whichever route the draft's mode names.
+    private func postOnce(
+        _ draft: ComposeDraft,
+        key idempotencyKey: String
+    ) async throws(OutboxError) -> MessageSummary {
         switch draft.mode {
         case .reply(let messageID, _):
             // Recipients may be empty for a reply: the server falls back to the
@@ -270,9 +359,10 @@ public actor OutboxService {
                 text: draft.body,
                 attachmentIDs: draft.attachmentIDs,
                 draftID: draft.serverDraft?.id,
-                signature: draft.signature
+                signature: draft.signature,
+                idempotencyKey: idempotencyKey
             )
-            sent = try await call { try await api.reply(input) }
+            return try await call { try await api.reply(input) }
         case .forward(let messageID):
             guard !draft.to.isEmpty else { throw OutboxError.noRecipients }
             let input = ForwardInput(
@@ -287,9 +377,10 @@ public actor OutboxService {
                 subject: Self.trimmedOrNil(draft.subject),
                 text: draft.body,
                 attachmentIDs: draft.attachmentIDs,
-                signature: draft.signature
+                signature: draft.signature,
+                idempotencyKey: idempotencyKey
             )
-            sent = try await call { try await api.forward(input) }
+            return try await call { try await api.forward(input) }
         case .new:
             guard !draft.to.isEmpty else { throw OutboxError.noRecipients }
             let input = SendInput(
@@ -301,23 +392,13 @@ public actor OutboxService {
                 text: draft.body,
                 attachmentIDs: draft.attachmentIDs,
                 draftID: draft.serverDraft?.id,
-                signature: draft.signature
+                signature: draft.signature,
+                idempotencyKey: idempotencyKey
             )
-            sent = try await call { try await api.send(input) }
+            return try await call { try await api.send(input) }
         }
-
-        if let draftID = draft.serverDraft?.id {
-            // Best effort: the send already succeeded, so a stale draft is a
-            // cosmetic problem and must not turn into a send failure.
-            do {
-                try await deleteDraft(id: draftID)
-            } catch {
-                logger.warning("Sent, but draft \(draftID, privacy: .public) could not be deleted")
-            }
-        }
-        logger.info("Sent message \(sent.id, privacy: .public)")
-        return sent
     }
+
 
     // MARK: - Helpers
 
@@ -356,6 +437,14 @@ public actor OutboxService {
     nonisolated static func isConflict(_ error: MailAPIError) -> Bool {
         guard case .server(let code, _) = error else { return false }
         return code.caseInsensitiveCompare("DRAFT_CONFLICT") == .orderedSame || code == "http_409"
+    }
+
+    /// Upstream answers 409 `SEND_KEY_CONFLICT` when an idempotency key is reused
+    /// with a body it hashes differently. Matched on the CODE, not the status:
+    /// the middleware maps every non-401/403/404 to `.server`, so 409 alone would
+    /// also catch `DRAFT_CONFLICT`.
+    nonisolated static func isKeyConflict(_ code: String) -> Bool {
+        code.caseInsensitiveCompare("SEND_KEY_CONFLICT") == .orderedSame
     }
 
     /// `nil` for a string the server's `z.string().trim().min(1)` would reject.

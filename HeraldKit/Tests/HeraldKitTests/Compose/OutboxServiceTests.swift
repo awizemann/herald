@@ -325,6 +325,7 @@ import Testing
 
         let sent = try await outbox.send(draft)
         #expect(sent.id == "msg_reply")
+        #expect(sent.message.id == "msg_reply")
 
         let calls = await api.calls
         #expect(calls.contains { if case .sendMessage = $0 { true } else { false } } == false)
@@ -378,6 +379,151 @@ import Testing
             try await outbox.send(Self.draft(to: []))
         }
         #expect(await api.calls.isEmpty)
+    }
+
+    // MARK: - Send identity (upstream 1.4.0 idempotencyKey)
+
+    /// Pulls the `idempotencyKey` off whichever send route was used.
+    static func sendKeys(_ calls: [FakeMailAPIClient.Call]) -> [String?] {
+        calls.compactMap { call in
+            switch call {
+            case .sendMessage(let input): input.idempotencyKey
+            case .replyToMessage(let input): input.idempotencyKey
+            case .forwardMessage(let input): input.idempotencyKey
+            default: nil
+            }
+        }
+    }
+
+    /// The whole point of the key: a user who hits Send again after a timeout must
+    /// replay the SAME identity, or the server has no way to recognise the retry
+    /// and delivers a second copy. Fails on a key minted per attempt (the natural
+    /// wrong implementation) and on no key at all.
+    @Test("A retry of the same draft sends the same idempotency key twice")
+    func retrySendsTheSameKey() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = Self.draft()
+        await api.setSendFailure(.transport(.init(URLError(.timedOut))))
+
+        await #expect(throws: OutboxError.self) { try await outbox.send(draft) }
+        await api.setSendFailure(nil)
+        _ = try await outbox.send(draft)
+
+        let keys = Self.sendKeys(await api.calls)
+        #expect(keys.count == 2)
+        #expect(keys[0] != nil)
+        #expect(keys[0] == keys[1], "A per-attempt key turns a retry into a second delivery")
+        // And the key really is one the server will accept (1–100 chars).
+        let key = try #require(keys[0] ?? nil)
+        #expect((1...100).contains(key.count))
+    }
+
+    /// Every route has to carry it, and `.forward` most of all: `POST /forward`
+    /// takes no `draftId`, so the key is its ONLY retry identity. Fails if the
+    /// plumbing is dropped on one route.
+    @Test("All three send routes carry the draft's key", arguments: [
+        ComposeMode.new(mailboxID: "mbx_support"),
+        .reply(toMessageID: "msg_01", replyAll: false),
+        .forward(messageID: "msg_01"),
+    ])
+    func everyRouteCarriesTheKey(mode: ComposeMode) async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = Self.draft(mode: mode)
+
+        _ = try await outbox.send(draft)
+
+        #expect(Self.sendKeys(await api.calls) == [draft.sendAttemptKey])
+    }
+
+    /// A composer reused for a second message must not be deduped away as a replay
+    /// of the first. Fails if the key survives a successful send.
+    @Test("A successful send rotates the key on the draft it returns")
+    func successRotatesTheKey() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = Self.draft()
+
+        let receipt = try await outbox.send(draft)
+
+        #expect(receipt.draft.sendAttemptKey != draft.sendAttemptKey)
+        // Rotation is the ONLY change to the send identity — the rest of the draft
+        // is the one that was sent.
+        #expect(receipt.draft.hasSameEditableContent(as: draft))
+    }
+
+    /// The user edited after a failed attempt, so the server hashes a different
+    /// body under the same key. Fails on "no retry" (the user cannot send at all)
+    /// and on a retry loop — exactly two POSTs, under two different keys.
+    @Test("SEND_KEY_CONFLICT rotates the key and retries exactly once")
+    func keyConflictRotatesAndRetriesOnce() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        await api.setSendFailureScript([
+            .server(code: "SEND_KEY_CONFLICT", message: "Key already used"),
+            nil,
+        ])
+
+        let receipt = try await outbox.send(Self.draft())
+
+        let keys = Self.sendKeys(await api.calls)
+        #expect(keys.count == 2, "Not one retry, or more than one")
+        #expect(keys[0] != keys[1], "The retry replayed the conflicting key")
+        #expect(receipt.id == "msg_sent")
+    }
+
+    /// Fails if a conflict that persists loops, or surfaces as something the UI
+    /// cannot tell from a plain transport failure.
+    @Test("A second SEND_KEY_CONFLICT surfaces after exactly two attempts")
+    func keyConflictGivesUpAfterOneRetry() async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = try await outbox.saveDraft(Self.draft())
+        await api.setSendFailure(.server(code: "SEND_KEY_CONFLICT", message: "Key already used"))
+
+        await #expect(throws: OutboxError.api(.server(code: "SEND_KEY_CONFLICT", message: "Key already used"))) {
+            try await outbox.send(draft)
+        }
+
+        #expect(Self.sendKeys(await api.calls).count == 2)
+        // The invariant that outranks everything here: a failed send loses nothing.
+        #expect(await api.storedDraft(id: "drf_1")?.content.subject == "Hello")
+    }
+
+    /// The two 503s upstream 1.4.0 added. `SEND_RECOVERY_UNAVAILABLE` means the
+    /// mail is ALREADY ACCEPTED, so a second POST is the one thing that must not
+    /// happen — this fails on any retry at all, and on collapsing the hold into a
+    /// generic `.api` error the compose window cannot special-case.
+    @Test("A held send is surfaced as .sendOnHold and never re-posted", arguments: [
+        ("SEND_RECOVERY_UNAVAILABLE", SendHold.recovering),
+        ("SEND_STORAGE_NOT_READY", SendHold.storageNotReady),
+    ])
+    func sendHoldsAreNeverRetried(code: String, hold: SendHold) async throws {
+        let api = FakeMailAPIClient()
+        let outbox = OutboxService(api: api)
+        let draft = try await outbox.saveDraft(Self.draft())
+        await api.setSendFailure(.server(code: code, message: "Do not send it again"))
+
+        await #expect(throws: OutboxError.sendOnHold(hold)) { try await outbox.send(draft) }
+
+        #expect(Self.sendKeys(await api.calls).count == 1, "The held send was posted a second time")
+        // Nothing is deleted on failure — the user's text is still on the server.
+        #expect(await api.calls.contains { if case .deleteDraft = $0 { true } else { false } } == false)
+        #expect(await api.storedDraft(id: "drf_1")?.content.subject == "Hello")
+    }
+
+    /// The hold's text is what the user acts on, and both messages have one job:
+    /// say "do not send this again". Fails if either becomes a generic "try again".
+    @Test func holdMessagesTellTheUserNotToResend() {
+        for hold in SendHold.allCases {
+            let text = try? #require(OutboxError.sendOnHold(hold).errorDescription)
+            #expect(text?.lowercased().contains("again") == true)
+            #expect(OutboxError.sendOnHold(hold).logCode == "send_on_hold(\(hold.rawValue))")
+        }
+        #expect(SendHold.code("SEND_RECOVERY_UNAVAILABLE") == .recovering)
+        #expect(SendHold.code("SEND_STORAGE_NOT_READY") == .storageNotReady)
+        #expect(SendHold.code("DRAFT_CONFLICT") == nil)
     }
 
     /// Fails if discard treats "already deleted" as an error, which would block

@@ -13,7 +13,8 @@ import Testing
         cc: [String] = ["carol@example.org", "BOB@example.org", "support@example.com"],
         subject: String = "Invoice question",
         text: String = "Line one\n\nLine two",
-        date: Date = Date(timeIntervalSince1970: 1_770_000_000)
+        date: Date = Date(timeIntervalSince1970: 1_770_000_000),
+        replyTo: [String]? = nil
     ) -> MessageDetail {
         MessageDetail(
             summary: MessageSummary(
@@ -41,7 +42,8 @@ import Testing
             rfcMessageID: nil,
             inReplyTo: nil,
             references: [],
-            attachments: []
+            attachments: [],
+            replyTo: replyTo
         )
     }
 
@@ -70,6 +72,48 @@ import Testing
         let mine = Self.detail(from: "support@example.com", to: ["ada@example.net"], cc: [])
         let result = ComposePrefill.replyRecipients(to: mine, replyAll: false, ownAddresses: Self.own)
         #expect(result.to == ["ada@example.net"])
+    }
+
+    /// Upstream 1.4.2 added `MessageDetail.replyTo`, and the server ALREADY sends
+    /// there when `POST /reply` carries no `to` — so a window that kept showing
+    /// the From address was telling the user the wrong destination. Fails if the
+    /// header is ignored, and if it is applied as anything but a replacement for
+    /// the sender (reply-all must still gather the original `to`).
+    @Test("A Reply-To header decides the reply's default recipients")
+    func replyToHeaderDrivesTheDefaultRecipients() {
+        let routed = Self.detail(replyTo: ["billing@example.net", "ada@example.net"])
+
+        let reply = ComposePrefill.replyRecipients(to: routed, replyAll: false, ownAddresses: Self.own)
+        #expect(reply.to == ["billing@example.net", "ada@example.net"])
+
+        let all = ComposePrefill.replyRecipients(to: routed, replyAll: true, ownAddresses: Self.own)
+        #expect(all.to == ["billing@example.net", "ada@example.net", "bob@example.org"])
+        #expect(all.cc == ["carol@example.org"])
+    }
+
+    /// `nil` is "the server never said" (pre-1.4.2) and `[]` is a server that said
+    /// nothing useful — neither may produce a reply addressed to nobody. Fails on
+    /// an implementation that trusts an empty array.
+    @Test("An absent or empty Reply-To falls back to the sender")
+    func missingReplyToFallsBackToTheSender() {
+        #expect(ComposePrefill.replyRecipients(to: Self.detail(replyTo: nil), replyAll: false, ownAddresses: [])
+            .to == ["ada@example.net"])
+        #expect(ComposePrefill.replyRecipients(to: Self.detail(replyTo: []), replyAll: false, ownAddresses: [])
+            .to == ["ada@example.net"])
+    }
+
+    /// The prefilled addresses have to be SENDABLE as they stand: the reply draft
+    /// they produce is what the user sends without touching anything. Fails if the
+    /// Reply-To addresses land somewhere `OutboxService` would not post them.
+    @Test("A Reply-To reply draft carries those addresses through to the draft")
+    func replyToSurvivesIntoTheDraft() {
+        let routed = Self.detail(replyTo: ["billing@example.net"])
+        let draft = ComposePrefill.reply(
+            to: routed, replyAll: false, from: "support@example.com", ownAddresses: Self.own
+        )
+        #expect(draft.to == ["billing@example.net"])
+        #expect(draft.allRecipients == ["billing@example.net"])
+        #expect(draft.to.allSatisfy(EmailAddress.isValid))
     }
 
     /// Fails on naive `"Re: " + subject` (prefix stacking) and on a

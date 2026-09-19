@@ -145,7 +145,10 @@ struct ComposeView: View {
                 Label("Send", systemImage: "paperplane.fill")
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
-            .disabled(model.isBusy)
+            // `isSendBlocked`: the server asked for no further attempt at this
+            // message (it may already be delivered). The window stays open with
+            // everything in it; only the verb that would duplicate it is gone.
+            .disabled(model.isBusy || model.isSendBlocked)
             .help("Send")
 
             Button { Task { await model.addAttachments() } } label: {

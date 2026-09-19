@@ -15,8 +15,35 @@ public nonisolated enum OutboxError: Error, Sendable, Hashable {
     case tooManyAttachments(limit: Int)
     /// The draft changed on the server and re-applying our edit conflicted again.
     case draftConflict
+    /// The server will not take another attempt at this message right now, and
+    /// re-sending would be the wrong thing to do. See ``SendHold``.
+    case sendOnHold(SendHold)
     case api(MailAPIError)
     case fileUnreadable(URL)
+}
+
+/// Why a send may not be attempted again — the two 503s upstream 1.4.0 added.
+///
+/// Both are "the server is mid-something, and a second POST is not the answer",
+/// but they differ in what happened to the message, which is why the compose
+/// window treats them differently (see `ComposeViewModel.sendHold`).
+public nonisolated enum SendHold: String, Sendable, Hashable, CaseIterable {
+    /// `SEND_RECOVERY_UNAVAILABLE` — the mail was ACCEPTED but its delivery
+    /// outcome could not be recorded. Upstream's own words: "Accepted mail needs
+    /// storage recovery. Do not send it again."
+    case recovering
+    /// `SEND_STORAGE_NOT_READY` — the post-deploy triggers do not exist yet, so
+    /// nothing was accepted. Sending is unavailable until the update finishes.
+    case storageNotReady
+
+    /// Maps a server error code, or `nil` when it is some other failure.
+    public static func code(_ code: String) -> SendHold? {
+        switch code.uppercased() {
+        case "SEND_RECOVERY_UNAVAILABLE": .recovering
+        case "SEND_STORAGE_NOT_READY": .storageNotReady
+        default: nil
+        }
+    }
 }
 
 nonisolated extension OutboxError {
@@ -31,6 +58,7 @@ nonisolated extension OutboxError {
         case .draftTooLarge(_, let limit): "draft_too_large(limit:\(limit))"
         case .tooManyAttachments(let limit): "too_many_attachments(limit:\(limit))"
         case .draftConflict: "draft_conflict"
+        case .sendOnHold(let hold): "send_on_hold(\(hold.rawValue))"
         case .api(let error): "api(\(error.logCode))"
         case .fileUnreadable: "file_unreadable"
         }
@@ -53,6 +81,12 @@ nonisolated extension OutboxError: LocalizedError {
             "One message can carry \(limit) attachments. Remove one to add another."
         case .draftConflict:
             "This draft was changed somewhere else. Reopen it to see the latest version."
+        case .sendOnHold(.recovering):
+            "The server accepted this message but has not finished recording it. "
+                + "Do not send it again — it will appear in Sent once the server catches up."
+        case .sendOnHold(.storageNotReady):
+            "Sending is unavailable until the server finishes a database update. "
+                + "Your message is kept here — do not send it again yet."
         case .api(let error):
             error.errorDescription
         case .fileUnreadable(let url):

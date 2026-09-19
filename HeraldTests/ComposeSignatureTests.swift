@@ -198,6 +198,42 @@ import Testing
         #expect(model.draft.isDirty == false)
     }
 
+    /// Upstream 1.4.2 made `SignatureSnapshot.id` nullable, so a draft whose
+    /// signature was DELETED can come back as `mode == .selected` with no id at
+    /// all. Everything here used to assume an id: the picker tag, the preview's
+    /// `snapshot.id == id` check and the "saved copy" row. Fails on a force-unwrap
+    /// or on a build that quietly turns the selection into "no signature" — the
+    /// draft would then send without the sign-off the user chose.
+    @Test func aSnapshotWithNoIDRoundTripsWithoutLosingTheSelection() async throws {
+        let outbox = FakeOutbox()
+        await outbox.setSignatures(SignatureCandidates(
+            automaticSignatureID: nil, signatures: [Self.personalSignature]
+        ))
+        let orphaned = SignatureSnapshot(
+            mode: .selected, id: nil, name: "Old", html: "<p>Old</p>", text: "Old sign-off"
+        )
+        let model = Self.model(outbox, kind: .draft, storedDraft: Self.storedDraft(orphaned))
+
+        await model.loadSignatures()
+
+        // The selection the DRAFT states, not "none": the server resolved
+        // `.selected` and only the id went missing.
+        #expect(model.draft.signature == SignatureSelection(orphaned))
+        #expect(model.draft.signatureSnapshot == orphaned)
+        #expect(model.showsSignaturePicker)
+        // Reopening is not an edit, whatever the snapshot looks like.
+        #expect(model.draft.isDirty == false)
+        // Every row is still describable — the menu label must resolve to one of
+        // them rather than to nothing.
+        #expect(model.signatureOptions.contains { $0.id == model.signatureTag }
+            || model.signatureMenuLabel == "No signature")
+        // And the window still sends: the draft's own stored snapshot is what the
+        // server uses for a send that names a draft.
+        model.bodyText = "Hi"
+        #expect(await model.send() == true)
+        #expect(await outbox.lastSent?.signature == model.draft.signature)
+    }
+
     /// A server older than 1.3.4 has no signatures route. The composer must still
     /// work — it just has no picker.
     @Test func aServerWithoutSignaturesHidesThePicker() async {

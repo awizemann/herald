@@ -198,6 +198,7 @@ nonisolated enum UsageOutboxErrorKind: Sendable, Hashable {
     case draftTooLarge
     case tooManyAttachments
     case draftConflict
+    case sendOnHold(SendHold)
     case api(UsageMailErrorKind)
     case fileUnreadable
 
@@ -209,6 +210,7 @@ nonisolated enum UsageOutboxErrorKind: Sendable, Hashable {
         case .draftTooLarge: self = .draftTooLarge
         case .tooManyAttachments: self = .tooManyAttachments
         case .draftConflict: self = .draftConflict
+        case .sendOnHold(let hold): self = .sendOnHold(hold)
         case .api(let apiError): self = .api(UsageMailErrorKind(apiError))
         case .fileUnreadable: self = .fileUnreadable
         }
@@ -222,6 +224,7 @@ nonisolated enum UsageOutboxErrorKind: Sendable, Hashable {
         case .draftTooLarge: "draft_too_large"
         case .tooManyAttachments: "too_many_attachments"
         case .draftConflict: "draft_conflict"
+        case .sendOnHold(let hold): "send_on_hold_\(hold.rawValue.snakeCased)"
         case .api(let kind): "api_\(kind.rawValue)"
         case .fileUnreadable: "file_unreadable"
         }
@@ -234,6 +237,7 @@ nonisolated enum UsageOutboxErrorKind: Sendable, Hashable {
             "too_many_attachments", "draft_conflict", "file_unreadable",
         ]
         for kind in UsageMailErrorKind.allCases { values.insert("api_\(kind.rawValue)") }
+        for hold in SendHold.allCases { values.insert("send_on_hold_\(hold.rawValue.snakeCased)") }
         return values
     }
 }
@@ -392,5 +396,23 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     /// ``StatsValue``.
     var statsProps: [String: StatsValue] {
         props.mapValues(\.statsValue)
+    }
+}
+
+nonisolated extension String {
+    /// `"storageNotReady"` → `"storage_not_ready"`. The vocabulary on the wire is
+    /// snake_case throughout; a Swift enum's camelCase raw value would be the one
+    /// value that is not, and the contract test would be the only place it showed.
+    fileprivate var snakeCased: String {
+        var out = ""
+        for scalar in unicodeScalars {
+            if CharacterSet.uppercaseLetters.contains(scalar) {
+                out.append("_")
+                out.append(Character(scalar).lowercased())
+            } else {
+                out.append(Character(scalar))
+            }
+        }
+        return out
     }
 }

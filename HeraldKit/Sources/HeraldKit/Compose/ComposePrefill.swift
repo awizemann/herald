@@ -9,7 +9,12 @@ public nonisolated enum ComposePrefill {
 
     /// Recipients for a reply.
     ///
-    /// - `to` is the original sender; on reply-all the original `to` follows.
+    /// - `to` is the original sender — or the message's `Reply-To` addresses when
+    ///   it declares any (upstream 1.4.2) — and on reply-all the original `to`
+    ///   follows. The server already prefers `replyTo` when `POST /reply` carries
+    ///   no `to`, so this is DISPLAY parity: the window now shows the addresses
+    ///   the reply was always going to reach, and leaving them untouched sends to
+    ///   exactly the same place as before.
     /// - `cc` is the original `cc` (reply-all only).
     /// - The user's own addresses are dropped, duplicates collapse
     ///   case-insensitively, and the surviving order is the original order.
@@ -25,8 +30,12 @@ public nonisolated enum ComposePrefill {
             EmailAddress.dedupe(addresses.filter { !own.contains($0.lowercased()) })
         }
 
-        let sender = message.summary.fromAddress
-        var to = strip(replyAll ? [sender] + message.summary.to : [sender])
+        // `replyTo == nil` means the server never said (pre-1.4.2) — NOT "no
+        // reply targets"; an empty array is treated the same way, so both fall
+        // back to the sender rather than producing a reply addressed to nobody.
+        let senders = message.replyTo.flatMap { $0.isEmpty ? nil : $0 }
+            ?? [message.summary.fromAddress]
+        var to = strip(replyAll ? senders + message.summary.to : senders)
         if to.isEmpty {
             // Own message (or sender is us): reply to whoever it went to.
             to = EmailAddress.dedupe(message.summary.to)

@@ -471,6 +471,141 @@ struct LabelSyncTests {
         )
         await engine.stopAndWait()
     }
+
+    // MARK: - The pass's label event (F1/C1)
+
+    /// Fails if `.labelsChanged` is drained only on the success path. A journal
+    /// cycle is several pages and each is applied and checkpointed on its own, so
+    /// "page 1 wrote labels, page 2 threw" is an ordinary outcome, not an exotic
+    /// one — and the membership page 1 wrote is durable. Announcing it only on a
+    /// clean pass leaves the chips on screen wrong until the next reconciliation,
+    /// which on an embedding server is up to half an hour away.
+    @Test("A pass that wrote labels and then failed still announces the labels")
+    func labelsChangedSurvivesAFailedPass() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = await journalAPI(labels: [billing])
+        let store = try MailStore.inMemory()
+        let engine = engine(api: api, store: store)
+
+        await engine.start(accountID: Self.account)
+        try await waitUntil("the bootstrap pass finished") {
+            await api.callCount { $0 == .listLabels } == 1
+        }
+
+        // Page 1 carries a label edit and says there is more; page 2's cursor
+        // fails. The engine has already applied — and checkpointed — page 1.
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing]))],
+                nextCursor: "chk_1",
+                hasMore: true
+            )
+        ])
+        await api.setChangeFailure(.server(code: "http_500", message: "boom"), forCursor: "chk_1")
+
+        // Scoped to the SECOND pass. The bootstrap pass emits a `.labelsChanged`
+        // of its own (its sweep wrote the label list), so collecting from the
+        // start of the stream would let this test pass on that one — i.e. it
+        // would stay green with the drain removed, which is the whole point.
+        let collected = Task {
+            var kinds: [SyncEngineTests.EventKind] = []
+            var bootstrapEnded = false
+            for await event in engine.events {
+                guard bootstrapEnded else {
+                    if case .finished = event { bootstrapEnded = true }
+                    continue
+                }
+                kinds.append(SyncEngineTests.EventKind(event))
+                if case .failed = event { break }
+            }
+            return kinds
+        }
+        await engine.refreshNow()
+        let seen = await collected.value
+
+        #expect(
+            try await store.labelIDsByThread(accountID: Self.account)["thr_1"] == ["lbl_1"],
+            "page 1's membership is in the cache — which is exactly why it must be announced"
+        )
+        #expect(seen.contains(.labelsChanged), "the failed pass must still drain passLabelsChanged")
+        #expect(seen.contains(.failed), "and must still report the failure")
+        #expect(
+            seen.firstIndex(of: .labelsChanged) ?? .max < seen.firstIndex(of: .failed) ?? .max,
+            "chips are corrected before the banner appears"
+        )
+        await engine.stopAndWait()
+    }
+
+    // MARK: - Capability detection across a restart (F1/P4)
+
+    /// Fails if `labelEmbeddingAccounts` outlives the engine's `start()`. The flag
+    /// is what demotes the sweep to a half-hourly reconciliation, so an account
+    /// that kept it after the server was rolled BACK to 1.3.4/1.4.0 would sweep 15×
+    /// more rarely than the only membership source that server has, and the chips
+    /// would be wrong for up to half an hour with nothing able to correct them.
+    ///
+    /// WHAT A GRAPH REINSTALL WITHOUT stop/start DOES: nothing, deliberately. The
+    /// set is ENGINE state, so a reinstalled graph builds a brand-new `SyncEngine`
+    /// that starts empty and re-decides from its own first row — there is no stale
+    /// flag to carry. The case pinned here is the other one: the SAME engine reused
+    /// across `stop()`/`start()`, which is what an account switch and an app
+    /// re-activation do. `start(accountID:)` returns early for an unchanged account
+    /// whose loop is still alive, so the clear only ever runs on a genuine restart.
+    @Test("Restarting the engine re-decides whether the server embeds labels")
+    func embeddingIsRedecidedOnRestart() async throws {
+        let billing = Self.label("lbl_1", name: "Billing")
+        let api = await journalAPI(labels: [billing])
+        let store = try MailStore.inMemory()
+        let engine = engine(
+            api: api, store: store,
+            labelPollInterval: .seconds(120),
+            reconciliationLabelPollInterval: .seconds(1_800)
+        )
+
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("msg_1", threadID: "thr_1", labels: [billing]))],
+                nextCursor: "chk_1",
+                hasMore: false
+            )
+        ])
+        await engine.start(accountID: Self.account)
+        try await waitUntil("a stated row arrived") { await engine.serverEmbedsLabels }
+        #expect(await engine.currentLabelPollInterval == .seconds(1_800))
+        // The detection flips inside `flush`, BEFORE the page's cursor is
+        // persisted — so stopping on that alone can tear the pass down with the
+        // checkpoint still at `chk_0`, and the restarted engine would then read
+        // from a cursor this test never staged. Wait for the cursor instead.
+        try await waitUntil("the first session persisted its cursor") {
+            (try? await store.syncCheckpoint(accountID: Self.account))??.changeCursor == "chk_1"
+        }
+
+        await engine.stopAndWait()
+        // The server is rolled back: every row now answers WITHOUT the key. The
+        // checkpoint the first session persisted is `chk_1`, so the next page has
+        // to be keyed there or the restarted engine reads an empty journal.
+        await api.setCheckpointCursor("chk_1")
+        await api.setChangePages([
+            ChangePage(
+                changes: [.upsert(SyncFixtures.message("msg_2", threadID: "thr_2"))],
+                nextCursor: "chk_2",
+                hasMore: false
+            )
+        ])
+        await engine.start(accountID: Self.account)
+        #expect(
+            await engine.serverEmbedsLabels == false,
+            "start() must clear the detection, or a downgraded server keeps the 1800s cadence"
+        )
+        try await waitUntil("the restarted engine ran a pass") {
+            (try? await store.message(id: "msg_2", accountID: Self.account)) != nil
+        }
+        #expect(
+            await engine.currentLabelPollInterval == .seconds(120),
+            "and nothing in the new session's rows re-proves the capability"
+        )
+        await engine.stopAndWait()
+    }
 }
 
 /// Counts the label-shaped events, and the pass boundary the assertions
@@ -970,6 +1105,262 @@ struct LabelActionTests {
         #expect(
             try await store.labelIDs(messageID: "msg_2", accountID: Self.account) == ["lbl_1"],
             "and the sibling got the toggled label only — not the whole union"
+        )
+    }
+
+    // MARK: - The label fence (F1/C2)
+
+    /// THE RACE C2 NAMES. `applyEmbeddedLabels` is per-message authoritative, so a
+    /// `/changes` page cut BEFORE the user's toggle states the pre-toggle set and
+    /// strips the label straight back off — and because every message FIELD is
+    /// unchanged, no `.changed` is emitted and nothing re-announces it. The chip
+    /// just vanishes until the next reconciliation.
+    @Test("A stale journal page does not strip a label whose write is still in flight")
+    func staleEmbeddedLabelsCannotStripAnInFlightToggle() async throws {
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        let store = try await seededStore()
+        let api = FakeMailAPIClient()
+        await api.setLabels([billing])
+        await api.setLabelAssignmentResult(
+            LabelAssignment(
+                affected: 1, assigned: true, labelID: "lbl_1", threadID: "thr_1", labels: [billing]
+            )
+        )
+        let actions = MailActionService(api: api, store: store)
+
+        // Hold the POST open: the optimistic write has landed and the fence is up.
+        await api.armGate()
+        let toggle = Task {
+            try await actions.setLabel("lbl_1", onMessage: "msg_1", accountID: Self.account, assigned: true)
+        }
+        try await waitUntil("the optimistic write landed") {
+            (try? await store.labelIDs(messageID: "msg_1", accountID: Self.account)) == ["lbl_1"]
+        }
+        #expect(await store.hasLabelPin(messageID: "msg_1", labelID: "lbl_1", accountID: Self.account))
+
+        // A page cut before the toggle arrives mid-flight, stating the OLD set.
+        try await store.applyMessageUpserts(
+            [SyncFixtures.message("msg_1", threadID: "thr_1", labels: [])],
+            accountID: Self.account
+        )
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "the stale page must not strip a label the user just added"
+        )
+
+        await api.openGate()
+        try await toggle.value
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "and the settle leaves it in place"
+        )
+        #expect(
+            await store.hasLabelPin(messageID: "msg_1", labelID: "lbl_1", accountID: Self.account) == false
+        )
+        // Proof the fence is not permanent: a LATER page is authoritative again.
+        try await store.applyMessageUpserts(
+            [SyncFixtures.message("msg_1", threadID: "thr_1", labels: [])],
+            accountID: Self.account
+        )
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account).isEmpty,
+            "after the settle the server is authoritative again"
+        )
+    }
+
+    /// The fence is per PAIR, not per message: pinning the whole row would freeze
+    /// every OTHER label on it against the pages that keep those current.
+    @Test("The fence covers only the toggled label, not the message's other labels")
+    func theFenceIsScopedToItsPair() async throws {
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        let later = LabelSyncTests.label("lbl_2", name: "Later")
+        let store = try await seededStore()
+        try await store.replaceLabels([billing, later], accountID: Self.account)
+        let api = FakeMailAPIClient()
+        await api.setLabelAssignmentResult(
+            LabelAssignment(
+                affected: 1, assigned: true, labelID: "lbl_1", threadID: "thr_1", labels: [billing]
+            )
+        )
+        let actions = MailActionService(api: api, store: store)
+
+        await api.armGate()
+        let toggle = Task {
+            try await actions.setLabel("lbl_1", onMessage: "msg_1", accountID: Self.account, assigned: true)
+        }
+        try await waitUntil("the optimistic write landed") {
+            (try? await store.labelIDs(messageID: "msg_1", accountID: Self.account)) == ["lbl_1"]
+        }
+
+        // A page states the pinned label's ABSENCE and an unpinned label's arrival.
+        try await store.applyMessageUpserts(
+            [SyncFixtures.message("msg_1", threadID: "thr_1", labels: [later])],
+            accountID: Self.account
+        )
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account).sorted()
+                == ["lbl_1", "lbl_2"],
+            "the pinned pair survived AND the unpinned one was applied"
+        )
+        await api.openGate()
+        try await toggle.value
+    }
+
+    /// A conversation toggle fans out over every cached message of the thread, so
+    /// the fence has to as well — including the messages that ALREADY had the
+    /// label and so moved no row. Fails if the pins are taken from the undo, which
+    /// deliberately carries only the rows that changed.
+    @Test("A thread toggle fences every message of the thread, including the unmoved ones")
+    func theThreadToggleFencesTheWholeFanOut() async throws {
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        let store = try await seededStore()
+        // msg_1 already carries the label; only msg_2 will actually move.
+        try await store.replaceAssignments(
+            labelID: "lbl_1",
+            messages: [LabelRowKey(messageID: "msg_1", threadID: "thr_1")],
+            accountID: Self.account
+        )
+        let api = FakeMailAPIClient()
+        await api.setLabelAssignmentResult(
+            LabelAssignment(
+                affected: 1, assigned: true, labelID: "lbl_1", threadID: "thr_1", labels: [billing]
+            )
+        )
+        let actions = MailActionService(api: api, store: store)
+
+        await api.armGate()
+        let toggle = Task {
+            try await actions.setLabel(
+                "lbl_1", onConversation: "thr_1", accountID: Self.account, assigned: true
+            )
+        }
+        try await waitUntil("the optimistic fan-out landed") {
+            (try? await store.labelIDs(messageID: "msg_2", accountID: Self.account)) == ["lbl_1"]
+        }
+        #expect(
+            await store.hasLabelPin(messageID: "msg_1", labelID: "lbl_1", accountID: Self.account),
+            "a message that already had the label moved no row, but is still in flight"
+        )
+
+        try await store.applyMessageUpserts(
+            [
+                SyncFixtures.message("msg_1", threadID: "thr_1", labels: []),
+                SyncFixtures.message("msg_2", threadID: "thr_1", labels: []),
+            ],
+            accountID: Self.account
+        )
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "the unmoved message must not be stripped while the thread toggle is in flight"
+        )
+        #expect(try await store.labelIDs(messageID: "msg_2", accountID: Self.account) == ["lbl_1"])
+
+        await api.openGate()
+        try await toggle.value
+        #expect(
+            await store.hasLabelPin(messageID: "msg_1", labelID: "lbl_1", accountID: Self.account) == false
+        )
+        #expect(
+            await store.hasLabelPin(messageID: "msg_2", labelID: "lbl_1", accountID: Self.account) == false
+        )
+    }
+
+    /// A pin that outlives its action is worse than the race it prevents: it
+    /// fences the pair against the server for the rest of the session, so the
+    /// label the server rejected could never be corrected. Fails if the release is
+    /// only on the success path.
+    @Test("A rejected label change reverts and releases its fence")
+    func aRejectedChangeReleasesTheFence() async throws {
+        let store = try await seededStore()
+        let api = FakeMailAPIClient()
+        await api.setLabelAssignmentFailure(.server(code: "http_500", message: "boom"))
+        let actions = MailActionService(api: api, store: store)
+
+        await #expect(throws: MailAPIError.self) {
+            try await actions.setLabel(
+                "lbl_1", onMessage: "msg_1", accountID: Self.account, assigned: true
+            )
+        }
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account).isEmpty,
+            "the optimistic write was reverted"
+        )
+        #expect(
+            await store.hasLabelPin(messageID: "msg_1", labelID: "lbl_1", accountID: Self.account) == false,
+            "and the fence came down — a leaked pin blocks the server forever"
+        )
+        // Proof it really is down: the server's own statement now applies.
+        try await store.applyMessageUpserts(
+            [SyncFixtures.message(
+                "msg_1", threadID: "thr_1", labels: [LabelSyncTests.label("lbl_1", name: "Billing")]
+            )],
+            accountID: Self.account
+        )
+        #expect(try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"])
+    }
+
+    /// The A3 race in its original form: the RECONCILIATION sweep's listing is
+    /// also older than a toggle made while it was in flight, and
+    /// `replaceAssignments` is authoritative for the whole label. Fails if the
+    /// fence stops at the embedded write.
+    @Test("A sweep landing mid-toggle does not delete the just-written row")
+    func theSweepRespectsTheFence() async throws {
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        let store = try await seededStore()
+        let api = FakeMailAPIClient()
+        await api.setLabelAssignmentResult(
+            LabelAssignment(
+                affected: 1, assigned: true, labelID: "lbl_1", threadID: "thr_1", labels: [billing]
+            )
+        )
+        let actions = MailActionService(api: api, store: store)
+
+        await api.armGate()
+        let toggle = Task {
+            try await actions.setLabel("lbl_1", onMessage: "msg_1", accountID: Self.account, assigned: true)
+        }
+        try await waitUntil("the optimistic write landed") {
+            (try? await store.labelIDs(messageID: "msg_1", accountID: Self.account)) == ["lbl_1"]
+        }
+
+        // A sweep that started BEFORE the toggle: its listing does not name msg_1.
+        try await store.replaceAssignments(labelID: "lbl_1", messages: [], accountID: Self.account)
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "the pre-toggle listing must not delete the just-confirmed row"
+        )
+        await api.openGate()
+        try await toggle.value
+    }
+
+    // MARK: - Action answers carry membership (F1/P5)
+
+    /// Upstream 1.4.2 embeds labels on the triage-action answer too, and that
+    /// answer goes through `applyMessageUpserts` — so a keystroke that only marks
+    /// a message read also corrects its chips, for free. Fails if the confirmed
+    /// summary is written without its labels, or if a pre-1.4.2 answer
+    /// (`labels: nil`) is allowed to clear the set.
+    @Test("A triage action's answer updates label membership, and a nil one does not")
+    func actionAnswersCarryMembership() async throws {
+        let billing = LabelSyncTests.label("lbl_1", name: "Billing")
+        let store = try await seededStore()
+        let api = FakeMailAPIClient()
+        let actions = MailActionService(api: api, store: store)
+
+        await api.setActionResultLabels([billing])
+        try await actions.perform(.read, on: "msg_1", accountID: Self.account)
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "the action answer's embedded labels reached the store"
+        )
+
+        // The same action from a server that does not embed them: the key is
+        // absent, which says nothing and must therefore change nothing.
+        await api.setActionResultLabels(nil)
+        try await actions.perform(.unread, on: "msg_1", accountID: Self.account)
+        #expect(
+            try await store.labelIDs(messageID: "msg_1", accountID: Self.account) == ["lbl_1"],
+            "an answer with no labels key must leave membership alone"
         )
     }
 }

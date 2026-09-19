@@ -80,4 +80,34 @@ import Testing
         }
         #expect(offenders.isEmpty, "public error descriptions in: \(offenders)")
     }
+
+    /// The whole 1.4.2 label story rests on ASKING for the embed: `includeLabels`
+    /// defaults to false on `HQBaseAPIClient`, so a client built without it gets
+    /// `labels: nil` on every row — which the store correctly reads as "the server
+    /// said nothing" and skips. Every label test would still pass (they construct
+    /// their own clients), the app would simply fall back to the legacy per-label
+    /// sweep, and the only symptom in the field is chips that are up to 12.5
+    /// minutes stale. So the one PRODUCTION construction site is guarded here,
+    /// the same way the boundary and logging conventions are.
+    @Test("The app's one API client still asks for embedded labels")
+    func productionClientAsksForLabels() throws {
+        let appRoot = Self.sourcesDirectory
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Herald")
+        let enumerator = FileManager.default.enumerator(at: appRoot, includingPropertiesForKeys: nil)
+        var sites: [(file: String, line: String)] = []
+        for case let url as URL in (enumerator?.allObjects as? [URL] ?? []) where url.pathExtension == "swift" {
+            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            for line in text.split(separator: "\n") where line.contains("HQBaseAPIClient(") {
+                sites.append((url.lastPathComponent, String(line)))
+            }
+        }
+        // Non-vacuous: a moved file or a renamed type would otherwise leave this
+        // guard green forever with nothing to check.
+        try #require(sites.count == 1, "expected exactly one production client; found \(sites.map(\.file))")
+        #expect(
+            sites[0].line.contains("includeLabels: true"),
+            "the app's client is built without includeLabels: it would silently fall back to the legacy per-label sweep and no other test would notice"
+        )
+    }
 }

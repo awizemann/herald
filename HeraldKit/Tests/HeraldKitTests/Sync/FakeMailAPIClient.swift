@@ -268,8 +268,15 @@ actor FakeMailAPIClient: MailAPIClient {
         // the cache while the optimistic write is still unconfirmed.
         await awaitGate()
         if let actionFailure { throw actionFailure }
-        return Self.applying(action, to: SyncFixtures.message(id))
+        return Self.applying(action, to: SyncFixtures.message(id, labels: actionResultLabels))
     }
+
+    /// What the action answer states for `labels`. Upstream 1.4.2 embeds the
+    /// message's labels on the `POST /messages/{id}/{action}` answer too, so a
+    /// triage keystroke is itself a membership statement. `nil` — the default —
+    /// is the pre-1.4.2 answer with no key at all.
+    private var actionResultLabels: [MailLabel]?
+    func setActionResultLabels(_ labels: [MailLabel]?) { actionResultLabels = labels }
 
     private nonisolated static func applying(
         _ action: MessageAction,
@@ -296,7 +303,11 @@ actor FakeMailAPIClient: MailAPIClient {
             readAt: action == .read ? now : (action == .unread ? nil : summary.readAt),
             starredAt: action == .star ? now : (action == .unstar ? nil : summary.starredAt),
             hasAttachments: summary.hasAttachments,
-            createdAt: summary.createdAt
+            createdAt: summary.createdAt,
+            // Carried through: the `nil` vs `[]` distinction is the whole contract
+            // on this field, and rebuilding the summary without it would make
+            // every action answer look like a pre-1.4.2 one.
+            labels: summary.labels
         )
     }
 

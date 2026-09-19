@@ -192,6 +192,10 @@ public nonisolated struct MailActionService: Sendable {
             } catch let revertError {
                 logger.warning("Revert after a rejected label change failed (\(Self.code(for: revertError), privacy: .public))")
             }
+            // AFTER the revert, and on this path too: the cache is back to what
+            // the server last said, so there is nothing left to protect — and a
+            // pin left behind would fence the pair against every future page.
+            await store.releaseLabelPins(undo)
             throw error
         }
         // `affected: 0` here is NOT the no-op the triage actions have to undo: the
@@ -203,9 +207,16 @@ public nonisolated struct MailActionService: Sendable {
                 labelID, threadID: threadID, accountID: accountID, assigned: result.assigned
             )
         } catch {
+            // The settle is the action's own authoritative write, so it is
+            // allowed past the fence — but the fence comes down either way. A
+            // store failure here leaves the optimistic write in place, which the
+            // next page or the reconciliation is now free to correct; holding the
+            // pin would freeze whatever the cache happens to hold forever.
+            await store.releaseLabelPins(undo)
             logger.error("Confirmed label change could not be recorded: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+        await store.releaseLabelPins(undo)
     }
 
     /// The same, for one message.
@@ -230,6 +241,7 @@ public nonisolated struct MailActionService: Sendable {
             } catch let revertError {
                 logger.warning("Revert after a rejected label change failed (\(Self.code(for: revertError), privacy: .public))")
             }
+            await store.releaseLabelPins(undo)
             throw error
         }
         do {
@@ -237,9 +249,11 @@ public nonisolated struct MailActionService: Sendable {
                 result.labels.map(\.id), messageID: messageID, accountID: accountID
             )
         } catch {
+            await store.releaseLabelPins(undo)
             logger.error("Confirmed label change could not be recorded: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+        await store.releaseLabelPins(undo)
     }
 
     private func revert(_ undo: LabelActionUndo) async throws {

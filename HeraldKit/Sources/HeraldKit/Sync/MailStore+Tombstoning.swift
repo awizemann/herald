@@ -34,6 +34,7 @@ extension MailStore {
                 let id = row.id
                 changes.deleted.insert(id)
                 pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
+                dropLabelPins(messageID: id, accountID: accountID)
                 try modelContext.delete(
                     model: CachedMessageBody.self,
                     where: #Predicate { $0.accountID == accountID && $0.messageID == id }
@@ -98,6 +99,7 @@ extension MailStore {
             // The row is gone; a fence left behind would outlive everything it
             // could ever protect.
             pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
+            dropLabelPins(messageID: id, accountID: accountID)
             modelContext.delete(row)
             try modelContext.delete(
                 model: CachedMessageBody.self,
@@ -134,6 +136,7 @@ extension MailStore {
                 let id = row.id
                 changes.deleted.insert(id)
                 pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
+                dropLabelPins(messageID: id, accountID: accountID)
                 try modelContext.delete(
                     model: CachedMessageBody.self,
                     where: #Predicate { $0.accountID == accountID && $0.messageID == id }

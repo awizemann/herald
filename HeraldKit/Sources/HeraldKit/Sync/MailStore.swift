@@ -67,6 +67,15 @@ nonisolated struct PendingKey: Sendable, Hashable {
     let messageID: String
 }
 
+/// One fenced label assignment: the label, the message, and the account whose
+/// ids they are. Account-scoped for the same reason as ``PendingKey`` — two
+/// signed-in servers reuse message ids.
+nonisolated struct LabelPinKey: Sendable, Hashable {
+    let accountID: String
+    let messageID: String
+    let labelID: String
+}
+
 /// The optimistic state one in-flight local action wrote, held until the POST
 /// settles. While an entry exists, `upsertMessages` refuses to overwrite these
 /// three fields — a journal page cut mid-POST is by definition OLDER than the
@@ -607,6 +616,9 @@ public actor MailStore {
             // Nothing is left to fence, and a surviving entry would silently
             // block the NEXT account's journal from writing the same id.
             pendingMutations = pendingMutations.filter { $0.key.accountID != accountID }
+            // Same again for the label fence: a surviving pin would fence a pair
+            // of the NEXT account against the server forever.
+            pinnedLabels = pinnedLabels.filter { $0.key.accountID != accountID }
             // Same reasoning for the draft fence: a surviving entry would stop the
             // NEXT account's poll from ever tombstoning that id.
             openDrafts = openDrafts.filter { $0.accountID != accountID }
@@ -637,6 +649,82 @@ public actor MailStore {
     /// listing older than the composer's last save over it. See
     /// `MailStore+Drafts.swift`, which owns every use of it.
     var openDrafts: Set<DraftKey> = []
+
+    /// The label fence: (account, message, label) pairs an in-flight label action
+    /// owns, each mapped to the tokens of the actions that pinned it.
+    ///
+    /// The triage fence above pins whole MESSAGES and three fields of them, which
+    /// is right for read/star/folder — every one of those is a field on the row
+    /// and an action writes all it is going to write at once. Label membership is
+    /// rows in another table and a message carries several labels at a time, so
+    /// pinning the message would fence every OTHER label on it against the very
+    /// journal pages that are meant to keep them current. The pinned unit is
+    /// therefore the PAIR: while `lbl_1` on `m1` is in flight, that one pair is
+    /// untouchable and `lbl_2` on `m1` still tracks the server normally.
+    ///
+    /// A SET of tokens, not one: the same pair can be in flight twice (a toggle
+    /// on the message and a toggle on its thread, or an impatient double-toggle),
+    /// and the first to settle must not unpin rows the second still owns.
+    var pinnedLabels: [LabelPinKey: Set<UUID>] = [:]
+
+    /// Pins every `(message, labelID)` pair of `messageIDs` to `token`.
+    /// Called by the optimistic write, once it has actually landed.
+    func pinLabels(messageIDs: [String], labelID: String, accountID: String, token: UUID) {
+        for messageID in messageIDs {
+            let key = LabelPinKey(accountID: accountID, messageID: messageID, labelID: labelID)
+            pinnedLabels[key, default: []].insert(token)
+        }
+    }
+
+    /// Releases the pins `token` owns. MUST run on every exit of the action that
+    /// took them — settle, revert, and a settle that itself threw — or the pair
+    /// is fenced against the server for the rest of the session, which is exactly
+    /// the stale chip the fence exists to prevent, made permanent.
+    public func releaseLabelPins(_ undo: LabelActionUndo) {
+        for messageID in undo.pinned {
+            let key = LabelPinKey(accountID: undo.accountID, messageID: messageID, labelID: undo.labelID)
+            guard var tokens = pinnedLabels[key] else { continue }
+            tokens.remove(undo.token)
+            pinnedLabels[key] = tokens.isEmpty ? nil : tokens
+        }
+    }
+
+    /// Every pinned label id per message for one account, built ONCE per write.
+    /// A per-row lookup would walk the table once per message in a 100-row
+    /// journal page; the table only ever holds the pairs of actions in flight.
+    func pinnedLabelsByMessage(accountID: String) -> [String: Set<String>] {
+        guard !pinnedLabels.isEmpty else { return [:] }
+        var result: [String: Set<String>] = [:]
+        for key in pinnedLabels.keys where key.accountID == accountID {
+            result[key.messageID, default: []].insert(key.labelID)
+        }
+        return result
+    }
+
+    /// The pinned message ids for ONE label — the shape the per-label
+    /// reconciliation sweep needs.
+    func pinnedMessages(labelID: String, accountID: String) -> Set<String> {
+        guard !pinnedLabels.isEmpty else { return [] }
+        var result: Set<String> = []
+        for key in pinnedLabels.keys where key.accountID == accountID && key.labelID == labelID {
+            result.insert(key.messageID)
+        }
+        return result
+    }
+
+    /// Drops every label pin naming one message. For the delete paths: the row is
+    /// gone, so nothing is left to protect, and a surviving pin would block the
+    /// journal from ever writing that pair again if the id came back.
+    func dropLabelPins(messageID: String, accountID: String) {
+        guard !pinnedLabels.isEmpty else { return }
+        pinnedLabels = pinnedLabels.filter { $0.key.accountID != accountID || $0.key.messageID != messageID }
+    }
+
+    /// Test seam: whether one pair is currently fenced. A leak here is a label
+    /// the server can never correct again.
+    func hasLabelPin(messageID: String, labelID: String, accountID: String) -> Bool {
+        pinnedLabels[LabelPinKey(accountID: accountID, messageID: messageID, labelID: labelID)] != nil
+    }
 
     /// Test seam: whether a message is currently fenced against journal upserts.
     /// A leak here is a message the journal can never correct again.

@@ -140,8 +140,15 @@ extension MailViewModel {
     func updateLabelSurfaceVisibility() async {
         let visible = selectedLabelID != nil || (!labels.isEmpty && isAppActive)
         guard visible != isLabelSurfaceVisible else { return }
+        // The flag records what the ENGINE was told, so it is set only once the
+        // engine has been told. Setting it first made it a record of intent: the
+        // launch path runs before the engine is installed, and `sync` being nil
+        // there left the flag claiming a signal that was never sent — after which
+        // this guard returned early for every later call and the engine kept the
+        // default until the value flipped and flipped back.
+        guard let sync else { return }
+        await sync.setLabelSurfaceVisible(visible)
         isLabelSurfaceVisible = visible
-        await sync?.setLabelSurfaceVisible(visible)
     }
 
     /// Reloads the labels on the message the reading pane is showing.

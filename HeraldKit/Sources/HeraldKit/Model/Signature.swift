@@ -191,3 +191,60 @@ public nonisolated struct SignatureSnapshot: Sendable, Hashable, Codable {
         self.text = value(.text, "")
     }
 }
+
+/// The `{type, id}` pair that says WHERE a new signature lives.
+///
+/// Named `…Ref` rather than `SignatureScope` because that name is already the
+/// scope KIND on ``Signature/scope``; this is the kind plus the concrete owner id
+/// (`POST /signatures` body, upstream 1.4.2+). `id` is the user id, mailbox id or
+/// mail-domain id, matching `type`.
+public nonisolated struct SignatureScopeRef: Sendable, Hashable, Codable {
+    public let type: SignatureScope
+    public let id: String
+
+    public init(type: SignatureScope, id: String) {
+        self.type = type
+        self.id = id
+    }
+}
+
+/// Body of `POST /signatures` (scope `signatures:manage`, upstream 1.4.2+).
+///
+/// `html` is sanitised server-side; names are unique per scope and setting
+/// `isDefault` demotes the previous default of that scope.
+public nonisolated struct CreateSignatureInput: Sendable, Hashable, Codable {
+    public var name: String
+    public var html: String
+    public var scope: SignatureScopeRef
+    /// Omitted means the server's default of `false`.
+    public var isDefault: Bool?
+
+    public init(name: String, html: String, scope: SignatureScopeRef, isDefault: Bool? = nil) {
+        self.name = name
+        self.html = html
+        self.scope = scope
+        self.isDefault = isDefault
+    }
+}
+
+/// Body of `PATCH /signatures/{id}` (scope `signatures:manage`, upstream 1.4.2+).
+///
+/// A partial update: every field is optional and an omitted one is left alone.
+/// The server REQUIRES at least one of `name`/`html`/`isDefault` and answers 400
+/// `SIGNATURE_INVALID` otherwise — the spec says so with an `anyOf` over
+/// `required`, which the generator cannot model (see `scripts/vendor-openapi.py`),
+/// so ``isEmpty`` is the client-side guard.
+public nonisolated struct UpdateSignatureInput: Sendable, Hashable, Codable {
+    public var name: String?
+    public var html: String?
+    public var isDefault: Bool?
+
+    public init(name: String? = nil, html: String? = nil, isDefault: Bool? = nil) {
+        self.name = name
+        self.html = html
+        self.isDefault = isDefault
+    }
+
+    /// True when the body would say nothing — sending it is a guaranteed 400.
+    public var isEmpty: Bool { name == nil && html == nil && isDefault == nil }
+}

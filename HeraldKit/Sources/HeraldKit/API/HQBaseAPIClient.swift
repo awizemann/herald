@@ -11,19 +11,41 @@ import OpenAPIURLSession
 /// `Mapping.swift`.
 public actor HQBaseAPIClient: MailAPIClient {
     private let client: HeraldAPI.Client
+    /// Whether every label-capable operation asks the server to embed
+    /// ``MessageSummary/labels``. See the note on ``MailAPIClient`` for why this is
+    /// one client-level switch rather than a parameter on six protocol methods.
+    ///
+    /// Sent as `includeLabels=true` when on and OMITTED entirely when off — an
+    /// explicit `includeLabels=false` would be the same thing to the server but
+    /// would make every request URL differ from a pre-1.4.2 client's for no reason.
+    /// A server older than 1.4.2 ignores the parameter and simply returns no
+    /// `labels` key, which maps to `nil`, so turning this on is safe everywhere.
+    private let includeLabels: Bool
 
     /// - Parameters:
     ///   - origin: the account's server origin, e.g. `https://mail.example.com`.
     ///   - tokens: supplies and refreshes the OAuth access token.
     ///   - session: injected in tests so `FakeServer` can answer requests.
-    public init(origin: URL, tokens: any BearerTokenProvider, session: URLSession = .shared) {
+    ///   - includeLabels: ask the server to embed label membership on every message
+    ///     row it returns (upstream 1.4.2+). Defaults to `false` so existing call
+    ///     sites keep today's wire traffic.
+    public init(
+        origin: URL,
+        tokens: any BearerTokenProvider,
+        session: URLSession = .shared,
+        includeLabels: Bool = false
+    ) {
         self.client = HeraldAPI.Client(
             serverURL: origin,
             configuration: .init(dateTranscoder: HQBaseDateTranscoder()),
             transport: URLSessionTransport(configuration: .init(session: session)),
             middlewares: [AuthenticatingMiddleware(tokens: tokens)]
         )
+        self.includeLabels = includeLabels
     }
+
+    /// `true` when labels are wanted, `nil` when they are not — see ``includeLabels``.
+    private var labelsWanted: Bool? { includeLabels ? true : nil }
 
     /// Funnels every generated error into ``MailAPIError``.
     private func perform<T: Sendable>(_ work: () async throws -> T) async throws -> T {
@@ -73,7 +95,8 @@ public actor HQBaseAPIClient: MailAPIClient {
                 mailboxId: mailboxID,
                 search: search,
                 limit: limit,
-                cursor: cursor
+                cursor: cursor,
+                includeLabels: labelsWanted
             )
             switch try await client.listMessages(.init(query: query)) {
             case .ok(let ok):
@@ -92,7 +115,11 @@ public actor HQBaseAPIClient: MailAPIClient {
 
     public func changes(cursor: String?, limit: Int?) async throws -> ChangePage {
         try await perform {
-            let query = Operations.ListMessageChanges.Input.Query(cursor: cursor, limit: limit)
+            let query = Operations.ListMessageChanges.Input.Query(
+                cursor: cursor,
+                limit: limit,
+                includeLabels: labelsWanted
+            )
             switch try await client.listMessageChanges(.init(query: query)) {
             case .ok(let ok): return try ChangePage(ok.body.json)
             case .undocumented(let code, _): throw unexpected(code)
@@ -103,7 +130,8 @@ public actor HQBaseAPIClient: MailAPIClient {
 
     public func message(id: String) async throws -> MessageDetail {
         try await perform {
-            switch try await client.getMessage(.init(path: .init(id: id))) {
+            let input = Operations.GetMessage.Input(path: .init(id: id), query: .init(includeLabels: labelsWanted))
+            switch try await client.getMessage(input) {
             case .ok(let ok): return try MessageDetail(ok.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
@@ -113,7 +141,11 @@ public actor HQBaseAPIClient: MailAPIClient {
 
     public func thread(messageID: String) async throws -> [MessageDetail] {
         try await perform {
-            switch try await client.getMessageThread(.init(path: .init(id: messageID))) {
+            let input = Operations.GetMessageThread.Input(
+                path: .init(id: messageID),
+                query: .init(includeLabels: labelsWanted)
+            )
+            switch try await client.getMessageThread(input) {
             case .ok(let ok): return try ok.body.json.map(MessageDetail.init)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
@@ -176,7 +208,11 @@ public actor HQBaseAPIClient: MailAPIClient {
             guard let generatedAction = Operations.UpdateMessage.Input.Path.ActionPayload(rawValue: action.rawValue) else {
                 throw MailAPIError.server(code: "unsupported_action", message: action.rawValue)
             }
-            switch try await client.updateMessage(.init(path: .init(id: id, action: generatedAction))) {
+            let input = Operations.UpdateMessage.Input(
+                path: .init(id: id, action: generatedAction),
+                query: .init(includeLabels: labelsWanted)
+            )
+            switch try await client.updateMessage(input) {
             case .ok(let ok): return try MessageSummary(ok.body.json)
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
@@ -211,7 +247,12 @@ public actor HQBaseAPIClient: MailAPIClient {
             // `labelId`, singular: the repeated `labelIds` form is an AND across
             // labels upstream (`queries.ts` adds one EXISTS per id), which is not
             // what a per-label membership sweep is asking.
-            let query = Operations.ListMessages.Input.Query(labelId: labelID, limit: limit, cursor: cursor)
+            let query = Operations.ListMessages.Input.Query(
+                labelId: labelID,
+                limit: limit,
+                cursor: cursor,
+                includeLabels: labelsWanted
+            )
             switch try await client.listMessages(.init(query: query)) {
             case .ok(let ok):
                 return MessagePage(
@@ -274,7 +315,8 @@ public actor HQBaseAPIClient: MailAPIClient {
                 folder: folder.flatMap { .init(rawValue: $0.rawValue) },
                 mailboxId: mailboxID,
                 search: search,
-                cursor: cursor
+                cursor: cursor,
+                includeLabels: labelsWanted
             )
             switch try await client.listConversations(.init(query: query)) {
             case .ok(let ok): return try ConversationPage(ok.body.json)
@@ -411,6 +453,53 @@ public actor HQBaseAPIClient: MailAPIClient {
         try await perform {
             switch try await client.listSignatures(.init(query: .init(from: address))) {
             case .ok(let ok): return try SignatureCandidates(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func createSignature(_ input: CreateSignatureInput) async throws -> Signature {
+        try await perform {
+            switch try await client.createSignature(.init(body: .json(input.generated))) {
+            case .created(let created): return try Signature(created.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func listManageableSignatures() async throws -> [Signature] {
+        try await perform {
+            switch try await client.listManageableSignatures(.init()) {
+            case .ok(let ok): return try ok.body.json.map(Signature.init)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func updateSignature(id: String, with input: UpdateSignatureInput) async throws -> Signature {
+        try await perform {
+            // An all-nil body is a guaranteed 400 `SIGNATURE_INVALID`; the spec says
+            // so with an `anyOf` over `required` that the generator cannot model, so
+            // the round trip would be spent only to be told what is already known.
+            guard !input.isEmpty else {
+                throw MailAPIError.server(code: "SIGNATURE_INVALID", message: "No signature fields to update")
+            }
+            let request = Operations.UpdateSignature.Input(path: .init(id: id), body: .json(input.generated))
+            switch try await client.updateSignature(request) {
+            case .ok(let ok): return try Signature(ok.body.json)
+            case .undocumented(let code, _): throw unexpected(code)
+            default: throw unhandledErrorResponse
+            }
+        }
+    }
+
+    public func deleteSignature(id: String) async throws {
+        try await perform {
+            switch try await client.deleteSignature(.init(path: .init(id: id))) {
+            case .noContent: return
             case .undocumented(let code, _): throw unexpected(code)
             default: throw unhandledErrorResponse
             }

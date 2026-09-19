@@ -55,7 +55,11 @@ nonisolated extension MessageSummary {
             readAt: generated.readAt,
             starredAt: generated.starredAt,
             hasAttachments: generated.hasAttachments,
-            createdAt: generated.createdAt
+            createdAt: generated.createdAt,
+            // ABSENT stays `nil`; an empty array stays `[]`. `.map` over the
+            // Optional preserves that difference — `?? []` would erase it and
+            // make "we did not ask for labels" look like "this message has none".
+            labels: generated.labels.map { $0.map(MailLabel.init) }
         )
     }
 }
@@ -112,7 +116,8 @@ nonisolated extension MessageDetail {
             rfcMessageID: extra.messageId,
             inReplyTo: extra.inReplyTo,
             references: extra.references,
-            attachments: extra.attachments.map(Attachment.init)
+            attachments: extra.attachments.map(Attachment.init),
+            replyTo: extra.replyTo
         )
     }
 }
@@ -262,9 +267,10 @@ nonisolated extension SignatureSelection {
 
 nonisolated extension DraftInput {
     /// From a STORED draft's fields. `DraftFields` is `DraftInput` minus the
-    /// write-only `signature` selection (see the schema's own note in
-    /// `openapi.json`): on a response that key holds the server's SNAPSHOT, and
-    /// `Draft.init` restates the selection from it.
+    /// write-only `signature` selection: on a response that key holds the server's
+    /// SNAPSHOT, and `Draft.init` restates the selection from it. Upstream owns
+    /// this split since 1.4.2 — it is no longer a Herald-local spec patch, so
+    /// nothing has to be re-applied after a regen.
     init(_ generated: Components.Schemas.DraftFields) {
         self.init(
             mailboxID: generated.mailboxId,
@@ -282,20 +288,25 @@ nonisolated extension DraftInput {
         )
     }
 
+    /// Upstream adopted the `DraftFields` split at 1.4.2 (Herald's issue #113), so
+    /// `DraftInput` is now `allOf[DraftFields, {signature}]` and the generated type
+    /// is a two-half `value1`/`value2` struct rather than one flat init.
     var generated: Components.Schemas.DraftInput {
         .init(
-            mailboxId: mailboxID,
-            replyToMessageId: replyToMessageID,
-            forwardOfMessageId: forwardOfMessageID,
-            from: from,
-            to: to,
-            cc: cc,
-            bcc: bcc,
-            subject: subject,
-            text: text,
-            html: html,
-            version: version,
-            signature: signature?.generated
+            value1: .init(
+                mailboxId: mailboxID,
+                replyToMessageId: replyToMessageID,
+                forwardOfMessageId: forwardOfMessageID,
+                from: from,
+                to: to,
+                cc: cc,
+                bcc: bcc,
+                subject: subject,
+                text: text,
+                html: html,
+                version: version
+            ),
+            value2: .init(signature: signature?.generated)
         )
     }
 }
@@ -327,7 +338,8 @@ nonisolated extension SendInput {
             html: html,
             attachmentIds: attachmentIDs,
             draftId: draftID,
-            signature: signature?.generated
+            signature: signature?.generated,
+            idempotencyKey: idempotencyKey
         )
     }
 }
@@ -345,7 +357,8 @@ nonisolated extension ForwardInput {
             html: html,
             attachmentIds: attachmentIDs,
             includeOriginalAttachments: includeOriginalAttachments,
-            signature: signature?.generated
+            signature: signature?.generated,
+            idempotencyKey: idempotencyKey
         )
     }
 }
@@ -362,8 +375,32 @@ nonisolated extension ReplyInput {
             html: html,
             attachmentIds: attachmentIDs,
             draftId: draftID,
-            signature: signature?.generated
+            signature: signature?.generated,
+            idempotencyKey: idempotencyKey
         )
+    }
+}
+
+// MARK: - Signature management (DTO → generated)
+
+nonisolated extension SignatureScopeRef {
+    var generated: Components.Schemas.CreateSignatureInput.ScopePayload {
+        // The enum cases are member-for-member identical to `SignatureScope`;
+        // a raw value that does not map would be a spec change, and `user` is the
+        // same least-surprising fallback `Signature.init` already uses.
+        .init(_type: .init(rawValue: type.rawValue) ?? .user, id: id)
+    }
+}
+
+nonisolated extension CreateSignatureInput {
+    var generated: Components.Schemas.CreateSignatureInput {
+        .init(name: name, html: html, scope: scope.generated, isDefault: isDefault)
+    }
+}
+
+nonisolated extension UpdateSignatureInput {
+    var generated: Components.Schemas.UpdateSignatureInput {
+        .init(name: name, html: html, isDefault: isDefault)
     }
 }
 

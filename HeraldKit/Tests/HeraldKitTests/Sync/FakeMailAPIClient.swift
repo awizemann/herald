@@ -27,6 +27,11 @@ actor FakeMailAPIClient: MailAPIClient {
         case replyToMessage(ReplyInput)
         case forwardMessage(ForwardInput)
         case listSignatures(from: String)
+        // Signature management (upstream 1.4.2, scope `signatures:manage`).
+        case createSignature(CreateSignatureInput)
+        case listManageableSignatures
+        case updateSignature(id: String, UpdateSignatureInput)
+        case deleteSignature(String)
         // Labels (P8).
         case listLabels
         case listMessagesByLabel(labelID: String, cursor: String?)
@@ -556,6 +561,102 @@ actor FakeMailAPIClient: MailAPIClient {
         calls.append(.listSignatures(from: address))
         if let signatureFailure { throw signatureFailure }
         return signaturesByAddress[address.lowercased()] ?? .empty
+    }
+
+    // MARK: - Signature management (upstream 1.4.2)
+
+    private var manageableSignatures: [Signature] = []
+    private var managementFailure: MailAPIError?
+    private var nextSignatureID = 1
+
+    func setManageableSignatures(_ signatures: [Signature]) { manageableSignatures = signatures }
+
+    /// An account that consented before Herald asked for `signatures:manage` gets
+    /// 403 `insufficient_scope`; a server older than 1.4.2 answers `.notFound`.
+    func setSignatureManagementFailure(_ failure: MailAPIError?) { managementFailure = failure }
+
+    func createSignature(_ input: CreateSignatureInput) async throws -> Signature {
+        calls.append(.createSignature(input))
+        if let managementFailure { throw managementFailure }
+        // Names are unique WITHIN a scope upstream, and a new default demotes the
+        // previous one of that scope — both modelled so an editor test can see them.
+        guard !manageableSignatures.contains(where: {
+            $0.scope == input.scope.type && $0.scopeID == input.scope.id && $0.name == input.name
+        }) else {
+            throw MailAPIError.server(code: "SIGNATURE_INVALID", message: "Duplicate name in scope")
+        }
+        let created = Signature(
+            id: "sig-\(nextSignatureID)",
+            name: input.name,
+            html: input.html,
+            text: input.html,
+            scope: input.scope.type,
+            scopeID: input.scope.id,
+            scopeLabel: input.scope.id,
+            isDefault: input.isDefault ?? false,
+            createdAt: Date(timeIntervalSince1970: 0),
+            updatedAt: Date(timeIntervalSince1970: 0)
+        )
+        nextSignatureID += 1
+        if created.isDefault { demoteDefaults(scope: created.scope, scopeID: created.scopeID) }
+        manageableSignatures.append(created)
+        return created
+    }
+
+    func listManageableSignatures() async throws -> [Signature] {
+        calls.append(.listManageableSignatures)
+        if let managementFailure { throw managementFailure }
+        return manageableSignatures
+    }
+
+    func updateSignature(id: String, with input: UpdateSignatureInput) async throws -> Signature {
+        calls.append(.updateSignature(id: id, input))
+        if let managementFailure { throw managementFailure }
+        guard let index = manageableSignatures.firstIndex(where: { $0.id == id }) else {
+            throw MailAPIError.notFound
+        }
+        let current = manageableSignatures[index]
+        let isDefault = input.isDefault ?? current.isDefault
+        if isDefault, !current.isDefault { demoteDefaults(scope: current.scope, scopeID: current.scopeID) }
+        let updated = Signature(
+            id: current.id,
+            name: input.name ?? current.name,
+            html: input.html ?? current.html,
+            text: input.html ?? current.text,
+            scope: current.scope,
+            scopeID: current.scopeID,
+            scopeLabel: current.scopeLabel,
+            isDefault: isDefault,
+            createdAt: current.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        manageableSignatures[index] = updated
+        return updated
+    }
+
+    func deleteSignature(id: String) async throws {
+        calls.append(.deleteSignature(id))
+        if let managementFailure { throw managementFailure }
+        guard manageableSignatures.contains(where: { $0.id == id }) else { throw MailAPIError.notFound }
+        manageableSignatures.removeAll { $0.id == id }
+    }
+
+    private func demoteDefaults(scope: SignatureScope, scopeID: String) {
+        manageableSignatures = manageableSignatures.map { signature in
+            guard signature.isDefault, signature.scope == scope, signature.scopeID == scopeID else { return signature }
+            return Signature(
+                id: signature.id,
+                name: signature.name,
+                html: signature.html,
+                text: signature.text,
+                scope: signature.scope,
+                scopeID: signature.scopeID,
+                scopeLabel: signature.scopeLabel,
+                isDefault: false,
+                createdAt: signature.createdAt,
+                updatedAt: signature.updatedAt
+            )
+        }
     }
 
     /// The server's `resolveSignatureSelection`, minus the access checks.

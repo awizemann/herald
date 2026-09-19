@@ -32,6 +32,16 @@ public nonisolated struct BinaryPayload: Sendable, Hashable {
 ///
 /// The whole app codes against this; ``HQBaseAPIClient`` is the only production
 /// implementation and tests inject fakes. All methods throw ``MailAPIError``.
+///
+/// LABEL EMBEDDING IS A CLIENT-LEVEL OPTION, NOT A PER-CALL PARAMETER.
+/// Upstream 1.4.2 accepts `includeLabels=true` on six different operations. Adding
+/// a defaulted `Bool` to each of them would leave the decision spread over every
+/// call site in `SyncEngine`, and every test fake would have to grow six more
+/// parameters it does not care about. Instead ``HQBaseAPIClient`` takes
+/// `includeLabels` at construction — there is exactly ONE production construction
+/// site (`AppEnvironment`) — and applies it to every operation that accepts it. The
+/// protocol is unchanged, so nothing else recompiles, and consumers read membership
+/// off ``MessageSummary/labels`` (`nil` = the server said nothing).
 public nonisolated protocol MailAPIClient: Sendable {
     // MARK: Mailboxes
     func listMailboxes() async throws -> [Mailbox]
@@ -64,11 +74,11 @@ public nonisolated protocol MailAPIClient: Sendable {
     /// One page of the messages carrying `labelID`, across every folder and every
     /// readable mailbox.
     ///
-    /// This is the ONLY way to learn which messages carry a label on the v1 API:
-    /// v1 message, conversation and change payloads have no `labels` field (the
-    /// server gates the embed on `/api/v2` — `includeLabels` in
-    /// `worker/features/messages/routes.ts`), so membership is derived by
-    /// filtering, not read off the row.
+    /// Before upstream 1.4.2 this was the ONLY way to learn which messages carry a
+    /// label: v1 payloads had no `labels` field at all. Since 1.4.2 an
+    /// `includeLabels` client reads membership straight off
+    /// ``MessageSummary/labels``, and this sweep is the reconciliation path —
+    /// label DELETION never touches a message row, so nothing else notices it.
     func listMessages(labelID: String, limit: Int?, cursor: String?) async throws -> MessagePage
     /// Adds (`assigned: true`) or removes one label on one message.
     @discardableResult
@@ -115,6 +125,26 @@ public nonisolated protocol MailAPIClient: Sendable {
     /// `automatic` selection resolves to. Requires a server at upstream 1.3.4 or
     /// newer; older ones answer 404.
     func signatures(from address: String) async throws -> SignatureCandidates
+
+    // MARK: Signature management
+    //
+    // All four need the `signatures:manage` scope (upstream 1.4.2+). An account
+    // that consented before Herald asked for it gets 403 `insufficient_scope`, and
+    // a server older than 1.4.2 answers 404 — neither is an error state to retry,
+    // both mean "hide the editor and offer a re-sign-in".
+
+    /// Creates a signature in the given scope. 400 `SIGNATURE_INVALID` on a
+    /// duplicate name within the scope or markup the sanitiser rejects.
+    func createSignature(_ input: CreateSignatureInput) async throws -> Signature
+    /// Every signature the principal may EDIT — a different question from
+    /// ``signatures(from:)``, which asks what is usable from one address.
+    func listManageableSignatures() async throws -> [Signature]
+    /// Partial update; the server requires at least one field
+    /// (``UpdateSignatureInput/isEmpty``).
+    func updateSignature(id: String, with input: UpdateSignatureInput) async throws -> Signature
+    /// Deleting leaves existing drafts' stored snapshots intact — the server nulls
+    /// `drafts.signature_id` and keeps the snapshot content.
+    func deleteSignature(id: String) async throws
 
     // MARK: Sending
     func send(_ input: SendInput) async throws -> MessageSummary

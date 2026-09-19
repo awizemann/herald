@@ -19,6 +19,17 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
     /// (`resolveSendSignature`). Omitting it on a draft-less send means NO
     /// signature, not the default one.
     public var signature: SignatureSelection?
+    /// Optional retry identity for this send (1–100 chars, upstream 1.4.0+).
+    ///
+    /// The server keys a stored send operation on principal + key: replaying the
+    /// SAME key with an identical body returns the original 201 instead of
+    /// delivering twice, while the same key with a different body is 409
+    /// `SEND_KEY_CONFLICT`. Send identity falls back to `draft:<draftId>` and then
+    /// to a fresh id, so a send WITHOUT a draft (a forward, or a send before the
+    /// first autosave) is the case that needs this to be retry-safe.
+    ///
+    /// Plumbed only; ``OutboxService`` still leaves it `nil`.
+    public var idempotencyKey: String?
 
     public init(
         from: String,
@@ -30,7 +41,8 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
         html: String? = nil,
         attachmentIDs: [String] = [],
         draftID: String? = nil,
-        signature: SignatureSelection? = nil
+        signature: SignatureSelection? = nil,
+        idempotencyKey: String? = nil
     ) {
         self.from = from
         self.to = to
@@ -42,6 +54,7 @@ public nonisolated struct SendInput: Sendable, Hashable, Codable {
         self.attachmentIDs = attachmentIDs
         self.draftID = draftID
         self.signature = signature
+        self.idempotencyKey = idempotencyKey
     }
 }
 
@@ -77,6 +90,17 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
     /// Signature to apply. `POST /forward` takes NO `draftId`, so this selection
     /// is always what decides — there is no stored snapshot to fall back on.
     public var signature: SignatureSelection?
+    /// Optional retry identity for this send (1–100 chars, upstream 1.4.0+).
+    ///
+    /// The server keys a stored send operation on principal + key: replaying the
+    /// SAME key with an identical body returns the original 201 instead of
+    /// delivering twice, while the same key with a different body is 409
+    /// `SEND_KEY_CONFLICT`. Send identity falls back to `draft:<draftId>` and then
+    /// to a fresh id, so a send WITHOUT a draft (a forward, or a send before the
+    /// first autosave) is the case that needs this to be retry-safe.
+    ///
+    /// Plumbed only; ``OutboxService`` still leaves it `nil`.
+    public var idempotencyKey: String?
 
     public init(
         messageID: String,
@@ -89,7 +113,8 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
         html: String? = nil,
         attachmentIDs: [String] = [],
         includeOriginalAttachments: Bool = true,
-        signature: SignatureSelection? = nil
+        signature: SignatureSelection? = nil,
+        idempotencyKey: String? = nil
     ) {
         self.messageID = messageID
         self.from = from
@@ -102,6 +127,7 @@ public nonisolated struct ForwardInput: Sendable, Hashable, Codable {
         self.attachmentIDs = attachmentIDs
         self.includeOriginalAttachments = includeOriginalAttachments
         self.signature = signature
+        self.idempotencyKey = idempotencyKey
     }
 }
 
@@ -123,6 +149,17 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
     /// (`resolveSendSignature`). Omitting it on a draft-less send means NO
     /// signature, not the default one.
     public var signature: SignatureSelection?
+    /// Optional retry identity for this send (1–100 chars, upstream 1.4.0+).
+    ///
+    /// The server keys a stored send operation on principal + key: replaying the
+    /// SAME key with an identical body returns the original 201 instead of
+    /// delivering twice, while the same key with a different body is 409
+    /// `SEND_KEY_CONFLICT`. Send identity falls back to `draft:<draftId>` and then
+    /// to a fresh id, so a send WITHOUT a draft (a forward, or a send before the
+    /// first autosave) is the case that needs this to be retry-safe.
+    ///
+    /// Plumbed only; ``OutboxService`` still leaves it `nil`.
+    public var idempotencyKey: String?
 
     public init(
         messageID: String,
@@ -134,7 +171,8 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
         html: String? = nil,
         attachmentIDs: [String] = [],
         draftID: String? = nil,
-        signature: SignatureSelection? = nil
+        signature: SignatureSelection? = nil,
+        idempotencyKey: String? = nil
     ) {
         self.messageID = messageID
         self.from = from
@@ -146,5 +184,6 @@ public nonisolated struct ReplyInput: Sendable, Hashable, Codable {
         self.attachmentIDs = attachmentIDs
         self.draftID = draftID
         self.signature = signature
+        self.idempotencyKey = idempotencyKey
     }
 }

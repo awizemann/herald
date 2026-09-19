@@ -79,7 +79,20 @@ public nonisolated struct OAuthConfiguration: Sendable, Hashable {
 
 /// Resolves an origin's OAuth endpoints from its `.well-known` documents.
 public nonisolated struct OAuthDiscovery: Sendable {
-    /// The API permissions Herald asks for when the server does not advertise its scopes.
+    /// The API permissions Herald actually uses, in the order they are requested.
+    ///
+    /// This is an EXPLICIT allow-list, not "everything the resource advertises".
+    /// Herald used to request the whole of `scopes_supported`, which meant any
+    /// scope a future server release added would be pulled into the consent screen
+    /// the next time someone signed in — silently widening what the user grants to
+    /// permissions the app has no code for. Upstream 1.4.2 advertising
+    /// `signatures:manage` is exactly that case. A scope Herald does not use is a
+    /// scope Herald must not ask for, so new ones are added here deliberately.
+    public static let usedAPIScopes = ["mail:read", "mail:write", "mail:send", "signatures:manage"]
+    /// What Herald asks for when the server advertises NOTHING (metadata missing or
+    /// unreadable). Deliberately the conservative pre-1.4.2 set: with no advertised
+    /// list there is no way to tell a 1.4.2 server from a 1.3.4 one, and asking a
+    /// 1.3.4 server for `signatures:manage` fails the authorize call outright.
     public static let defaultScopes = ["mail:read", "mail:write", "mail:send", "offline_access"]
     /// Always requested in addition to whatever the resource advertises. `offline_access`
     /// is NOT an API permission, so HQBase's protected-resource metadata deliberately
@@ -96,11 +109,26 @@ public nonisolated struct OAuthDiscovery: Sendable {
         self.session = session
     }
 
-    /// Advertised API scopes (or the defaults) plus the scopes Herald must always ask
-    /// for, deduplicated and order-preserving.
+    /// The scopes to request: ``usedAPIScopes`` INTERSECTED with what the resource
+    /// advertises, plus ``alwaysRequestedScopes``. Deduplicated, order-preserving.
+    ///
+    /// Two directions, both deliberate:
+    /// - Intersecting DOWN keeps a server that predates a scope from being asked
+    ///   for it. A 1.3.4 server does not advertise `signatures:manage`; asking
+    ///   anyway is a 400 on the authorize call, i.e. no sign-in at all.
+    /// - Not taking the advertised list wholesale keeps an unknown FUTURE scope
+    ///   out of the consent screen: Herald asks only for what it has code for.
+    ///
+    /// An empty advertised list means the metadata document is missing or
+    /// unreadable, not that the server supports nothing — fall back to the
+    /// defaults rather than requesting `offline_access` alone.
     public static func requestedScopes(advertised: [String]) -> [String] {
         var seen = Set<String>()
-        let base = advertised.isEmpty ? defaultScopes : advertised
+        guard !advertised.isEmpty else {
+            return defaultScopes.filter { seen.insert($0).inserted }
+        }
+        let supported = Set(advertised)
+        let base = usedAPIScopes.filter(supported.contains)
         return (base + alwaysRequestedScopes).filter { seen.insert($0).inserted }
     }
 

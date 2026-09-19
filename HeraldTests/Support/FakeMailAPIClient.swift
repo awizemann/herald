@@ -319,6 +319,15 @@ actor FakeMailAPIClient: MailAPIClient {
     }
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws {}
     func signatures(from address: String) async throws -> SignatureCandidates { .empty }
+    // Signature management (upstream 1.4.2). The app-hosted suites exercise the view
+    // models, not the editor, so these are unimplemented stubs — HeraldKit's own
+    // FakeMailAPIClient carries the working in-memory CRUD.
+    func createSignature(_ input: CreateSignatureInput) async throws -> Signature { throw MailAPIError.notFound }
+    func listManageableSignatures() async throws -> [Signature] { [] }
+    func updateSignature(id: String, with input: UpdateSignatureInput) async throws -> Signature {
+        throw MailAPIError.notFound
+    }
+    func deleteSignature(id: String) async throws { throw MailAPIError.notFound }
     func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func forward(_ input: ForwardInput) async throws -> MessageSummary { throw MailAPIError.notFound }

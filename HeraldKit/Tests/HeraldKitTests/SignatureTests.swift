@@ -143,8 +143,9 @@ import Testing
     /// `allOf[DraftInput, {…signature: SignatureSnapshot}]`, and `DraftInput`'s
     /// own `signature` is a `SignatureSelection` — so that ONE key was decoded
     /// twice, and a null id matched no selection case and failed the WHOLE draft.
-    /// Herald's spec splits the response fields out as `DraftFields`; this test
-    /// fails if a regenerated spec drops that split.
+    /// The fix is the `DraftFields` split, which UPSTREAM adopted at 1.4.2 (Herald
+    /// issue #113) — it is no longer a local spec patch to re-apply after a regen.
+    /// This test fails if a future spec ever merges the two halves back together.
     @Test("A draft whose signature was deleted still decodes")
     func draftWithADeletedSignatureDecodes() async throws {
         let server = FakeServer()

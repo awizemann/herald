@@ -20,6 +20,15 @@ public nonisolated struct MessageSummary: Sendable, Hashable, Codable, Identifia
     public let starredAt: Date?
     public let hasAttachments: Bool
     public let createdAt: Date
+    /// Label membership, embedded by the server only when the request asked for
+    /// it (`includeLabels=true`, upstream 1.4.2+).
+    ///
+    /// THE `nil` / `[]` DISTINCTION IS LOAD-BEARING. `nil` means the row carries
+    /// NO statement about labels — the key was absent, either because the client
+    /// did not ask or because the server predates the embed — so a cached
+    /// membership must be left alone. `[]` is the server saying "this message
+    /// has no labels", which DOES clear the cache. Never default this to `[]`.
+    public let labels: [MailLabel]?
 
     public init(
         id: String,
@@ -36,7 +45,8 @@ public nonisolated struct MessageSummary: Sendable, Hashable, Codable, Identifia
         readAt: Date?,
         starredAt: Date?,
         hasAttachments: Bool,
-        createdAt: Date
+        createdAt: Date,
+        labels: [MailLabel]? = nil
     ) {
         self.id = id
         self.threadID = threadID
@@ -53,6 +63,7 @@ public nonisolated struct MessageSummary: Sendable, Hashable, Codable, Identifia
         self.starredAt = starredAt
         self.hasAttachments = hasAttachments
         self.createdAt = createdAt
+        self.labels = labels
     }
 
     public var isUnread: Bool { readAt == nil }
@@ -135,6 +146,11 @@ public nonisolated struct MessageDetail: Sendable, Hashable, Codable, Identifiab
     /// RFC 5322 `Message-ID` header.
     public let rfcMessageID: String?
     public let inReplyTo: String?
+    /// The addresses the server would reply to for inbound mail (`Reply-To`, else
+    /// the sender), added upstream 1.4.2. `nil` on an older server — which is NOT
+    /// the same as "reply to the From address": omitting `to` on `POST /reply`
+    /// already lets the server pick, so `nil` means "do not prefill", not "empty".
+    public let replyTo: [String]?
     public let references: [String]
     public let attachments: [Attachment]
 
@@ -148,7 +164,8 @@ public nonisolated struct MessageDetail: Sendable, Hashable, Codable, Identifiab
         rfcMessageID: String?,
         inReplyTo: String?,
         references: [String],
-        attachments: [Attachment]
+        attachments: [Attachment],
+        replyTo: [String]? = nil
     ) {
         self.summary = summary
         self.cc = cc
@@ -158,6 +175,7 @@ public nonisolated struct MessageDetail: Sendable, Hashable, Codable, Identifiab
         self.htmlAvailable = htmlAvailable
         self.rfcMessageID = rfcMessageID
         self.inReplyTo = inReplyTo
+        self.replyTo = replyTo
         self.references = references
         self.attachments = attachments
     }

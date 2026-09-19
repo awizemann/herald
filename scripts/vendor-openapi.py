@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Normalise the vendored HQBase Mail API v1 spec for swift-openapi-generator.
 
-Why this exists: the upstream spec expresses nullable properties as OAS 3.1
+Two independent rewrites, both working around swift-openapi-generator 1.7 gaps.
+
+1. NULLABLE PROPERTIES. The upstream spec expresses nullable properties as OAS 3.1
 `anyOf: [ {..}, {type: "null"} ]`. swift-openapi-generator 1.7 does not support
 the null type: it logs "Schema null is not supported ... skipping" and DROPS THE
 PROPERTY ENTIRELY from the generated types (it does NOT emit an optional, as was
@@ -10,6 +12,20 @@ previously assumed). That silently loses readAt/starredAt/mailboxId/nextCursor/â
 Fix: rewrite each `anyOf: [S, {type: null}]` to plain `S`, and remove the
 property name from its object's `required` list so the generator emits a Swift
 Optional. Semantics are preserved for our client (absent == null).
+
+2. "AT LEAST ONE OF" OBJECTS. Upstream spells `UpdateSignatureInput` as an object
+with `properties` plus a top-level `anyOf: [{required:[name]}, {required:[html]},
+{required:[isDefault]}]`. Generator 1.7 reads that as a three-branch anyOf of
+*separate* schemas, and because each branch names a property it does not itself
+declare, it warns "only appears in the required list ... skipping this property"
+and emits three EMPTY structs â€” the real `name`/`html`/`isDefault` fields vanish
+and the type can encode nothing at all.
+
+Fix: when a schema has its own `properties` and every `anyOf` branch carries
+nothing but `required`, drop the `anyOf`. The result is a plain object whose
+properties are all optional; the "at least one" rule is a server-side validation
+that the client cannot usefully enforce at the type level anyway (the server
+answers 400 SIGNATURE_INVALID).
 
 Usage (idempotent):
     python3 scripts/vendor-openapi.py [path-to-openapi.json]
@@ -46,13 +62,26 @@ def unwrap_nullable(schema):
     return merged, True
 
 
-def walk(node, changed):
+def collapse_at_least_one_of(node, collapsed):
+    """Drop a top-level `anyOf` that only re-states `required` over own properties."""
+    branches = node.get("anyOf")
+    if not isinstance(branches, list) or not branches or not isinstance(node.get("properties"), dict):
+        return node
+    if not all(isinstance(b, dict) and set(b.keys()) == {"required"} for b in branches):
+        return node
+    node = {key: value for key, value in node.items() if key != "anyOf"}
+    collapsed.append(sorted({name for b in branches for name in b["required"]}))
+    return node
+
+
+def walk(node, changed, collapsed):
     if isinstance(node, list):
-        return [walk(item, changed) for item in node]
+        return [walk(item, changed, collapsed) for item in node]
     if not isinstance(node, dict):
         return node
 
-    node = {key: walk(value, changed) for key, value in node.items()}
+    node = {key: walk(value, changed, collapsed) for key, value in node.items()}
+    node = collapse_at_least_one_of(node, collapsed)
 
     props = node.get("properties")
     if isinstance(props, dict):
@@ -74,9 +103,11 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT
     spec = json.loads(path.read_text())
     changed = []
-    spec = walk(spec, changed)
+    collapsed = []
+    spec = walk(spec, changed, collapsed)
     path.write_text(json.dumps(spec, indent=2) + "\n")
     print(f"{path}: relaxed {len(changed)} nullable properties: {sorted(set(changed))}")
+    print(f"{path}: collapsed {len(collapsed)} at-least-one-of objects: {collapsed}")
 
 
 if __name__ == "__main__":

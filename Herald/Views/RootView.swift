@@ -121,26 +121,18 @@ struct MailWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        // Compose leads the toolbar, where Mail puts it: `.navigation` is the
-        // leading section, beside the sidebar toggle and over the message list.
-        // Before this, composing was reachable only from the menu bar — and ⌘N
-        // did not reach it either (issue #10).
+        // One ACTION stack — Compose, Archive, Trash — and Refresh on its own
+        // beside the search field (owner's layout call, 2026-09-20). Compose sits
+        // with the triage buttons rather than in the leading `.navigation` slot
+        // over the list, so every button that does something to mail is in one
+        // place and the two "housekeeping" controls (Refresh, Search) sit apart.
         //
-        // No keyboard shortcut on the button: ⌘N belongs to the File menu's
-        // "New Message", and two owners of one shortcut is the bug this fixes.
-        ToolbarItem(placement: .navigation) {
+        // No keyboard shortcut on Compose: ⌘N belongs to the File menu's
+        // "New Message", and two owners of one shortcut is the bug #10 fixed.
+        ToolbarItemGroup {
             Button { model.requestCompose(.new) } label: {
                 Image(systemName: "square.and.pencil")
                     .iconButtonStyle("New Message")
-            }
-        }
-
-        ToolbarItemGroup {
-            // No shortcut here: ⌘⇧K belongs to the File menu's "Get New Mail",
-            // and two owners of one shortcut is a coin toss over which fires.
-            Button { Task { await model.refresh() } } label: {
-                Image(systemName: "arrow.clockwise")
-                    .iconButtonStyle("Refresh")
             }
 
             // No keyboard shortcuts on these: Mail's muscle-memory `e` lives on
@@ -148,6 +140,16 @@ struct MailWindow: View {
             // a toolbar shortcut it was window-global and typing "e" into the
             // search field archived a thread.
             TriageButtons(model: model)
+        }
+
+        // Its own item, so it renders as a separate group between the action
+        // stack and the search field. No shortcut here: ⌘⇧K belongs to the File
+        // menu's "Get New Mail".
+        ToolbarItem {
+            Button { Task { await model.refresh() } } label: {
+                Image(systemName: "arrow.clockwise")
+                    .iconButtonStyle("Refresh")
+            }
         }
     }
 

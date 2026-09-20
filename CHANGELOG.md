@@ -10,6 +10,20 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-20
+
+### Fixed
+- **⌘N now opens a new message.** It used to open a second main window on the Inbox, because the
+  system's built-in New Window command also owns ⌘N and won the tie. New Window is gone: Herald
+  has one mailbox view, so a second window was only ever a mirror of the first. Herald #10.
+- **A Compose button in the toolbar.** New Message was reachable only from the File menu; it now
+  leads the window toolbar, where Mail puts it. Herald #10.
+
+### Added
+- **Reply, Reply All and Forward in the row context menu**, ahead of the triage actions and in the
+  same order as the Message menu. They act on the row you right-clicked, not the selection, and are
+  dimmed for multiple selections. Herald #11.
+
 ## [0.5.0] - 2026-09-19
 
 Adopts HQBase 1.4.0–1.4.2. Everything new switches itself on by what the server answers, so

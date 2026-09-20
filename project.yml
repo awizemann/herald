@@ -76,8 +76,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald
         PRODUCT_NAME: Herald
-        MARKETING_VERSION: "0.5.0"
-        CURRENT_PROJECT_VERSION: 10
+        MARKETING_VERSION: "0.5.1"
+        CURRENT_PROJECT_VERSION: 11
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity

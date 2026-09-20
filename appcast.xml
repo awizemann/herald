@@ -3,38 +3,23 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.5.0</title>
-            <pubDate>Sat, 19 Sep 2026 20:48:27 -0400</pubDate>
-            <sparkle:version>10</sparkle:version>
-            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <title>0.5.1</title>
+            <pubDate>Sun, 20 Sep 2026 08:52:19 -0400</pubDate>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<p>Adopts HQBase 1.4.0–1.4.2. Everything new switches itself on by what the server answers, so Herald keeps working unchanged on 1.3.4 and 1.4.0 instances.</p>
+            <description><![CDATA[<h3>Fixed</h3>
+<ul>
+<li><strong>⌘N now opens a new message.</strong> It used to open a second main window on the Inbox, because the system&#x27;s built-in New Window command also owns ⌘N and won the tie. New Window is gone: Herald has one mailbox view, so a second window was only ever a mirror of the first. Herald #10.</li>
+<li><strong>A Compose button in the toolbar.</strong> New Message was reachable only from the File menu; it now leads the window toolbar, where Mail puts it. Herald #10.</li>
+</ul>
 <h3>Added</h3>
 <ul>
-<li><strong>Signatures in Settings</strong> (HQBase 1.4.2). A new Settings ▸ Signatures tab lists the signatures you may manage, grouped by personal, mailbox and domain, with create, edit, delete, default flag and a live preview rendered with the same protections as the reading pane. On an older server the tab says so instead of failing; an account signed in before this release needs one fresh sign-in to grant the new permission, and the tab tells you that too.</li>
-<li><strong>Reply-To is honoured</strong> when a message names preferred reply addresses (HQBase 1.4.0): Reply pre-fills them instead of the sender.</li>
-</ul>
-<h3>Changed</h3>
-<ul>
-<li><strong>Labels update immediately</strong> on HQBase 1.4.2. Label membership now arrives on every message row and every change-journal entry, so a label applied in the web app shows on the row within one sync pass instead of waiting for the two-minute sweep. The per-label sweep now runs every thirty minutes as a safety net (and immediately when the label list changes). Older servers keep the previous cadence.</li>
-<li><strong>Sending is retry-safe</strong> (HQBase 1.4.0). Every send, reply and forward carries a stable retry identity, so clicking Send again after a timeout replays the original delivery instead of sending a second copy. Forwards had no such identity before. If the server reports that a send is still being recovered, Herald says so and does not let you resend it.</li>
-<li><strong>Sign-ins outlive the browser session</strong> on HQBase 1.4.2: signing out of the web app or letting its session expire no longer signs Herald out. The automatic re-sign-in stays for revocation and password resets.</li>
-<li>Herald now asks the server only for the permissions it actually uses, so a future server release cannot widen the consent screen on its own.</li>
-</ul>
-<h3>Fixed</h3>
-<ul>
-<li>A label you just applied could disappear for up to one sweep if a sync pass was already in flight; in-flight label changes are now fenced from that pass.</li>
-<li>A sync pass that failed part-way through after writing label changes left the chips stale until the next label edit.</li>
-<li>A held Send button now states why it is held, and ⌘⇧D still announces the reason instead of doing nothing.</li>
-<li>The signature preview no longer opens blank for a quarter of a second, announces errors to VoiceOver, and fits the Settings window at every text size.</li>
-<li>Signing out of one account while another was still restoring at launch could bring the signed-out account back.</li>
-<li>A Keychain read failure during a token refresh is now reported and aborts the refresh, rather than being mistaken for &quot;nothing stored&quot; and spending a token another Herald process may have already rotated.</li>
-<li>Server error text is never written to the system log from the signatures pane.</li>
-<li>The flaky new-mail notification test had a wait that could never fail; fixed at the cause.</li>
+<li><strong>Reply, Reply All and Forward in the row context menu</strong>, ahead of the triage actions and in the same order as the Message menu. They act on the row you right-clicked, not the selection, and are dimmed for multiple selections. Herald #11.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.5.0/Herald-0.5.0.zip" length="3745934" type="application/octet-stream" sparkle:edSignature="XFj2fR/3fSqTobD+Uek2rB+eik+rD1JF/3pPuorUA8htLw1IPS70c0cHdkbuLfiJ7OtYFy+EkXcOHfMRwY23Cw=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.5.1/Herald-0.5.1.zip" length="3748984" type="application/octet-stream" sparkle:edSignature="YX/jWhsMlPk1CWcqHYLPKj7IuurxZ7URVjfhgD5nIK07DRpkuF3AfxOSENUWHHOkdCkhmwfEu/7oZaPklJkMCw=="/>
         </item>
     </channel>
 </rss>

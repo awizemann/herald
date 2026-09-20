@@ -17,7 +17,7 @@ addresses, search text, mailbox names, account details, file names, or anything 
 
 ## Status
 
-Early, working, dogfooded against a real HQBase ≥ 1.1.0 instance:
+Early, working, dogfooded against real HQBase 1.4.x instances:
 
 - Sign in with OAuth (PKCE, dynamic client registration, tokens in the Keychain); multiple accounts
 - All your mailboxes, Inbox / Starred / Sent / Archived / Trash, plus a cached Drafts folder
@@ -31,7 +31,10 @@ Early, working, dogfooded against a real HQBase ≥ 1.1.0 instance:
 ## Requirements
 
 - macOS 15 (Sequoia) or later, Apple silicon
-- An HQBase instance running **1.1.0 or later** (public Mail API + OAuth bearer support)
+- An HQBase instance running **1.3.4 or later**. Herald detects newer server features by what the
+  server answers, never by version: on **1.4.2 or later** it also gets label membership straight
+  from the server, retry-safe sending, signature management in Settings, and sign-ins that outlive
+  the browser session.
 - Xcode 27 to build
 
 ## Build

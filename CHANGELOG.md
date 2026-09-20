@@ -10,6 +10,53 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-19
+
+Adopts HQBase 1.4.0–1.4.2. Everything new switches itself on by what the server answers, so
+Herald keeps working unchanged on 1.3.4 and 1.4.0 instances.
+
+### Added
+- **Signatures in Settings** (HQBase 1.4.2). A new Settings ▸ Signatures tab lists the signatures
+  you may manage, grouped by personal, mailbox and domain, with create, edit, delete, default flag
+  and a live preview rendered with the same protections as the reading pane. On an older server
+  the tab says so instead of failing; an account signed in before this release needs one fresh
+  sign-in to grant the new permission, and the tab tells you that too.
+- **Reply-To is honoured** when a message names preferred reply addresses (HQBase 1.4.0): Reply
+  pre-fills them instead of the sender.
+
+### Changed
+- **Labels update immediately** on HQBase 1.4.2. Label membership now arrives on every message row
+  and every change-journal entry, so a label applied in the web app shows on the row within one
+  sync pass instead of waiting for the two-minute sweep. The per-label sweep now runs every thirty
+  minutes as a safety net (and immediately when the label list changes). Older servers keep the
+  previous cadence.
+- **Sending is retry-safe** (HQBase 1.4.0). Every send, reply and forward carries a stable retry
+  identity, so clicking Send again after a timeout replays the original delivery instead of
+  sending a second copy. Forwards had no such identity before. If the server reports that a send
+  is still being recovered, Herald says so and does not let you resend it.
+- **Sign-ins outlive the browser session** on HQBase 1.4.2: signing out of the web app or letting
+  its session expire no longer signs Herald out. The automatic re-sign-in stays for revocation and
+  password resets.
+- Herald now asks the server only for the permissions it actually uses, so a future server release
+  cannot widen the consent screen on its own.
+
+### Fixed
+- A label you just applied could disappear for up to one sweep if a sync pass was already in
+  flight; in-flight label changes are now fenced from that pass.
+- A sync pass that failed part-way through after writing label changes left the chips stale until
+  the next label edit.
+- A held Send button now states why it is held, and ⌘⇧D still announces the reason instead of
+  doing nothing.
+- The signature preview no longer opens blank for a quarter of a second, announces errors to
+  VoiceOver, and fits the Settings window at every text size.
+- Signing out of one account while another was still restoring at launch could bring the signed-out
+  account back.
+- A Keychain read failure during a token refresh is now reported and aborts the refresh, rather
+  than being mistaken for "nothing stored" and spending a token another Herald process may have
+  already rotated.
+- Server error text is never written to the system log from the signatures pane.
+- The flaky new-mail notification test had a wait that could never fail; fixed at the cause.
+
 ## [0.4.1] - 2026-09-06
 
 ### Fixed

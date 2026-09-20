@@ -12,8 +12,6 @@ reviewed: 2026-09-09
 reviewed_by: audit:claude-code (background)
 ---
 
-Herald #9 (bermanto, v0.4.0): sign-in hung with a spinner and no browser window, unrecoverable without force-quitting. Root cause is out of process — `ASWebAuthenticationSession.start()` returns `true` once the request reaches the per-user authentication agent, and a wedged agent neither presents nor ever calls back (it survives app relaunches, which matches the report). Nothing in Herald can fix that agent, so the fix is to SURVIVE it. Landed on `fix/signin-hang-recovery` for 0.4.1.</content>
-
 ## Observations
 - [fact] `ASWebAuthenticationSession.start() == true` only means the request reached the out-of-process per-user authentication agent; a wedged agent presents no window and never invokes the completion handler, so the awaiting continuation is simply never told anything — not a missing resume in our code #aswebauth
 - [decision] `WebAuthenticationRunner.authorize` arms a 45s presentation watchdog AFTER `start()` succeeds (`presentationDeadline`), cancels the session and fails with `.webAuthenticationFailed(presentationTimeoutMessage)`; the watchdog Task is torn down inside `finish(_:with:)`, the single resumption point, so a slow-but-successful consent is never killed and no timer leaks. Deadline, sleep and a `WebAuthenticationDriving` factory are injected so it is testable without a window server #watchdog

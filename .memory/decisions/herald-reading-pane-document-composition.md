@@ -5,9 +5,11 @@ permalink: hqbase-mac/decisions/herald-reading-pane-document-composition
 tags: [reading-pane, html, webkit, security, design]
 source_paths: [Herald/App/MailViewModel+HTMLAssembly.swift, Herald/App/MailViewModel.swift, Herald/Design/MailTheme.swift, HeraldKit/Sources/HeraldKit/Model/Message.swift, HeraldTests/MessageBodyCompositionTests.swift]
 source_paths_inferred: false
-source_sha: c55fd8f3c6364fc7419e2f03d6037804118a8031
+source_sha: 4bd3bd4711d71c167135f7abec683bff2693f91a
 created: 2026-09-04
 updated: 2026-09-04
+reviewed: 2026-09-19
+reviewed_by: audit:claude-code (background)
 ---
 
 P4 (task t-d60a1704, commit c55fd8f) settled how the reading pane turns a `MessageHTML` into one document. Upstream 1.3.4 splits a body into three authored fragments (`html`, `quotedHtml`, `afterQuotedHtml`) plus per-fragment remote-image flags; Herald rendered only the first, so text written BELOW a quote was silently lost.

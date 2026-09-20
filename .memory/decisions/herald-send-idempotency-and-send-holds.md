@@ -10,14 +10,6 @@ created: 2026-09-19
 updated: 2026-09-19
 ---
 
-How Herald adopted upstream 1.4.0's send `idempotencyKey` and the two 503 send
-outcomes (U3, task t-fe56989b). Server semantics live in the API contract note;
-this records the CLIENT's rotation rule and the compose window's behaviour.
-`ComposeDraft.sendAttemptKey` is a UUID minted when the window opens, carried on
-send/reply/forward, and excluded from `hasSameEditableContent`. Forward is the
-case that mattered most: `POST /forward` has no `draftId`, so the key was its
-only possible retry identity.
-
 ## Observations
 - [decision] The send key rotates in exactly TWO places: after a successful send (so a reused compose window's next message is not deduped away) and on `SEND_KEY_CONFLICT`, followed by exactly one automatic retry — never a loop #idempotency
 - [decision] It deliberately does NOT rotate when the user edits after a failed send, though that edit provokes the 409: the server hashes the REQUEST PAYLOAD it received (`canonicalJson({kind, input})` in upstream `send/operations.ts`, verified 2026-09-19 — NOT the assembled mail), so a client-side predicate is possible but would be a second definition of "same message" that must track every hashed field (recipients, subject, text, attachment ids, signature selection, draft id) and drift when upstream adds one — letting the 409 be the authority is exact and costs one extra round trip #idempotency

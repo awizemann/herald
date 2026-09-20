@@ -5,9 +5,11 @@ permalink: hqbase-mac/decisions/herald-usage-analytics-swift-stats
 tags: [analytics, privacy, swift-stats, release]
 source_paths: [Herald/Analytics/UsageEvent.swift, Herald/Analytics/UsageTracking.swift, Herald/App/AppEnvironment.swift, scripts/release.sh, project.yml, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: false
-source_sha: b9bad49ec091e681d0c39a29f1cdb3ab45b3d234
+source_sha: 4bd3bd4711d71c167135f7abec683bff2693f91a
 created: 2026-08-18
 updated: 2026-09-04
+reviewed: 2026-09-19
+reviewed_by: audit:claude-code (background)
 ---
 
 Herald ships privacy-first, opt-out usage analytics via swift-stats 0.1.0 (hosted https://api.swiftstats.co), landed 2026-08-18 in commit b9bad49. The approved event/prop contract lives in documents/plans/usage-analytics-plan.md and is enforced in code by Herald/Analytics/UsageEvent.swift (the privacy contract) plus HeraldTests/Analytics.

@@ -8,6 +8,8 @@ source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
 updated: 2026-09-19
+reviewed: 2026-09-19
+reviewed_by: audit:claude-code (background)
 ---
 
 Verified against upstream main @ v1.1.0 (worker/auth/mail-api.ts, api/hqbase-mail-api-v1.openapi.json).

@@ -7,7 +7,7 @@ source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-09-19
+updated: 2026-09-20
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -65,3 +65,8 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 ## Update (2026-09-19 — v0.5.0 shipped)
 - [done] v0.5.0 released (build 10): HQBase 1.4.x adoption — labels from `includeLabels` rows with a 30-min reconciliation sweep and a per-pair label mutation fence, send idempotency keys + SEND_* holds, Settings ▸ Signatures behind `signatures:manage`, explicit OAuth scope allow-list, Reply-To prefill, plus the two-round audit fixes (label event drain, retained restore task, Keychain read errors, preview CSP/tokens, held-Send reason, flaky notifications test). Dry run first (the pipeline had not run since the AppEnvironment split), then notarization Accepted, main + tag pushed, appcast advertises 0.5.0/10. Minimum server stays 1.3.4; every 1.4.2 feature is detected by response shape or advertised scope #release
 - [gotcha] A `--dry-run` leaves the version bump in `project.yml` uncommitted; `git checkout project.yml` before the real run or the real run's bump commit is a no-op diff on a dirty build path #dry-run
+
+
+
+## Update (2026-09-20 — v0.5.1 shipped)
+- [done] v0.5.1 released (build 11): ⌘N fixed (`CommandGroup(replacing: .newItem)` — the system New Window owned ⌘N and won; New Window dropped because Herald has one shared MailViewModel), Compose button in the toolbar action stack with Archive/Trash and Refresh on its own beside Search (owner's layout call), Reply/Reply All/Forward leading the row context menu acting on the clicked row. Closes Herald #10 #11; #7 #9 closed the same day as fixed in 0.4.0/0.4.1 #release

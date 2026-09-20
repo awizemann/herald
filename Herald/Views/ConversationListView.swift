@@ -170,6 +170,29 @@ struct ConversationListView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first,
                let row = model.presentedConversations.first(where: { $0.id == id }) {
+                // First, and in the Message menu's order with its shortcuts, so
+                // the right-click menu mirrors the header (issue #11). They reply
+                // to the thread's LATEST message — the one the row draws — rather
+                // than to whatever the reading pane has selected: the menu fires
+                // on the row under the cursor, which need not be the selection.
+                //
+                // A multiple selection disables them: there is one composer and
+                // one reply target, so the only honest answer for several threads
+                // is "not this menu". The triage verbs below are the ones that
+                // fan out.
+                let offersReply = Self.offersReplyActions(for: ids)
+                Button("Reply") { model.requestCompose(.reply, onThread: id) }
+                    .keyboardShortcut("r", modifiers: .command)
+                    .disabled(!offersReply)
+                Button("Reply All") { model.requestCompose(.replyAll, onThread: id) }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(!offersReply)
+                Button("Forward") { model.requestCompose(.forward, onThread: id) }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(!offersReply)
+
+                Divider()
+
                 Button(row.isUnread ? "Mark as Read" : "Mark as Unread") {
                     Task { await model.toggleRead(row) }
                 }
@@ -193,6 +216,14 @@ struct ConversationListView: View {
                 LabelMenu(model: model, threadID: id)
             }
         }
+    }
+
+    /// Whether the context menu's Reply / Reply All / Forward rows are live.
+    ///
+    /// Pure and static so the rule is assertable without a rendered menu: one
+    /// composer, one reply target, so anything but a single row is dimmed.
+    nonisolated static func offersReplyActions(for ids: Set<String>) -> Bool {
+        ids.count == 1
     }
 
     /// Runs a single-key action against the selection, and passes the key on when

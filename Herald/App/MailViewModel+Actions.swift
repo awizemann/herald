@@ -216,12 +216,39 @@ extension MailViewModel {
     }
 
     func requestCompose(_ kind: ComposeRequest.Kind) {
-        record(.composeOpened(kind: Self.usageComposeKind(for: kind)))
-        composeRequest = ComposeRequest(
-            kind: kind,
+        requestCompose(
+            kind,
             messageID: selectedMessageID,
             mailboxID: selection.mailboxID ?? selectedMessage?.mailboxID
         )
+    }
+
+    /// Compose against a thread the user POINTED at rather than the one that is
+    /// selected — the conversation list's context menu, which fires on a
+    /// right-clicked row without that row becoming the selection.
+    ///
+    /// Replies target the thread's latest message, the same one the row draws and
+    /// the same one the reading pane's header would reply to. A thread that
+    /// cannot be resolved (neither cached nor a server result) opens nothing:
+    /// falling back to `.new` would silently turn a Reply into a blank message.
+    func requestCompose(_ kind: ComposeRequest.Kind, onThread threadID: String) {
+        guard let row = conversation(withID: threadID) else { return }
+        requestCompose(
+            kind,
+            messageID: row.latest.id,
+            mailboxID: selection.mailboxID ?? row.latest.mailboxID
+        )
+    }
+
+    /// The one place a ``ComposeRequest`` is made — both entry points above land
+    /// here, so the usage event and the mailbox resolution cannot drift apart.
+    private func requestCompose(
+        _ kind: ComposeRequest.Kind,
+        messageID: String?,
+        mailboxID: String?
+    ) {
+        record(.composeOpened(kind: Self.usageComposeKind(for: kind)))
+        composeRequest = ComposeRequest(kind: kind, messageID: messageID, mailboxID: mailboxID)
     }
 
     nonisolated static func usageComposeKind(for kind: ComposeRequest.Kind) -> UsageComposeKind {

@@ -1119,6 +1119,75 @@ func wait(
     }
 }
 
+/// Opening the composer: from the menu bar / toolbar (issue #10) and from the
+/// conversation list's context menu (issue #11).
+@Suite struct MailViewModelComposeRoutingTests {
+    /// The File menu's "New Message" and the toolbar's compose button share this
+    /// one path. Fails if ⌘N stops producing a compose request at all — which is
+    /// the bug in issue #10, where the built-in New Window item owned ⌘N and the
+    /// key opened a second main window instead.
+    @Test func newMessageRequestsABlankCompose() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        #expect(harness.model.composeRequest == nil)
+        harness.model.requestCompose(.new)
+
+        let request = try #require(harness.model.composeRequest)
+        #expect(request.kind == .new)
+        #expect(request.messageID == nil, "a blank message quotes nothing")
+        #expect(request.mailboxID == "mbA", "it is sent from the mailbox being listed")
+    }
+
+    /// The context menu fires on the row under the CURSOR, which need not be the
+    /// selection. Fails if the reply targets the selected message (the old
+    /// `requestCompose(_:)` path) rather than the right-clicked thread's latest
+    /// message — a reply that would go to the wrong conversation entirely.
+    @Test func contextMenuReplyTargetsTheClickedThreadsLatestMessage() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        try await harness.seedMultiMessageThread()   // t9: m9a, then m9b (newest)
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        // A DIFFERENT thread is selected, so "the selection" and "the row" differ.
+        harness.model.selectedThreadID = "t1"
+        try await wait("the selection to resolve") { harness.model.selectedMessageID == "m1" }
+
+        harness.model.requestCompose(.reply, onThread: "t9")
+        let reply = try #require(harness.model.composeRequest)
+        #expect(reply.kind == .reply)
+        #expect(reply.messageID == "m9b", "replies go to the thread's latest message")
+
+        harness.model.requestCompose(.forward, onThread: "t1")
+        let forward = try #require(harness.model.composeRequest)
+        #expect(forward.kind == .forward)
+        #expect(forward.messageID == "m1")
+    }
+
+    /// An unresolvable thread opens nothing. Fails if it were to fall through to a
+    /// blank compose, which silently turns a Reply into a new message.
+    @Test func replyingToAnUnknownThreadOpensNothing() async throws {
+        let harness = try await Harness.make()
+        try await harness.seedTwoMailboxes()
+        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        await harness.model.start()
+
+        harness.model.requestCompose(.reply, onThread: "no-such-thread")
+        #expect(harness.model.composeRequest == nil)
+    }
+
+    /// One composer, one reply target: the rows are live for a single row only.
+    /// Fails if a multiple selection were left able to reply (to which thread?).
+    @Test func replyRowsAreSingleSelectionOnly() {
+        #expect(ConversationListView.offersReplyActions(for: ["t1"]))
+        #expect(ConversationListView.offersReplyActions(for: ["t1", "t2"]) == false)
+        #expect(ConversationListView.offersReplyActions(for: []) == false)
+    }
+}
+
 /// ⌘N must have exactly ONE owner in the app (issue #10): SwiftUI's built-in New
 /// Window item also claims it, and with two claimants AppKit picked the built-in,
 /// so File → New Message did nothing visible and ⌘N opened a window.

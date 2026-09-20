@@ -24,6 +24,8 @@
 
 ## Done
 
+- [x] Herald #11: row context menu mirrors the header actions (Reply, Reply All, Forward, then triage) (id: t-626e197d) (added: 2026-09-19)
+- [x] Herald #10: ⌘N opens a new window instead of Compose; add a visible Compose toolbar button (id: t-e14a1935) (added: 2026-09-19) (priority: high)
 - [x] Dogfood against a real HQBase 1.1.0 server: add account, sync, read, reply (id: t-8a1c0010) (added: 2026-08-15) (priority: high)
 - [x] 1.4 U7: release Herald 0.5.0 (min server 1.4.2 for new features) (id: t-f2e60746) (added: 2026-09-19)
 - [x] 1.4 U5: integrate U2–U4, full build/tests, live dogfood on v1.4.2 instance, plan + memory audit (id: t-4680dc24) (added: 2026-09-19) (priority: high)

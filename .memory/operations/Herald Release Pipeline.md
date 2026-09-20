@@ -7,7 +7,7 @@ source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-09-06
+updated: 2026-09-19
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -59,3 +59,9 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 
 ## Update (2026-09-06 — v0.4.1 shipped)
 - [done] v0.4.1 released (sign-in recoverability for Herald #9: cancel everywhere, stage indicator, presentation watchdog 45s-log/10min-fail, keychain off main, 15s/30s auth timeouts, discovery-cache eviction fix). Notarization Accepted, main + tag pushed (ce1f733), zip HTTP 200, appcast advertises 0.4.1. Trigger confirmed by reporter as the macOS per-user authentication agent wedging (app responsive, agent self-recovered); browser-fallback sign-in remains a follow-up candidate #release
+
+
+
+## Update (2026-09-19 — v0.5.0 shipped)
+- [done] v0.5.0 released (build 10): HQBase 1.4.x adoption — labels from `includeLabels` rows with a 30-min reconciliation sweep and a per-pair label mutation fence, send idempotency keys + SEND_* holds, Settings ▸ Signatures behind `signatures:manage`, explicit OAuth scope allow-list, Reply-To prefill, plus the two-round audit fixes (label event drain, retained restore task, Keychain read errors, preview CSP/tokens, held-Send reason, flaky notifications test). Dry run first (the pipeline had not run since the AppEnvironment split), then notarization Accepted, main + tag pushed, appcast advertises 0.5.0/10. Minimum server stays 1.3.4; every 1.4.2 feature is detected by response shape or advertised scope #release
+- [gotcha] A `--dry-run` leaves the version bump in `project.yml` uncommitted; `git checkout project.yml` before the real run or the real run's bump commit is a no-op diff on a dirty build path #dry-run

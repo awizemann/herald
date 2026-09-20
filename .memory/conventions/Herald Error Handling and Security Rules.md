@@ -2,11 +2,14 @@
 title: Herald Error Handling and Security Rules
 type: note
 permalink: hqbase-mac/conventions/herald-error-handling-and-security-rules
-tags:
-- errors
-- security
+tags: [errors, security]
+source_paths: [HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthSession.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthError.swift]
+source_paths_inferred: false
+source_sha: 66af754e21d29354c9691fd6fac75a8c20fad963
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-09-19
+reviewed: 2026-09-19
+reviewed_by: claude-opus-5[1m]
 ---
 
 ## Observations
@@ -25,3 +28,10 @@ updated: 2026-08-16
 - [rule] Never log `String(describing:)` of `OutboxError`/`MailAPIError` — use their payload-free `logCode` #logging
 - [decision] REVERSED 2026-08-16: Herald uses the LOGIN keychain (no `kSecUseDataProtectionKeychain`, no `keychain-access-groups` entitlement). The data-protection keychain needs that entitlement, which needs a Developer ID provisioning profile, which Herald deliberately does not ship (yearly renewal, account-bound export). Items are still ACL-locked to Herald's signature and never marked synchronizable. Real-release finding: export demanded a profile; SecItem returned -34018 without it #keychain
 - [fact] Saved attachments get `LSFileQuarantineEnabled` + explicit quarantineProperties; inside the sandbox the OS overrides the type with LSQuarantineTypeSandboxed (test asserts agent name only) #quarantine
+
+
+## Update (2026-09-19 — audit F3: unreadable state is not absent state)
+
+- [rule] A Keychain/`AccountStore` READ FAILURE must never be flattened into "nothing stored" (`try? store.tokens(for:) ?? nil`). The Keychain is the arbiter of which OAuth grant is live across processes, so a failed read that reads as "nobody rotated anything" sends the refresh on to spend a token another process may already have redeemed — and HQBase rotates with no reuse grace, so replaying one invalidates the whole family. `AccountTokenProvider.currentTokens()` logs and throws `OAuthError.transport` (retryable); the `invalid_grant` path refuses to clear the shared item on a read it could not make. The ONE sanctioned `try?` is the confirmation read AFTER a successful write, where throwing would send the caller back to re-spend the new grant #keychain #errors
+- [rule] Bare `try?` on a store WRITE still logs: `setTokens(nil, …)` on a dead grant is best-effort, but a clear that silently failed leaves the dead grant on disk for the next launch to retry #errors
+- [rule] An OAuth callback's `error` query value is attacker-reachable server free text and is never logged at `.public` verbatim — `OAuthSession.logName(forCallbackError:)` maps it to the RFC 6749 §4.1.2.1 set (plus `invalid_grant`) or `other`; the raw value travels only in the thrown `OAuthError.server` for the UI. Same shape as the payload-free `logCode` rule (audit P14) #logging #privacy

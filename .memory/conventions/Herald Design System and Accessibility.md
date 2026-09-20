@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/conventions/herald-design-system-and-accessibility
 tags: [design, accessibility, macos]
 created: 2026-08-16
-updated: 2026-09-04
+updated: 2026-09-19
 ---
 
 ## Observations
@@ -65,3 +65,13 @@ updated: 2026-09-04
 - [rule] A banner that appears, or swaps state, under a cursor that is not on it POSTS `AccessibilityNotification.Announcement` — ReauthBanner (both states; the manual announcement NAMES the Sign In button, since the automatic state withdraws it out from under the cursor), the reading pane's remote-image-consent and inline-image-failure banners, and the search status bar. Announce, don't force focus: yanking the cursor to an unrequested banner is worse than the dropped button. Search announces SETTLED states only (`SearchStatusBar.announces`) — the bar's text also changes on every debounced keystroke #a11y
 - [rule] Banner strings live as `nonisolated static` funcs beside the view (`ReauthBanner.message/announcement`, `MessageBodySection.remoteConsentText/inlineImageFailureText`) — one source for what is DRAWN and what is SPOKEN, and assertable without a rendered view (the `accessibilitySummary`/`accessibilityPhrase` pattern). A `BannerView`'s icon is `accessibilityHidden` — the text says everything the glyph does #a11y
 - [rule] Reading-pane CSS honours Increase Contrast: `@media (prefers-contrast: more)` overrides ONLY `--secondary`/`--link` from `MailTheme.Web.Palette.secondaryIncreasedContrast`/`linkIncreasedContrast`, emitted per appearance and AFTER the dark palette block (equal specificity — order decides). The base palette already clears AA; the rest of the pane is the sender's own colours, untouched at any contrast setting #tokens #webkit
+
+
+## Update (2026-09-19 — one web-document emitter, audit F2 C6)
+
+- [rule] There is ONE wrapping-document emitter for every WKWebView in the app: `MailViewModel.document(wrapping:title:allowsRemote:)` / `document(wrappingPlainText:title:)`. Any new web surface routes through it rather than writing its own `<!doctype html>` — that is what carries the locked-down CSP meta, the `MailTheme.Web` palette variables for both appearances, and the `@media (prefers-contrast: more)` overrides. The signature preview (`SignaturePreviewView.document(for:)`) and its blocker-failure document both call it; before F2 they were hand-rolled strings with NO CSP at all, no palette tokens and no contrast handling, so the preview also lied about how the signature would render once sent #webkit #tokens
+- [gotcha] A hand-rolled second document is the failure mode to watch for: it looks harmless (a font and a margin) and silently drops the whole security + theming posture. `MessageRenderingSecurityTests` asserts the preview contains `MailViewModel.contentSecurityPolicy(allowsRemote: false)` verbatim, so a copy-pasted lookalike fails #webkit
+- [rule] A DISABLED control's key equivalent is withdrawn by SwiftUI along with the control, so a shortcut that must stay reachable while its button is dimmed lives on a never-disabled `.opacity(0)` proxy in `.background(…)` — the `closeShortcut`/`pasteShortcut` pattern, now also `sendShortcut` (⌘⇧D). The visible button's `.help` then has to spell the shortcut out, because SwiftUI no longer draws it #buttons #macos
+- [rule] An announcement that may REPEAT the same words is published as a `(message, counter)` pair and the view does `.onChange(of: model.announcementCount)`. An `onChange` on the string alone speaks the first occurrence and then goes silent — which is exactly wrong for a control the user is pressing again because nothing happened (`ComposeViewModel`, `SignatureSettingsModel`) #a11y
+- [rule] A Settings pane whose model is owned and cached by `AppEnvironment` takes it as `let`, never `@State` (`@State` latches the first account's model), and keys its load with `.task(id: ObjectIdentifier(model))` rather than an `.id(…)` subtree reset #views
+- [gotcha] A sheet cannot exceed the window it is presented from: the signature editor's fixed `720×560` inside the `640×420` Settings window clipped on both axes. Sheets use `min`/`ideal` bounds, and an inner `Form` uses `minHeight`, so the layout grows with the accessibility text sizes instead of cutting its action buttons off #views

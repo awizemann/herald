@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/decisions/herald-sync-model
 tags: [decision, swiftdata, sync]
 created: 2026-08-16
-updated: 2026-09-04
+updated: 2026-09-19
 ---
 
 ## Observations
@@ -17,6 +17,8 @@ updated: 2026-09-04
 ## Relations
 - relates_to [[Herald Architecture]]
 - relates_to [[HQBase Mail API v1 Contract]]
+- relates_to [[Herald Label Caching and UI Architecture]]
+- relates_to [[Herald Wake Socket Architecture]]
 
 ## Update (2026-08-15 — P0.3 implementation facts)
 - [gotcha] Interruptible cadence timer must wrap `Task.sleep` in do/catch-and-return, NEVER `try?` — on cancellation `try?` swallows and execution falls through to the wake signal, latching it, and the engine polls the server flat out (22 passes in 0.24s in tests). The refreshNow()-driven test caught it; a timing test would not have #timer
@@ -72,3 +74,84 @@ updated: 2026-09-04
 - [fact] Residual, accepted: byte-level corruption of a blob column (bit rot, a half-written page) still faults before any Herald code runs. Fatal on any design short of storing the column as `Data` and decoding by hand; SQLite's own integrity guarantees make it far rarer than the shape change, which was one routine schema edit away #residual
 - [fact] `deleteMissingMessages` now cascades like `deleteMessage`: body sidecar, label assignments and the pending-mutation fence. Every orphan it used to leave was DURABLE — an assignment keeps a dead message in its label's listing forever (the sweep only replaces the set of a label it re-reads), a sidecar becomes unreachable, and a fence blocks the journal from ever writing that id again #cascade
 - [fact] ACCEPTED and now commented in `replaceAssignments`: the per-label sweep inserts assignment rows for messages the cache has never held (the label listing covers the whole account; the message cache covers only synced folders). Consequence — a label's assignment-row count can exceed what the by-label conversation listing resolves, so any badge must count what the listing RESOLVES, never `CachedLabelAssignment` rows #sweep-unknown-ids
+
+
+## Update (2026-09-19 — U2: label membership comes from ROWS; the sweep is a reconciliation)
+
+Upstream 1.4.2's `includeLabels=true` embeds `labels` on every `MessageSummary`,
+so the "labels have no delta" premise of the 2026-09-04 `#labels` fact above is
+now HALF WRONG — it holds only for servers below 1.4.2, which remain supported.
+
+- [decision] There are still THREE poll cadences in one pass (messages 15s/60s,
+  drafts 60s, labels), but the LABEL one now has two regimes chosen per account:
+  `defaultReconciliationLabelPollInterval` 1800s once the server is known to embed
+  labels, and the legacy `defaultLabelPollInterval` 120s / `defaultIdleLabelPollInterval`
+  750s pair (with the visible/idle surface signal) when it is not. The
+  visible/idle signal is IGNORED in the embedding regime #cadence
+- [decision] CORRECTION to the 2026-09-04 `#labels` fact: the v1 journal upsert
+  NOW identifies membership. `MailStore.applyMessageUpserts` — the single funnel
+  every stored summary passes through (journal, listings, triage-action answers) —
+  writes each summary's embedded labels via `applyEmbeddedLabels(from:accountID:)`.
+  `MailViewModel` does the same for the two routes the VIEW fetches and never
+  stores (single-message detail, thread). `refreshLabelsNow()` is unchanged #labels
+- [constraint] `MessageSummary.labels` is `[MailLabel]?` and the distinction is
+  load-bearing at the STORE: `nil` = "the row said nothing" (old server, or nobody
+  asked) and is SKIPPED; `[]` = "no labels" and DOES clear. A `?? []` on this path
+  wipes every chip in the workspace on the first pass against a 1.3.4/1.4.0 server.
+  The embedded write is per-MESSAGE and can never truncate a label's wider
+  membership — only `replaceAssignments` (a completed sweep) may do that #labels
+- [decision] CAPABILITY DETECTION is by RESPONSE SHAPE, per account, per session,
+  never by version (`info.version` is the API version; no capability endpoint
+  exists): `SyncEngine.labelEmbeddingAccounts` records an account the moment any
+  summary arrives with non-`nil` labels. `[]` counts as proof; `nil` is never
+  evidence of anything, so an undetected account simply keeps the legacy sweep —
+  the conservative direction (more requests, never a wrong cache). Cleared by
+  `start()`, because a server can be upgraded or rolled back between engines #labels
+- [gotcha] A label-only edit bumps `messages.updated_at`, so it arrives as a
+  journal upsert whose every message FIELD is identical — the `ChangeSet` is empty
+  and `.changed` is never emitted, while the chips on screen are now wrong.
+  `MessageUpsertResult.labelsChanged` exists for exactly that; the engine drains it
+  into ONE `.labelsChanged` per pass #labels
+- [fact] VERIFIED LIVE 2026-09-19 against the local 1.4.2 instance (owner cookie
+  session on the Mail API): assigning a label produced exactly ONE journal upsert;
+  `GET /changes?cursor=…&includeLabels=true` carried the full `labels` array on it,
+  removing the label produced an upsert carrying `[]`, and the same call WITHOUT
+  the parameter had no `labels` key at all. U0 had already verified the 1.4.0
+  instance ignores `includeLabels` and answers without the key #labels
+- [fact] The reconciliation sweep is NOT retired and must not be: a label deleted
+  workspace-wide touches no message, so no row ever mentions it again; and the
+  sweep stores assignments for messages in folders this cache has never listed,
+  which rows can never supply. It also runs in full on the `labels` wake frame and
+  whenever the label LIST changes (which drops the sweep digests). The `messages`
+  wake frame deliberately still does NOT force it #labels
+
+
+
+## Update (2026-09-19 — F1: the label fence and the pass's label event; commit 1d3a614)
+
+Two consequences of U2's "membership comes from ROWS", found by the U6 audit.
+
+- [gotcha] `runPass` drained `passLabelsChanged` into `.labelsChanged` only on
+  the SUCCESS path. A journal cycle is several pages, each applied and
+  checkpointed on its own, so "page 1 wrote labels, page 2 threw" is ordinary —
+  and page 1's membership is durable. The event is now drained on EVERY exit (a
+  `defer`, plus an explicit call before each `.failed` so the order is
+  chips-then-banner). Safe unconditionally: the event has no payload and the
+  view-model answers it with one idempotent index reload #labels
+- [decision] The pending-mutation fence now has a LABEL half. The 2026-08-18
+  `#hardening` fence pins a MESSAGE and three of its fields; the label fence
+  pins the pair `(message, labelID)`, because a message carries several labels
+  and pinning the row would freeze the ones the action never touched. While a
+  pair is pinned, an embedded write (`applyEmbeddedLabels` — per-message
+  AUTHORITATIVE, which is what made a stale page dangerous) and the
+  reconciliation sweep both leave it exactly as the cache has it; the action's
+  own settle is exempt. Released on settle, on a settle that threw, and on
+  rejection-after-revert, and cascaded by every delete path — a leaked pin
+  fences the pair against the server for the whole session. Full design in
+  [[Herald Label Caching and UI Architecture]] #hardening
+- [fact] `SyncEngine.swift` is split: `SyncEngine+Labels.swift` and
+  `SyncEngine+Drafts.swift` hold those two surfaces (996 lines left in the main
+  file). Stored properties stay on the actor — extensions cannot declare storage
+  — so the per-session capability sets (`labellessAccounts`,
+  `labelEmbeddingAccounts`, `lastSweepDigests`, `draftlessAccounts`) are still
+  declared there, with their reasoning moved next to the code that writes them #split

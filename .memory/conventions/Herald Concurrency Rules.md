@@ -3,8 +3,13 @@ title: Herald Concurrency Rules
 type: note
 permalink: hqbase-mac/conventions/herald-concurrency-rules
 tags: [swift6, concurrency]
+source_paths: [HeraldKit/Sources/HeraldKit/Sync/URLSessionMailEventChannel.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift]
+source_paths_inferred: false
+source_sha: 66af754e21d29354c9691fd6fac75a8c20fad963
 created: 2026-08-16
-updated: 2026-08-18
+updated: 2026-09-19
+reviewed: 2026-09-19
+reviewed_by: claude-opus-5[1m]
 ---
 
 Both targets build with SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor (Swift 6.2 approachable
@@ -37,3 +42,11 @@ concurrency) and strict concurrency. Every unannotated top-level decl is implici
 ## Update (2026-08-18 — os_unfair_lock over actor for sync nonisolated stores)
 - [decision] `KeychainAccountStore` guards its account-index read-modify-write with `OSAllocatedUnfairLock` (os_unfair_lock), NOT an actor. `AccountStore` is a deliberately SYNCHRONOUS `nonisolated protocol: Sendable` so the `AccountTokenProvider` actor and test fakes call it synchronously off-main; making the impl an actor forces the whole protocol async and ripples through the auth path + every fake. Rule: a type behind a sync nonisolated protocol serializes shared state with os_unfair_lock, not by becoming an actor (commit 9df695d, t-e2af8452) #locks
 - [gotcha] Standards-audit guidance "prefer actor for shared mutable state" does NOT apply when the type must satisfy a sync nonisolated protocol — os_unfair_lock is the sanctioned primitive there (04 §1 already names it over NSLock) #audit
+
+
+## Update (2026-09-19 — audit F3: `@unchecked Sendable` means EVERY stored property)
+
+- [rule] An `@unchecked Sendable` type's justification has to cover all of its storage, not just the one lock. `WebSocketChannel` (`Sync/URLSessionMailEventChannel.swift`) had `var session: URLSession!` / `var task: URLSessionWebSocketTask!` beside its `OSAllocatedUnfairLock` because `URLSession(configuration:delegate:delegateQueue:)` wants the delegate before `super.init()` has run. Untied by moving the delegate to a small `DelegateProxy` built BEFORE the channel, which lets every stored property be a `let` (audit P11) #sendable
+- [gotcha] When you move a delegate off a type onto a proxy, check the retain graph: the channel owns the session which owns the proxy, so the proxy's link BACK must be weak — a strong one is a cycle `close()` cannot break, because `invalidateAndCancel()` only releases the SESSION's reference. The old arrangement (channel as its own delegate) had no cycle for exactly that reason #lifetime
+- [rule] `await MainActor.run { model?.method() }` on a method that is ALREADY `@MainActor` is noise — `await model?.method()` is the hop. House style (audit P10) #isolation
+- [check] A `URLSessionDelegate` reachable only through a live-server suite is untested by default. A refused connection to `127.0.0.1:9` drives `didCompleteWithError` hermetically and fast; without it a mis-wired delegate shows up as `open()` hanging forever, not as a failing assertion #guards

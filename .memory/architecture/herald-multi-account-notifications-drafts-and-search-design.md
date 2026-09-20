@@ -5,9 +5,11 @@ permalink: hqbase-mac/architecture/herald-multi-account-notifications-drafts-and
 tags: [accounts, notifications, drafts, search, attachments]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, HeraldKit/Sources/HeraldKit/Notifications, HeraldKit/Sources/HeraldKit/Compose/AttachmentLimits.swift]
 source_paths_inferred: false
-source_sha: 37e925193f7c89c076f83ae4c757b24f7cf5d415
+source_sha: 7e5eb159db68edaac988bfd21ae27c5ae670639d
 created: 2026-08-18
 updated: 2026-09-04
+reviewed: 2026-09-09
+reviewed_by: audit:claude-code (background)
 ---
 
 Landed 2026-08-18 in five phases (multi-account, attachments polish, notifications, drafts folder, two-tier search). Investigation report: documents/reports/feature-investigation-2026-08-18.md; upstream Issue drafts: documents/upstream/issues-2026-08-18/.

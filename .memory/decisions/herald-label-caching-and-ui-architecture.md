@@ -5,9 +5,11 @@ permalink: hqbase-mac/decisions/herald-label-caching-and-ui-architecture
 tags: [labels, sync, swiftdata, ui]
 source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailStore+Labels.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, HeraldKit/Sources/HeraldKit/Sync/CachedModels.swift, HeraldKit/Sources/HeraldKit/Sync/MailActionService.swift, HeraldKit/Sources/HeraldKit/Model/MailLabel.swift, Herald/App/MailViewModel+Labels.swift, Herald/Design/LabelChip.swift, Herald/Views/SidebarView.swift]
 source_paths_inferred: false
-source_sha: 3d99c49fde000552ed08dab90a1d54a86d74cb0b
+source_sha: 7e5eb159db68edaac988bfd21ae27c5ae670639d
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-19
+reviewed: 2026-09-09
+reviewed_by: audit:claude-code (background)
 ---
 
 P8 (task t-75e2f028), 2026-09-04. Labels shipped against the v1 API, whose message/conversation/change payloads carry no `labels` field (see the contract note) — so everything here follows from "membership has to be derived client-side".
@@ -71,3 +73,125 @@ The 2026-09-04 full-surface audit named the sweep the dominant idle cost: at 20 
 - `labelIndex` adds a `CachedConversation` thread-id walk to every index reload that the old `labelIDsByThread` did not do. It is one indexed string column through a batched enumerate, against a conversation-table walk the reload was doing anyway, and it is what buys the badge/listing agreement.
 
 Tests: `LabelSweepCostTests` (cadence gating both cosmetic and behavioural, unchanged-sweep skip, explicit-refresh bypass, capped-walk-records-no-digest), `LabelCacheTests.badgeCountsResolvedThreads` / `unusedLabelCountsZero` / `chunkedListingKeepsItsOrder`, `LabelsTests.badgeCountsArePrecomputed` / `badgeFollowsAnOptimisticToggle` / `labelWriteReloadsTheIndexOnce` / `labelSurfaceSignalFollowsTheUI`.
+
+
+## Membership from ROWS (U2, task t-bdd6b056, 2026-09-19 — commit 77f6614)
+
+**The premise this whole note was written on is now the LEGACY half.** The opening
+line ("v1 message/conversation/change payloads carry no `labels` field") and the
+first `#sync` observation are true only of servers below 1.4.2 — still supported
+(the floor is 1.3.4, and production auto-update offered 1.4.0), so both halves are
+live code, but the 1.4.2 path is the primary one. The "residual risk" recorded in
+the A3 section — *"a genuinely cheap foreground sweep needs the v2 `includeLabels`
+embed, which is the upstream ask already filed"* — is RESOLVED: upstream shipped it
+on v1 as our #115.
+
+- [decision] Membership is written from the ROWS Herald already fetches.
+  `MailStore.applyEmbeddedLabels(from:accountID:)` takes summaries and replaces the
+  label set of each one that STATES a set. It is called from
+  `applyMessageUpserts` — the single funnel for journal upserts, folder listings
+  and triage-action answers — and from `MailViewModel.storeEmbeddedLabels(of:)` for
+  the single-message and thread routes, which the view fetches and never stores.
+  `setMessageLabels` (the `LabelAssignmentResult` path) shares its batched core
+  `writeMessageAssignments`, so a 100-row journal page is one fetch and one save
+  instead of 100 of each #sync
+- [constraint] `nil` vs `[]` on `MessageSummary.labels` is enforced here: `nil` is
+  skipped (the key was absent — old server, or nobody asked), `[]` clears. The
+  embedded write is per-MESSAGE and touches no other row, so unlike
+  `replaceAssignments` it can never erase a label's wider membership #sync
+- [decision] `SyncEngine.labelMembership`'s per-label sweep is now a
+  RECONCILIATION on `defaultReconciliationLabelPollInterval` (1800s) once the
+  server is detected as embedding, plus two prompt triggers: the `labels` wake
+  frame (`refreshLabelsNow()`, unchanged) and any change to the label LIST, which
+  drops `lastSweepDigests` so every label is rewritten authoritatively. It is kept
+  because rows can only ever ADD to the picture — a label DELETED workspace-wide
+  touches no message and no row will ever mention it again, and the sweep is also
+  what stores assignments for messages in folders this cache has never listed (the
+  `#sweep-unknown-ids` / `#completeness` facts still stand) #sync
+- [decision] Detection is by RESPONSE SHAPE, per account, per session
+  (`SyncEngine.labelEmbeddingAccounts`): the first summary with non-`nil` labels
+  proves it, `[]` included. Never a version number. An undetected account keeps the
+  legacy 120s/750s cadence and its visible/idle surface signal — which therefore
+  now only decides anything on a pre-1.4.2 server, though `MailViewModel` keeps
+  reporting it either way (choosing the regime is the engine's job) #sync
+- [gotcha] A label-only edit is a journal upsert with every message FIELD
+  unchanged, so the `ChangeSet` is empty and `.changed` never fires while the chips
+  are wrong. `MessageUpsertResult.labelsChanged` carries it instead and the engine
+  drains it into ONE `.labelsChanged` per pass #ui
+- [fact] `upsertConversations` deliberately does NOT write the labels embedded on
+  `latest`: every message a conversation row can name also arrives as a message
+  row in the same pass, and two writers for "this message's labels" inside one pass
+  buys no coverage #sync
+- [gotcha] The A3 race ("a sweep that started before a local toggle deletes the
+  just-confirmed row") is NARROWED further but still not fixed: at 1800s the window
+  is far rarer, and rows now correct the cache continuously between sweeps #race
+
+Tests: `LabelSyncTests` gained `journalLabelsUpdateMembershipWithoutASweep`,
+`absentLabelsKeyChangesNothing`, `embeddingIsDetectedFromTheFirstStatedRow`,
+`labelListChangeForcesReconciliation`,
+`reconciliationStillReplacesOnAnEmbeddingServer`,
+`conversationUnionMatchesTheServerAnswer` and (cache suite)
+`embeddedLabelsAreScopedToTheirMessages`; `HeraldTests/LabelsTests` gained
+`viewFetchedLabelsReachTheChips`. HeraldKit 318 → 325, app-hosted 255 → 256.
+
+
+## The label fence, and `.labelsChanged` on every pass exit (F1, task t-c77df387, 2026-09-19 — commit 1d3a614)
+
+The U2 audit (`documents/reports/audit-2026-09-19-hqbase-142-adoption.md`, C1/C2)
+found that making ROWS the membership source created a new race and left an old
+announcement gap. Both are fixed here.
+
+- [decision] **The pending-mutation fence now covers labels, and its pinned unit
+  is the PAIR `(accountID, messageID, labelID)`** (`MailStore.pinnedLabels`,
+  `LabelPinKey`). Not the message: the triage fence pins three FIELDS of a row
+  and an action writes all of them at once, but a message carries several labels
+  at a time, so pinning the row would fence every other label on it against the
+  very pages meant to keep them current. The value is a SET of action tokens, so
+  the same pair can be in flight twice (a message toggle and its thread's) and
+  the first to settle does not unpin rows the second still owns #fence
+- [decision] **Who may cross it.** An EMBEDDED write — `writeMessageAssignments`
+  called from `applyEmbeddedLabels`, i.e. a journal page or a folder listing —
+  and the reconciliation's `replaceAssignments` must leave a pinned pair exactly
+  as the cache has it, in BOTH directions (no insert, no delete; the re-thread
+  fixup is skipped with it). The action's OWN settle (`setMessageLabels`,
+  `settleThreadLabel`) passes `respectingPins: false`, because it is the newer
+  statement and it is what takes the fence down #fence
+- [gotcha] **The fan-out is the whole thread, not the undo.** `LabelActionUndo`
+  carries only the rows that actually MOVED (a message that already had the
+  label contributes nothing, or a revert would remove a label the action never
+  granted), so `undo.pinned` is a deliberate superset: a conversation toggle
+  pins every cached message of the thread. Taking the pins from `undo.messages`
+  would leave the already-labelled siblings unfenced #fence
+- [rule] **Release on every exit.** `MailActionService` releases at all six:
+  settle, a settle that itself threw, and an API rejection after the revert, in
+  both the message and conversation methods. Pins are also cascaded on the
+  delete paths (`deleteMessage`, `deleteMissingMessages`, `purgeMailbox`) and on
+  `deleteAll`, beside `pendingMutations`. A LEAKED PIN IS WORSE THAN THE RACE:
+  it fences that pair against the server for the rest of the session, so the
+  chip can never be corrected again #fence
+- [decision] **The A3 race is NARROWED, not fixed.** "A sweep that started
+  before a local toggle deletes the just-confirmed row" can no longer happen
+  while the toggle is IN FLIGHT — `replaceAssignments` honours the pins. The
+  residue is a sweep whose listing predates a toggle that has already SETTLED:
+  the fence is down by then, by design (holding it longer would freeze the pair
+  against the server indefinitely, and the settle wrote the server's own
+  answer). At the 1800s reconciliation cadence, with rows correcting the cache
+  continuously in between and the digest suppressing an unchanged sweep, that
+  window is small and self-healing #race
+- [fact] `MailStore.hasLabelPin(messageID:labelID:accountID:)` is the test seam,
+  mirroring `hasPendingMutation`. Tests (all mutation-checked — removing the
+  fence fails all four): `staleEmbeddedLabelsCannotStripAnInFlightToggle`,
+  `theFenceIsScopedToItsPair`, `theThreadToggleFencesTheWholeFanOut`,
+  `aRejectedChangeReleasesTheFence`, `theSweepRespectsTheFence` #testing
+
+Also in this pass: `MailViewModel+Labels.updateLabelSurfaceVisibility` now sets
+`isLabelSurfaceVisible` only AFTER the engine hop, and returns early when `sync`
+is nil — setting it first made the flag a record of INTENT, and the launch path
+runs before the engine is installed, so the guard then swallowed every later
+call until the value flipped and flipped back (audit P12).
+
+Structural: `SyncEngine.swift` 1352 → 996 lines; the labels region is now
+`SyncEngine+Labels.swift` and the drafts region `SyncEngine+Drafts.swift`.
+Stored properties stay on the actor (an extension cannot declare storage), and
+the members the extensions reach are internal rather than `private` — which is
+file-scoped, so `fileprivate` would not have helped either.

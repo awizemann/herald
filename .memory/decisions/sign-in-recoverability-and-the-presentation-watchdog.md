@@ -5,9 +5,11 @@ permalink: hqbase-mac/decisions/sign-in-recoverability-and-the-presentation-watc
 tags: [auth, oauth, ux, concurrency]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/Views/OnboardingView.swift, HeraldKit/Sources/HeraldKit/Auth/AuthorizationPresenter.swift, HeraldKit/Sources/HeraldKit/Auth/AuthCoordinator.swift]
 source_paths_inferred: false
-source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
+source_sha: 7e5eb159db68edaac988bfd21ae27c5ae670639d
 created: 2026-09-05
 updated: 2026-09-05
+reviewed: 2026-09-09
+reviewed_by: audit:claude-code (background)
 ---
 
 Herald #9 (bermanto, v0.4.0): sign-in hung with a spinner and no browser window, unrecoverable without force-quitting. Root cause is out of process — `ASWebAuthenticationSession.start()` returns `true` once the request reaches the per-user authentication agent, and a wedged agent neither presents nor ever calls back (it survives app relaunches, which matches the report). Nothing in Herald can fix that agent, so the fix is to SURVIVE it. Landed on `fix/signin-hang-recovery` for 0.4.1.</content>

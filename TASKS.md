@@ -16,14 +16,28 @@
 - [ ] Follow-ups from 2026-08-18 feature audit (compose test handshake, pendingRoute clearing, stale search field, quotedBody dead code) (id: t-19d0d9ef) (added: 2026-08-18) (priority: low)
 - [ ] Adopt GET /drafts/changes journal for the drafts cache (id: t-85cfa329) (added: 2026-09-04) (priority: low)
 - [ ] A5 (follow-up): WKURLSchemeHandler for inline images + streamed attachment downloads (id: t-c909a320) (added: 2026-09-04) (priority: low)
-- [ ] Flaky test: NotificationsTests.theSettingIsHonouredPerPass fails intermittently under full xcodebuild runs (id: t-99387f3c) (added: 2026-09-05) (priority: low)
+- [ ] Localization: replace string-built UI/a11y sentences with LocalizedStringKey args (signatures, compose quoted, list a11y) (id: t-be4fbea9) (added: 2026-09-19) (priority: low)
+- [ ] Upstream ask: expose caller user id (or accept scope.type=user without id) so a first personal signature can be created via /api/v1 (id: t-63c94c58) (added: 2026-09-19) (priority: low)
 
 ## Doing
 
-- [ ] Dogfood against a real HQBase 1.1.0 server: add account, sync, read, reply (id: t-8a1c0010) (added: 2026-08-15) (priority: high)
 
 ## Done
 
+- [x] Dogfood against a real HQBase 1.1.0 server: add account, sync, read, reply (id: t-8a1c0010) (added: 2026-08-15) (priority: high)
+- [x] 1.4 U7: release Herald 0.5.0 (min server 1.4.2 for new features) (id: t-f2e60746) (added: 2026-09-19)
+- [x] 1.4 U5: integrate U2–U4, full build/tests, live dogfood on v1.4.2 instance, plan + memory audit (id: t-4680dc24) (added: 2026-09-19) (priority: high)
+- [x] 1.4 U6: fresh-eyes audit of the whole touched surface (sync/labels, compose/outbox, auth scopes, signatures) (id: t-a652842a) (added: 2026-09-19)
+- [x] 1.4 F3: app/auth fixes — retained restore task, Keychain try?, MainActor.run, socket lets, OAuth callback log, AppEnvironment split (id: t-8525cb57) (added: 2026-09-19)
+- [x] 1.4 F1: sync/labels fixes — drain labelsChanged on failure, label mutation fence, tests, SyncEngine split (id: t-c77df387) (added: 2026-09-19) (priority: high)
+- [x] 1.4 F2: compose + signatures UI/security fixes (send-hold reason, preview CSP/tokens/debounce, announcements, @State ownership, logCode) (id: t-45bafcc3) (added: 2026-09-19) (priority: high)
+- [x] 1.4 F4: test fixes — NotificationsTests flake root cause, detail/thread→chips e2e test, try? #require (id: t-e89d1305) (added: 2026-09-19)
+- [x] Flaky test: NotificationsTests.theSettingIsHonouredPerPass fails intermittently under full xcodebuild runs (id: t-99387f3c) (added: 2026-09-05) (priority: low)
+- [x] 1.4 U2: labels from includeLabels rows + slow reconciliation sweep (id: t-bdd6b056) (added: 2026-09-19) (priority: high)
+- [x] 1.4 U3: send idempotency key + SEND_* error handling + replyTo prefill (id: t-fe56989b) (added: 2026-09-19) (priority: high)
+- [x] 1.4 U4: Settings ▸ Signatures editor (signatures:manage) (id: t-d7c3e3f8) (added: 2026-09-19)
+- [x] 1.4 U1: re-vendor spec @1.4.2, regen client, add API surface for labels/idempotency/signatures (id: t-2547e466) (added: 2026-09-19) (priority: high)
+- [x] 1.4 U0: stand up HQBase v1.4.2 test instance + verify session binding live (id: t-451c4980) (added: 2026-09-19) (priority: high)
 - [x] Herald #9: sign-in hangs with spinner, no browser window (post HQBase-reinstall registration reset) + onboarding has no cancel/retry (id: t-a3dbe1a1) (added: 2026-09-05) (priority: high)
 - [x] Keychain I/O off the main actor at boot (id: t-8a1c0012) (added: 2026-08-15) (priority: low)
 - [x] A3: performance — label sweep cadence gating, store fetch tuning, badge precompute, setLabel reload dedup (id: t-93791ab6) (added: 2026-09-04)

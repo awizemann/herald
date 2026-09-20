@@ -1118,3 +1118,39 @@ func wait(
         #expect(ThreadMessageRow.accessibilitySummary(for: message).contains("Support") == false)
     }
 }
+
+/// ⌘N must have exactly ONE owner in the app (issue #10): SwiftUI's built-in New
+/// Window item also claims it, and with two claimants AppKit picked the built-in,
+/// so File → New Message did nothing visible and ⌘N opened a window.
+@Suite struct CommandShortcutOwnershipTests {
+    /// Fails if a second view or command declares ⌘N, or if the `.newItem` group
+    /// goes back to `after:` — which re-admits the built-in New Window item and
+    /// its shortcut.
+    @Test func onlyNewMessageClaimsCommandN() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // HeraldTests
+            .deletingLastPathComponent()   // repo root
+            .appending(path: "Herald")
+
+        var claimants: [String] = []
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+        for case let url as URL in try #require(files) where url.pathExtension == "swift" {
+            let source = try String(contentsOf: url, encoding: .utf8)
+            for line in source.split(separator: "\n", omittingEmptySubsequences: false)
+            where line.contains(#"keyboardShortcut("n""#) {
+                claimants.append("\(url.lastPathComponent): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+
+        #expect(claimants.count == 1, "⌘N has more than one owner: \(claimants)")
+        #expect(claimants.first?.hasPrefix("MailCommands.swift:") == true)
+
+        let commands = try String(
+            contentsOf: root.appending(path: "App/MailCommands.swift"), encoding: .utf8
+        )
+        #expect(
+            commands.contains("CommandGroup(replacing: .newItem)"),
+            "the .newItem group must be REPLACED, or SwiftUI's New Window keeps ⌘N"
+        )
+    }
+}

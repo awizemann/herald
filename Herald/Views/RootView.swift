@@ -121,6 +121,20 @@ struct MailWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        // Compose leads the toolbar, where Mail puts it: `.navigation` is the
+        // leading section, beside the sidebar toggle and over the message list.
+        // Before this, composing was reachable only from the menu bar — and ⌘N
+        // did not reach it either (issue #10).
+        //
+        // No keyboard shortcut on the button: ⌘N belongs to the File menu's
+        // "New Message", and two owners of one shortcut is the bug this fixes.
+        ToolbarItem(placement: .navigation) {
+            Button { model.requestCompose(.new) } label: {
+                Image(systemName: "square.and.pencil")
+                    .iconButtonStyle("New Message")
+            }
+        }
+
         ToolbarItemGroup {
             // No shortcut here: ⌘⇧K belongs to the File menu's "Get New Mail",
             // and two owners of one shortcut is a coin toss over which fires.

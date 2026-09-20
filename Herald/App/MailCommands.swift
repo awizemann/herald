@@ -96,7 +96,18 @@ struct MailCommands: Commands {
             }
         }
 
-        CommandGroup(after: .newItem) {
+        // `replacing:`, not `after:` — SwiftUI's own New Window item lives in the
+        // `.newItem` group and owns ⌘N too, and with two owners of one shortcut
+        // AppKit picked the built-in: ⌘N opened a second main window on the
+        // Inbox instead of the composer (issue #10).
+        //
+        // No "New Window" replacement item. Herald has ONE `MailViewModel`,
+        // owned by `AppEnvironment` and shared by every scene, so a second main
+        // window is a live mirror rather than an independent mailbox view: the
+        // two would share one selection, one drill-in state and one search, and
+        // moving the selection in either would move it in both. The window is
+        // still reopened by activating the app when it has been closed.
+        CommandGroup(replacing: .newItem) {
             Button("New Message") { model?.requestCompose(.new) }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(model == nil)

@@ -3,23 +3,38 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.4.1</title>
-            <pubDate>Sun, 06 Sep 2026 11:37:57 -0400</pubDate>
-            <sparkle:version>9</sparkle:version>
-            <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
+            <title>0.5.0</title>
+            <pubDate>Sat, 19 Sep 2026 20:48:27 -0400</pubDate>
+            <sparkle:version>10</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h3>Fixed</h3>
+            <description><![CDATA[<p>Adopts HQBase 1.4.0–1.4.2. Everything new switches itself on by what the server answers, so Herald keeps working unchanged on 1.3.4 and 1.4.0 instances.</p>
+<h3>Added</h3>
 <ul>
-<li>Sign-in can no longer trap you. A sign-in that stops making progress — most often because macOS never opens the browser window it was asked for — now shows a <strong>Cancel</strong> button on both the first-run screen and the Add Account sheet, and Cancel abandons the sign-in itself rather than just closing the window over it. The screen is usable again immediately and a second attempt works — and a cancelled sign-in is really cancelled: the account it had already stored is removed and its token revoked, rather than quietly reappearing at the next launch. The re-auth banner offers the same Cancel while it is signing you back in. Herald #9.</li>
-<li>The spinner now says what it is waiting for: contacting your server, checking this Mac&#x27;s registration, registering, waiting for the sign-in window, completing sign-in, saving credentials, setting up your mailbox. Each step is logged too, so a stuck sign-in names its location instead of just spinning.</li>
-<li>A browser sign-in that never reports back no longer waits forever: it is noted in the log after 45 seconds and fails with an explanation after ten minutes. The deadline is deliberately long — macOS gives Herald no signal that the window actually opened, so a shorter one would close a consent page you were still typing into. Cancel is the fast way out.</li>
-<li>Sign-in and token requests have real deadlines (15s per request, 30s overall). They previously inherited the system default of seven days, so a server that accepted the connection and then went quiet could hang the sign-in indefinitely.</li>
-<li>Keychain reads and writes during sign-in and at launch no longer run on the main thread, so a stalled system keychain leaves Herald responsive — and cancellable — instead of frozen.</li>
-<li>Signing out now clears the cached server discovery for that address. Signing back into a server that was reinstalled in the meantime, without quitting Herald, could previously reuse the old install&#x27;s endpoints.</li>
+<li><strong>Signatures in Settings</strong> (HQBase 1.4.2). A new Settings ▸ Signatures tab lists the signatures you may manage, grouped by personal, mailbox and domain, with create, edit, delete, default flag and a live preview rendered with the same protections as the reading pane. On an older server the tab says so instead of failing; an account signed in before this release needs one fresh sign-in to grant the new permission, and the tab tells you that too.</li>
+<li><strong>Reply-To is honoured</strong> when a message names preferred reply addresses (HQBase 1.4.0): Reply pre-fills them instead of the sender.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Labels update immediately</strong> on HQBase 1.4.2. Label membership now arrives on every message row and every change-journal entry, so a label applied in the web app shows on the row within one sync pass instead of waiting for the two-minute sweep. The per-label sweep now runs every thirty minutes as a safety net (and immediately when the label list changes). Older servers keep the previous cadence.</li>
+<li><strong>Sending is retry-safe</strong> (HQBase 1.4.0). Every send, reply and forward carries a stable retry identity, so clicking Send again after a timeout replays the original delivery instead of sending a second copy. Forwards had no such identity before. If the server reports that a send is still being recovered, Herald says so and does not let you resend it.</li>
+<li><strong>Sign-ins outlive the browser session</strong> on HQBase 1.4.2: signing out of the web app or letting its session expire no longer signs Herald out. The automatic re-sign-in stays for revocation and password resets.</li>
+<li>Herald now asks the server only for the permissions it actually uses, so a future server release cannot widen the consent screen on its own.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>A label you just applied could disappear for up to one sweep if a sync pass was already in flight; in-flight label changes are now fenced from that pass.</li>
+<li>A sync pass that failed part-way through after writing label changes left the chips stale until the next label edit.</li>
+<li>A held Send button now states why it is held, and ⌘⇧D still announces the reason instead of doing nothing.</li>
+<li>The signature preview no longer opens blank for a quarter of a second, announces errors to VoiceOver, and fits the Settings window at every text size.</li>
+<li>Signing out of one account while another was still restoring at launch could bring the signed-out account back.</li>
+<li>A Keychain read failure during a token refresh is now reported and aborts the refresh, rather than being mistaken for &quot;nothing stored&quot; and spending a token another Herald process may have already rotated.</li>
+<li>Server error text is never written to the system log from the signatures pane.</li>
+<li>The flaky new-mail notification test had a wait that could never fail; fixed at the cause.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.4.1/Herald-0.4.1.zip" length="3584628" type="application/octet-stream" sparkle:edSignature="Pl8e9nvRyW08cO5TMWyWkLh0Mrq2DpYXtN64+lfS2hdpZrdlAm+VqyLtoFv9YtnKopqpgokWSoJanlsnul0UAQ=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.5.0/Herald-0.5.0.zip" length="3745934" type="application/octet-stream" sparkle:edSignature="XFj2fR/3fSqTobD+Uek2rB+eik+rD1JF/3pPuorUA8htLw1IPS70c0cHdkbuLfiJ7OtYFy+EkXcOHfMRwY23Cw=="/>
         </item>
     </channel>
 </rss>

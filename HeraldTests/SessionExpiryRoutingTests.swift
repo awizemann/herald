@@ -148,6 +148,9 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
         await environment.install(
             account: account, api: FakeMailAPIClient(), store: store, select: select, tokenProvider: provider
         )
+        // What `activate` does for a real account (pinned through `activate`
+        // itself by `activateWiresTheProvidersDeathsToTheBanner`).
+        await provider.setSessionRejectedHandler(environment.sessionDeathHandler())
         let log = AnnouncementLog()
         let graph = environment.graphs[account.id]!
         let forward = graph.mail.reauthenticationRequired
@@ -160,6 +163,11 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
 
     @MainActor final class AnnouncementLog {
         var ids: [Account.ID] = []
+    }
+
+    actor DeathCapture {
+        private(set) var death: SessionDeath?
+        func set(_ death: SessionDeath) { self.death = death }
     }
 
     // MARK: - Non-sync surfaces raise the banner
@@ -301,6 +309,106 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
         #expect(await tracker.names.contains("account_reauthenticated") == false)
     }
 
+    // MARK: - Stale reports (W11)
+
+    /// A provider read the store, found the grant dead and announced it — and
+    /// the announcement reached the main actor only AFTER a re-auth had stored
+    /// a new grant and installed a new graph. Fails if the stale report is
+    /// routed by account id onto the fresh graph (the banner, and an automatic
+    /// consent window, over a session that works). The positive control: the
+    /// same report for the grant still stored does raise it.
+    @Test func aStaleDeathReportDoesNotRaiseTheBannerOnAFreshGraph() async throws {
+        let environment = Self.environment(accounts: [Self.accountA])
+        let mailStore = try MailStore.inMemory()
+        let keychain = InMemoryAccountStore()
+        let (oldProvider, _) = try Self.provider(for: Self.accountA, store: keychain)
+        _ = await Self.install(Self.accountA, provider: oldProvider, in: environment, store: mailStore)
+        // The old provider's announcement, captured in flight (not yet delivered).
+        let captured = DeathCapture()
+        await oldProvider.setSessionRejectedHandler { await captured.set($0) }
+        await oldProvider.sessionRejected(token: "access-0")
+        let staleDeath = try #require(await captured.death)
+
+        // The re-auth lands first: new grant, new graph.
+        let (newProvider, _) = try Self.provider(for: Self.accountA, seed: Self.tokens(9), store: keychain)
+        let newLog = await Self.install(Self.accountA, provider: newProvider, in: environment, store: mailStore)
+        let newMail = try #require(environment.graphs[Self.accountA.id]?.mail)
+
+        await environment.reportSessionDeath(staleDeath)
+        #expect(newMail.status != .needsReauth, "a stale report raised the banner over a fresh sign-in")
+        #expect(newLog.ids.isEmpty)
+
+        // Control: a death of the grant that IS stored is delivered.
+        await newProvider.sessionRejected(token: "access-9")
+        #expect(newMail.status == .needsReauth)
+        #expect(newLog.ids == [Self.accountA.id])
+    }
+
+    /// The other half of the check: the store still held the dead grant when
+    /// the provider was asked, but the graph the report was pinned to was
+    /// replaced while it asked. Fails if the report is delivered to whatever
+    /// graph is installed afterwards instead of being dropped.
+    @Test func aDeathReportThatRacesAReinstallIsDropped() async throws {
+        let environment = Self.environment(accounts: [Self.accountA])
+        let mailStore = try MailStore.inMemory()
+        let keychain = ReadGatedAccountStore()
+        let (provider, _) = try Self.provider(for: Self.accountA, store: keychain.backing)
+        let gatedProvider = AccountTokenProvider(
+            accountID: Self.accountA.id, store: keychain, refresher: MintingRefresher(), refreshLeeway: 60
+        )
+        _ = await Self.install(Self.accountA, provider: provider, in: environment, store: mailStore)
+        let oldMail = try #require(environment.graphs[Self.accountA.id]?.mail)
+        let captured = DeathCapture()
+        await gatedProvider.setSessionRejectedHandler { await captured.set($0) }
+        await gatedProvider.sessionRejected(token: "access-0")
+        let death = try #require(await captured.death)
+
+        keychain.armReadGate()
+        let report = Task { await environment.reportSessionDeath(death) }
+        try await wait("the report to be checking the store") { keychain.isBlocked }
+        let newLog = await Self.install(Self.accountA, provider: provider, in: environment, store: mailStore)
+        keychain.openReadGate()
+        await report.value
+
+        let newMail = try #require(environment.graphs[Self.accountA.id]?.mail)
+        #expect(newMail !== oldMail)
+        #expect(newMail.status != .needsReauth, "a report that raced a re-install reached the new graph")
+        #expect(newLog.ids.isEmpty)
+        #expect(oldMail.status != .needsReauth, "a report that raced a re-install was delivered anyway")
+    }
+
+    // MARK: - activate wires the provider (D6, D9)
+
+    /// Through `activate` itself — the real `AuthCoordinator.tokenProvider`, the
+    /// real `HQBaseAPIClient` — not a test-side `install`. Fails if `activate`
+    /// stops wiring the provider it builds: a send, an autosave or a message
+    /// open on a dead session would then latch silently and raise no banner.
+    /// (Sync cannot mask it here: the origin never resolves, so every pass
+    /// fails as a transport error, never as a dead session.)
+    @Test func activateWiresTheProvidersDeathsToTheBanner() async throws {
+        let account = Account(
+            origin: URL(string: "https://\(OAuTestServerConstants.host)")!, clientID: "cid_registered", scopes: []
+        )
+        let keychain = InMemoryAccountStore(accounts: [account])
+        try keychain.setTokens(Self.tokens(0), for: account.id)
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: keychain, presenter: PendingPresenter(), session: OAuthTestServer.session()),
+            defaults: Self.scratchDefaults(),
+            isApplicationActive: { false }
+        )
+        environment.store = try MailStore.inMemory()
+
+        #expect(await environment.activate(account))
+        let graph = try #require(environment.graphs[account.id])
+        let provider = try #require(graph.tokens, "activate did not keep its provider on the graph")
+        #expect(graph.mail.status != .needsReauth)
+
+        await provider.sessionRejected(token: "access-0")
+
+        #expect(graph.mail.status == .needsReauth, "activate left the provider's dead-session hook unwired")
+        await environment.stopGraph(accountID: account.id)
+    }
+
     // MARK: - The automatic attempt
 
     /// End to end into the policy: a non-sync death, Herald frontmost, the
@@ -313,6 +421,7 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
         await environment.install(
             account: Self.accountA, api: FakeMailAPIClient(), store: try MailStore.inMemory(), tokenProvider: provider
         )
+        await provider.setSessionRejectedHandler(environment.sessionDeathHandler())
         await environment.setWindowActive(true)
 
         await provider.sessionRejected(token: "access-0")
@@ -341,4 +450,43 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
     func requiresReauthenticationSeesThroughTheServiceWrappers(error: any Error, expected: Bool) {
         #expect(MailViewModel.requiresReauthentication(error) == expected)
     }
+}
+
+/// An in-memory store whose token READ can be made to block, so a
+/// `SessionDeath.isCurrent()` check can be held while the main actor re-installs
+/// the account.
+private nonisolated final class ReadGatedAccountStore: AccountStore, @unchecked Sendable {
+    let backing = InMemoryAccountStore()
+    private let gate = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var armed = false
+    private var blocked = false
+
+    var isBlocked: Bool { lock.withLock { blocked } }
+    /// The NEXT `tokens(for:)` blocks until ``openReadGate()``.
+    func armReadGate() { lock.withLock { armed = true } }
+    func openReadGate() { gate.signal() }
+
+    func tokens(for accountID: Account.ID) throws -> OAuthTokens? {
+        let shouldBlock = lock.withLock { () -> Bool in
+            guard armed else { return false }
+            armed = false
+            blocked = true
+            return true
+        }
+        if shouldBlock {
+            gate.wait()
+            lock.withLock { blocked = false }
+        }
+        return try backing.tokens(for: accountID)
+    }
+
+    func accounts() throws -> [Account] { try backing.accounts() }
+    func add(_ account: Account) throws { try backing.add(account) }
+    func remove(_ accountID: Account.ID) throws { try backing.remove(accountID) }
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
+        try backing.setTokens(tokens, for: accountID)
+    }
+    func clientID(for origin: URL) throws -> String? { try backing.clientID(for: origin) }
+    func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
 }

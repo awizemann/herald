@@ -16,7 +16,10 @@ public nonisolated protocol BearerTokenProvider: Sendable {
     /// account out.
     func refreshAccessToken(failedToken: String) async throws -> String
     /// Reports that `token` — handed out by ``refreshAccessToken(failedToken:)``
-    /// for a retry — was STILL rejected with a refreshable 401.
+    /// for a retry — was STILL rejected with a 401 carrying an explicit
+    /// `WWW-Authenticate: Bearer error="invalid_token"` challenge. A bare 401
+    /// (a proxy, one misbehaving route) is never reported: the report latches
+    /// the whole grant, so it needs the server's own verdict.
     ///
     /// A token the provider just minted or re-served being refused means the
     /// grant itself is dead (pre-1.4.2 HQBase mints tokens for a web session

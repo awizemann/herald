@@ -36,7 +36,7 @@ public nonisolated struct URLSessionMailEventChannels: MailEventChannelOpening {
         // deliberately wants the cookie-session path (the live test) uses its
         // own `MailEventChannelOpening` instead of going through here.
         guard !token.isEmpty else {
-            throw MailEventChannelError.unauthorized
+            throw MailEventChannelError.unauthorized(invalidToken: false)
         }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -190,7 +190,7 @@ nonisolated final class WebSocketChannel: MailEventChannel, @unchecked Sendable 
     private func endReason(fallback: any Error) -> MailEventChannelError {
         if let recorded = state.withLock({ $0.failure }) { return recorded }
         if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
-            return Self.rejection(status: response.statusCode)
+            return Self.rejection(response)
         }
         let closeCode = task.closeCode
         if closeCode != .invalid {
@@ -200,8 +200,18 @@ nonisolated final class WebSocketChannel: MailEventChannel, @unchecked Sendable 
         return .transport(Self.diagnostic(fallback))
     }
 
-    static func rejection(status: Int) -> MailEventChannelError {
-        status == 401 ? .unauthorized : .rejected(status: status)
+    static func rejection(_ response: HTTPURLResponse) -> MailEventChannelError {
+        rejection(status: response.statusCode, challenge: response.value(forHTTPHeaderField: "WWW-Authenticate"))
+    }
+
+    /// A 401 says whether the server named the token itself as invalid — the
+    /// only 401 the provider may latch the grant on (see
+    /// ``AuthenticatingMiddleware/isExplicitInvalidToken(_:)``).
+    static func rejection(status: Int, challenge: String?) -> MailEventChannelError {
+        guard status == 401 else { return .rejected(status: status) }
+        return .unauthorized(
+            invalidToken: challenge.map(AuthenticatingMiddleware.isExplicitInvalidToken(challenge:)) ?? false
+        )
     }
 
     /// A short, non-identifying description — never a URL or a response body.
@@ -278,7 +288,7 @@ nonisolated final class WebSocketChannel: MailEventChannel, @unchecked Sendable 
                 // A rejected upgrade is an ordinary HTTP response: the server answers
                 // 401 with a `WWW-Authenticate: Bearer …` challenge, 403 on scope,
                 // 426 without the upgrade header, 503 when the event service is down.
-                reason = WebSocketChannel.rejection(status: response.statusCode)
+                reason = WebSocketChannel.rejection(response)
             } else if let error {
                 reason = .transport(WebSocketChannel.diagnostic(error))
             } else {

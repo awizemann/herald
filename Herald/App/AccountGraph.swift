@@ -21,6 +21,11 @@ final class AccountGraph {
     let notifier: NewMailNotifier
     /// This account's `GET /events` wake socket, when it has one.
     let wake: MailEventSocket?
+    /// The token provider behind this graph's REST client and socket, when it
+    /// has a real one (`nil` for graphs built on a fake API in tests). Held so
+    /// the dead-session wiring `AppEnvironment.activate` gives it is reachable
+    /// — and assertable — from the graph.
+    let tokens: AccountTokenProvider?
 
     init(
         account: Account,
@@ -29,7 +34,8 @@ final class AccountGraph {
         outbox: OutboxService,
         signatures: SignatureManagementService,
         notifier: NewMailNotifier,
-        wake: MailEventSocket? = nil
+        wake: MailEventSocket? = nil,
+        tokens: AccountTokenProvider? = nil
     ) {
         self.account = account
         self.sync = sync
@@ -38,6 +44,7 @@ final class AccountGraph {
         self.signatures = signatures
         self.notifier = notifier
         self.wake = wake
+        self.tokens = tokens
     }
 
     /// `stopAndWait`, not `stop`: sign-out purges this account's rows immediately

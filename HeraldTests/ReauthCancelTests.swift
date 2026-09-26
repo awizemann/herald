@@ -159,19 +159,32 @@ import Testing
     /// `securityd`, reproduced by gating the write). Cancellation cannot stop a
     /// write already running, so `addAccount` returns having stored the new
     /// grant. The decision pinned here: for an account that is ALREADY signed
-    /// in, that grant is KEPT and nothing is installed or selected.
+    /// in, that grant is KEPT and the account is brought back on it — a fresh
+    /// graph, its composers rebound — WITHOUT taking the window.
     ///
     /// Fails on the pre-P3 undo (`auth.signOut`), which removed the account and
     /// its tokens from the Keychain — the Cancel of a repair would have deleted
-    /// the user's account at the next launch. Fails too if the late consent
-    /// installs a new graph or pulls the window back to the account the user
-    /// had moved away from.
-    @Test func aLateConsentAfterCancellingAnAutomaticAttemptKeepsTheAccountAndInstallsNothing() async throws {
-        let h = try await Self.harness(also: [Self.other])
-        h.presenter.releaseAll()
-        h.store.armSaveGate()
+    /// the user's account at the next launch. Fails on P3's keep-but-install-
+    /// nothing (D3): the account worked but the banner and the composer's Sign
+    /// In still said it was dead, and once the cooldown ran out Herald flashed
+    /// a consent window for it (the last block). Fails too if the re-install
+    /// pulls the window back to the account the user had moved away from (W8).
+    @Test func aLateConsentAfterCancellingAnAutomaticAttemptKeepsTheAccountAndBringsItBackUnselected() async throws {
+        let api = FakeMailAPIClient()
+        await api.enableCompose()
+        await api.setComposeError(.unauthorized)
+        let h = try await Self.harness(api: api, also: [Self.other])
         let environment = h.environment
         let accountID = h.accountID
+        let composeID = try #require(await environment.prepareCompose(ComposeRequest(kind: .new)))
+        let composer = try #require(environment.makeComposeViewModel(id: composeID))
+        composer.toText = "friend@example.com"
+        composer.bodyText = "Hello"
+        #expect(await composer.send() == false)
+        #expect(composer.signInAffordance == .available)
+
+        h.presenter.releaseAll()
+        h.store.armSaveGate()
         h.flag.isActive = true
         let attempt = Task { await environment.attemptAutomaticReauthentication(accountID: accountID) }
         try await wait("the consent to reach the Keychain write") { h.store.isBlocked }
@@ -184,17 +197,29 @@ import Testing
         await attempt.value
 
         #expect(await h.reauthOutcomes() == [.string("cancelled")])
-        #expect(environment.selectedAccountID == Self.other.id, "a cancelled consent took the window back")
-        #expect(environment.graphs[accountID] === h.graph, "a cancelled consent re-installed the account")
         #expect(try h.store.accounts().map(\.id).contains(accountID), "the cancel signed the existing account out")
         #expect(try h.store.tokens(for: accountID)?.accessToken == Self.freshAccessToken)
         #expect(environment.isReauthenticating(accountID: accountID) == false)
-        #expect(h.mail.status == .needsReauth, "the banner stays until the user signs in")
+        let revived = try #require(environment.graphs[accountID])
+        #expect(revived !== h.graph, "the kept grant was not brought back: the UI still says the session is dead")
+        #expect(revived.mail.status != .needsReauth, "the banner outlived the kept grant")
+        #expect(composer.signInAffordance == .none, "the composer's Sign In outlived the kept grant")
+        #expect(environment.makeComposeViewModel(id: composeID) === composer)
+        #expect(environment.selectedAccountID == Self.other.id, "a cancelled consent took the window")
+
+        // Past the cooldown, back on the account: nothing to repair, so no
+        // consent window flashes for a healthy account.
+        environment.autoReauth = AutoReauthPolicy()
+        environment.selectAccount(accountID)
+        await environment.attemptAutomaticReauthentication(accountID: accountID)
+        #expect(h.presenter.attemptCount == 1, "Herald re-ran consent for an account that is signed in")
+        await environment.stopGraph(accountID: accountID)
     }
 
     /// The SAME trap on the path that existed before P3: the user's own Sign In,
     /// cancelled, then the consent completing anyway. Fails on the old
-    /// stale-generation undo, which signed the existing account out.
+    /// stale-generation undo, which signed the existing account out, and on
+    /// P3's leave-it-dead (D3).
     @Test func aLateConsentAfterCancellingTheUsersOwnReauthDoesNotSignTheAccountOut() async throws {
         let h = try await Self.harness()
         h.presenter.releaseAll()
@@ -203,7 +228,7 @@ import Testing
         let accountID = h.accountID
         let attempt = Task { await environment.reauthenticate(accountID: accountID) }
         try await wait("the consent to reach the Keychain write") { h.store.isBlocked }
-        #expect(environment.isCancellableReauthentication(accountID: accountID))
+        #expect(environment.isSigningIn && environment.signInReauthAccountID == accountID, "the user's attempt must own the sign-in")
 
         environment.cancelReauthentication(accountID: accountID)
         #expect(environment.isSigningIn == false)
@@ -213,10 +238,66 @@ import Testing
         await attempt.value
 
         #expect(await h.reauthOutcomes() == [.string("cancelled")])
-        #expect(environment.graphs[accountID] === h.graph)
         #expect(try h.store.accounts().map(\.id).contains(accountID), "the cancel signed the existing account out")
         #expect(try h.store.tokens(for: accountID)?.accessToken == Self.freshAccessToken)
         #expect(environment.isSigningIn == false)
+        let revived = try #require(environment.graphs[accountID])
+        #expect(revived !== h.graph)
+        #expect(revived.mail.status != .needsReauth)
+        #expect(environment.selectedAccountID == accountID)
+        await environment.stopGraph(accountID: accountID)
+    }
+
+    // MARK: - Re-auth never takes the window (W8)
+
+    /// The user's own Sign In for an account the window is NOT showing (the
+    /// sidebar's button, or a compose window's): it succeeds and installs a
+    /// new graph, and the window stays on the account the user is reading.
+    /// Fails if a re-auth selects the account it repaired.
+    @Test func aReauthOfABackgroundAccountLeavesTheSelectionAlone() async throws {
+        let h = try await Self.harness(also: [Self.other])
+        let environment = h.environment
+        environment.selectAccount(Self.other.id)
+        h.presenter.releaseAll()
+
+        await environment.reauthenticate(accountID: h.accountID)
+
+        #expect(environment.graphs[h.accountID] !== h.graph, "the sign-in did not install")
+        #expect(environment.graphs[h.accountID]?.mail.status != .needsReauth)
+        #expect(environment.selectedAccountID == Self.other.id, "the re-auth took the window")
+        await environment.stopGraph(accountID: h.accountID)
+    }
+
+    // MARK: - Sign-out never waits on a wedged attempt (W9)
+
+    /// An automatic attempt parked on an authentication agent that never
+    /// answers — and ignores cancellation. Fails if sign-out awaits it (it
+    /// would hang with it). And once the agent does wake and completes the
+    /// consent, the late consent is signed back out: no graph, no account in
+    /// the Keychain.
+    @Test(.timeLimit(.minutes(1)))
+    func signOutDoesNotWaitForAWedgedAutomaticAttempt() async throws {
+        let h = try await Self.harness(also: [Self.other])
+        h.presenter.ignoresCancellation(ofAttempt: 1)
+        let attempt = try await h.startAutomaticAttempt()
+        let environment = h.environment
+        let accountID = h.accountID
+
+        let signOut = Task { await environment.signOut(accountID: accountID) }
+        try await wait("the sign-out to finish while the attempt is still wedged") {
+            environment.graphs[accountID] == nil && environment.accountIDs == [Self.other.id]
+                && (try? h.store.accounts().map(\.id).contains(accountID)) == false
+        }
+        await signOut.value
+        #expect(environment.isReauthenticating(accountID: accountID) == false)
+        #expect(environment.selectedAccountID == Self.other.id)
+
+        // The agent wakes and the consent completes after all.
+        h.presenter.release(1)
+        await attempt.value
+        #expect(environment.graphs[accountID] == nil, "a late consent brought a signed-out account back")
+        #expect(try h.store.accounts().map(\.id).contains(accountID) == false, "a late consent left the account in the Keychain")
+        #expect(environment.selectedAccountID == Self.other.id)
     }
 
     /// The other half of the rule: an account that is NOT signed in here (an
@@ -264,7 +345,7 @@ import Testing
         h.presenter.release(1)
         await automatic.value
         #expect(environment.isReauthenticating(accountID: accountID), "the stale attempt released the user's claim")
-        #expect(environment.isCancellableReauthentication(accountID: accountID))
+        #expect(environment.isSigningIn && environment.signInReauthAccountID == accountID, "the user's attempt must own the sign-in")
         #expect(environment.graphs[accountID] === h.graph, "the stale attempt installed the account")
 
         // The user's own attempt completes normally.
@@ -293,6 +374,23 @@ import Testing
             #expect(Label.signInAffordance(for: status, isReauthenticating: false) == .none)
             #expect(Label.signInAffordance(for: status, isReauthenticating: true) == .none)
         }
+    }
+
+    /// The banner's "Sign-in cancelled" is for the account whose Cancel the user
+    /// pressed. The banner view's state survives an account switch, so a flag
+    /// left over from account A must not turn B's attempt ending into a cancel.
+    @Test func theBannersCancelAnnouncementIsKeyedToTheAccount() {
+        typealias Banner = ReauthBanner
+        let a = Self.account.id
+        let b = Self.other.id
+        #expect(Banner.stateChangeAnnouncement(isReauthenticating: false, cancelledAccountID: a, accountID: a)
+            == Banner.cancelledAnnouncement)
+        #expect(Banner.stateChangeAnnouncement(isReauthenticating: false, cancelledAccountID: a, accountID: b)
+            == Banner.announcement(isReauthenticating: false), "A's cancel leaked into B's banner")
+        #expect(Banner.stateChangeAnnouncement(isReauthenticating: false, cancelledAccountID: nil, accountID: a)
+            == Banner.announcement(isReauthenticating: false))
+        #expect(Banner.stateChangeAnnouncement(isReauthenticating: true, cancelledAccountID: a, accountID: a)
+            == Banner.announcement(isReauthenticating: true))
     }
 
     /// What the sidebar's button calls, while an automatic attempt holds the

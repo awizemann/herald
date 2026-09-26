@@ -23,6 +23,29 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// (reported through ``sessionRejected(token:)``) latches the grant, and every
 /// later call fails fast with ``OAuthError/reauthenticationRequired`` instead of
 /// spending the rotating refresh token again. See ``deadGrant``.
+/// One announced session death, handed to the handler set with
+/// ``AccountTokenProvider/setSessionRejectedHandler(_:)``.
+///
+/// Carries the dead grant's identity so the app can ask, at the moment it acts,
+/// whether the report is still about the grant the store holds
+/// (``isCurrent()``): the announcement hops actors on its way, and a re-auth
+/// that lands in that gap must not have a stale report raise the banner over
+/// the fresh grant.
+public nonisolated struct SessionDeath: Sendable {
+    public let accountID: Account.ID
+    /// The dead grant's key, or `nil` for "no grant stored at all". Never
+    /// logged or exposed — it is (derived from) a refresh token.
+    let grant: String?
+    let provider: AccountTokenProvider
+
+    /// Whether this death is still about the grant the store holds now: false
+    /// once the store holds a DIFFERENT grant (a re-auth landed — here, in
+    /// another graph, or in another process). An empty store is still dead.
+    public func isCurrent() async -> Bool {
+        await provider.isStillDead(grant: grant)
+    }
+}
+
 public actor AccountTokenProvider: BearerTokenProvider {
     private let accountID: Account.ID
     private let store: any AccountStore
@@ -55,7 +78,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
 
     /// Told once per dead grant, after it is latched. See
     /// ``setSessionRejectedHandler(_:)``.
-    private var sessionRejectedHandler: (@Sendable (Account.ID) async -> Void)?
+    private var sessionRejectedHandler: (@Sendable (SessionDeath) async -> Void)?
 
     /// The grant (``grantKey(_:)``) whose death was last announced, or
     /// ``emptyStoreKey`` for "no grant stored at all".
@@ -95,17 +118,24 @@ public actor AccountTokenProvider: BearerTokenProvider {
     ///
     /// Settable after construction because the provider is built
     /// (``AuthCoordinator/tokenProvider(for:)``) before the app graph that routes
-    /// the signal exists. Called with the account id, once per dead grant, and
-    /// AWAITED — so it runs before the request that discovered the death returns
-    /// its `.unauthorized`. The actor is re-entrant across that await: a handler
-    /// may call straight back into this provider without deadlocking.
+    /// the signal exists. Called with a ``SessionDeath`` (the account id, and a
+    /// way to re-check the grant — ``SessionDeath/isCurrent()``), once per dead
+    /// grant, and AWAITED — so it runs before the request that discovered the
+    /// death returns its `.unauthorized`. The actor is re-entrant across that
+    /// await: a handler may call straight back into this provider (as
+    /// `isCurrent()` does) without deadlocking.
+    ///
+    /// A death found while NO handler is set is not recorded as announced: it
+    /// is announced by the first request that trips over it once a handler is
+    /// set (a latched grant announces on the fail-fast path too). Nothing that
+    /// happens before the app wires the hook is lost.
     ///
     /// The handler MUST return promptly and start any long work (the re-auth
     /// attempt) in its own `Task`, like the app's other expiry callbacks: the
     /// request or socket loop that reported the death is suspended until it
     /// returns. In particular it must never await `MailEventSocket.stop()` — the
     /// socket's loop is one of the reporters, so that wait is a deadlock.
-    public func setSessionRejectedHandler(_ handler: (@Sendable (Account.ID) async -> Void)?) {
+    public func setSessionRejectedHandler(_ handler: (@Sendable (SessionDeath) async -> Void)?) {
         sessionRejectedHandler = handler
     }
 
@@ -114,7 +144,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
         // between, so a caller either starts the refresh or joins the existing one.
         let stored = try store.tokens(for: accountID)
         observe(stored)
-        try checkLatch(against: stored)
+        try await checkLatch(against: stored)
         if let stored, stored.isUsable(at: now(), leeway: refreshLeeway) { return stored.accessToken }
         return try await refreshTokens(replacing: stored).accessToken
     }
@@ -124,7 +154,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
         // Before the stale-401 shortcut too: a latched grant's access token is
         // dead however recently it was minted.
         observe(stored)
-        try checkLatch(against: stored)
+        try await checkLatch(against: stored)
         // The 401 was for a token we have since replaced: a concurrent request — in
         // this process or another one — already refreshed. Refreshing again would
         // redeem an already-rotated refresh token and sign the account out. No
@@ -160,11 +190,16 @@ public actor AccountTokenProvider: BearerTokenProvider {
         }
         observe(stored)
         let grant = Self.grantKey(stored)
-        // Latched and checked with no suspension in between, so concurrent
-        // reports of the same death announce it exactly once.
-        guard grant != deadGrant else { return }
-        deadGrant = grant
-        logger.warning("session rejected after refresh for \(self.accountID, privacy: .public); grant latched, re-auth required")
+        // Latched with no suspension since the read, and BEFORE the
+        // announcement awaits the handler: a request arriving while the handler
+        // runs must already fail fast rather than spend the grant again.
+        if grant != deadGrant {
+            deadGrant = grant
+            logger.warning("session rejected after refresh for \(self.accountID, privacy: .public); grant latched, re-auth required")
+        }
+        // Deduplicated inside (recorded before its await), so concurrent reports
+        // of the same death announce it exactly once — and a grant latched
+        // before any handler was set is announced by the next report.
         await announceDeath(ofGrant: grant)
     }
 
@@ -180,7 +215,15 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// Recorded BEFORE awaiting the handler: the actor is re-entrant across that
     /// await, and the concurrent requests that hit the same death must find it
     /// already announced.
+    ///
+    /// With no handler set (the app has not wired this provider yet) nothing is
+    /// recorded, so the next request that finds the same death announces it —
+    /// see ``setSessionRejectedHandler(_:)``.
     private func announceDeath(ofGrant grant: String?) async {
+        guard let handler = sessionRejectedHandler else {
+            logger.warning("session death for \(self.accountID, privacy: .public) found before a handler was set; will announce on the next request")
+            return
+        }
         if let grant {
             guard grant != announcedDeath else { return }
             announcedDeath = grant
@@ -188,7 +231,26 @@ public actor AccountTokenProvider: BearerTokenProvider {
             guard announcedDeath == nil else { return }
             announcedDeath = Self.emptyStoreKey
         }
-        await sessionRejectedHandler?(accountID)
+        await handler(SessionDeath(accountID: accountID, grant: grant, provider: self))
+    }
+
+    /// Backs ``SessionDeath/isCurrent()``: whether the death of `grant` (`nil`:
+    /// the empty store) is still about what the store holds.
+    ///
+    /// Stale only when the store holds a DIFFERENT grant. An empty store keeps
+    /// every death current — it is what an `invalid_grant` leaves behind, and
+    /// nothing live has replaced it. An unreadable store answers "current":
+    /// dropping a real death is worse than a banner a sign-in clears.
+    func isStillDead(grant: String?) -> Bool {
+        let stored: OAuthTokens?
+        do {
+            stored = try store.tokens(for: accountID)
+        } catch {
+            logger.error("token store unreadable for \(self.accountID, privacy: .public); treating the reported death as current")
+            return true
+        }
+        guard let stored else { return true }
+        return Self.grantKey(stored) == grant
     }
 
     /// Forgets the announced death once the store holds a DIFFERENT grant (a
@@ -202,9 +264,15 @@ public actor AccountTokenProvider: BearerTokenProvider {
 
     /// Throws when `stored` is the latched dead grant; clears a latch the store
     /// has moved past.
-    private func checkLatch(against stored: OAuthTokens?) throws {
+    ///
+    /// The fail-fast path announces too (a no-op once announced): a grant
+    /// latched while no handler was set would otherwise never be announced at
+    /// all, since every later request stops here. Suspends ONLY on that throwing
+    /// path, so callers' "read then decide" stays free of suspensions.
+    private func checkLatch(against stored: OAuthTokens?) async throws {
         guard let deadGrant, let stored else { return }
         if Self.grantKey(stored) == deadGrant {
+            await announceDeath(ofGrant: deadGrant)
             throw OAuthError.reauthenticationRequired
         }
         logger.info("a new grant replaced the rejected one for \(self.accountID, privacy: .public); latch cleared")

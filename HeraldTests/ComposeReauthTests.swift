@@ -176,6 +176,199 @@ import Testing
         #expect(await live.sendCount == 1)
     }
 
+    // MARK: - One server draft across a rebind (D4)
+
+    /// A first autosave's `POST /drafts` is still in flight on the OLD graph's
+    /// outbox when the re-auth rebinds the composer, and the user keeps typing.
+    /// `OutboxService` only deduplicates creates per instance, so the edit's
+    /// autosave through the NEW outbox used to create a second server draft
+    /// (the first orphaned in the Drafts folder). Fails unless exactly one
+    /// create happens and the edit lands as an update of that draft.
+    @Test(.timeLimit(.minutes(1)))
+    func aCreateInFlightAcrossARebindIsNotDuplicated() async throws {
+        let oldAPI = await Self.composeAPI()
+        await oldAPI.holdCreates()
+        let newAPI = await Self.composeAPI()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: OutboxService(api: oldAPI),
+            autosaveDelay: .zero
+        )
+        model.subject = "Plans"
+        try await wait("the first create to be in flight on the old outbox") { await oldAPI.parkedCreateCount == 1 }
+
+        model.accountSignedIn(outbox: OutboxService(api: newAPI))
+        model.bodyText = "Typed after signing in"
+        // Give the new autosave every chance to go out while the create is held.
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await newAPI.createdDrafts.isEmpty, "a second create went out while the first was in flight")
+
+        await oldAPI.releaseCreates()
+        try await wait("the edit to be saved") { await newAPI.updatedDrafts.count == 1 }
+        await model.waitForAutosave()
+
+        let creates = await oldAPI.createdDrafts.count + newAPI.createdDrafts.count
+        #expect(creates == 1, "one composer created \(creates) server drafts")
+        #expect(await newAPI.updatedDrafts.first?.text == "Typed after signing in")
+        #expect(model.draft.serverDraft?.id == "draft-1")
+    }
+
+    /// The attachment path: dropping a file onto a composer with no server
+    /// draft creates one first. Held on the old outbox across the rebind, then
+    /// an edit: still exactly one create. Fails if uploads are not serialized
+    /// with saves.
+    @Test(.timeLimit(.minutes(1)))
+    func anUploadsCreateInFlightAcrossARebindIsNotDuplicated() async throws {
+        let oldAPI = await Self.composeAPI()
+        await oldAPI.holdCreates()
+        let newAPI = await Self.composeAPI()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: OutboxService(api: oldAPI),
+            autosaveDelay: .zero
+        )
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("d4-\(UUID().uuidString).txt")
+        try Data("attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let upload = Task { await model.attach(file) }
+        try await wait("the upload's create to be in flight on the old outbox") { await oldAPI.parkedCreateCount == 1 }
+
+        model.accountSignedIn(outbox: OutboxService(api: newAPI))
+        model.subject = "Typed after signing in"
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await newAPI.createdDrafts.isEmpty, "a second create went out while the upload's was in flight")
+
+        await oldAPI.releaseCreates()
+        await upload.value
+        try await wait("the edit to be saved") { await newAPI.updatedDrafts.count == 1 }
+        await model.waitForAutosave()
+
+        let creates = await oldAPI.createdDrafts.count + newAPI.createdDrafts.count
+        #expect(creates == 1, "one composer created \(creates) server drafts")
+        // The create went out on the old outbox; the upload itself, after it,
+        // through the composer's CURRENT one.
+        #expect(await oldAPI.uploadedAttachments.isEmpty)
+        #expect(await newAPI.uploadedAttachments.count == 1)
+        #expect(model.draft.serverDraft?.id == "draft-1")
+    }
+
+    /// Delete Draft while the first save is still creating the server draft:
+    /// the delete must wait for the create and remove what it made. Fails if
+    /// the delete runs against "no server draft yet" and the create lands
+    /// after it, leaving the thrown-away draft on the server.
+    @Test(.timeLimit(.minutes(1)))
+    func discardDuringAnInFlightCreateDeletesTheCreatedDraft() async throws {
+        let api = await Self.composeAPI()
+        await api.holdCreates()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: OutboxService(api: api),
+            autosaveDelay: .zero
+        )
+        model.subject = "Never mind"
+        try await wait("the create to be in flight") { await api.parkedCreateCount == 1 }
+
+        let discard = Task { await model.discard() }
+        try await wait("the delete to be waiting for the create") { model.draftCreationWaiterCount == 1 }
+        await api.releaseCreates()
+        await discard.value
+
+        #expect(await api.createdDrafts.count == 1)
+        #expect(await api.deletedDraftIDs == ["draft-1"], "the discarded draft was left on the server")
+    }
+
+    /// Send (⌘⇧D) while the first save is still creating the server draft: the
+    /// send waits and names the draft, so the server consumes it. Fails if the
+    /// send goes out without a draft id while the create lands afterwards —
+    /// the message sent AND an orphaned copy left in Drafts.
+    @Test(.timeLimit(.minutes(1)))
+    func sendDuringAnInFlightCreateNamesTheCreatedDraft() async throws {
+        let api = await Self.composeAPI()
+        await api.holdCreates()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: OutboxService(api: api),
+            autosaveDelay: .zero
+        )
+        model.toText = "friend@example.com"
+        try await wait("the create to be in flight") { await api.parkedCreateCount == 1 }
+        // An edit's autosave parks behind the create too.
+        model.bodyText = "Hello"
+        try await wait("the edit's autosave to wait for the create") { model.draftCreationWaiterCount == 1 }
+
+        let send = Task { await model.send() }
+        try await wait("the send to wait for the create") { model.draftCreationWaiterCount == 2 }
+        #expect(await api.sentInputs.isEmpty, "the send went out while the draft was still being created")
+        await api.releaseCreates()
+        #expect(await send.value)
+
+        #expect(await api.createdDrafts.count == 1)
+        let sent = try #require(await api.sentInputs.first)
+        #expect(sent.draftID == "draft-1", "the send did not name the draft it consumed")
+        #expect(sent.text == "Hello")
+        // The parked autosave was cancelled by the Send: no PATCH may race the
+        // send that consumes the draft (it would 404 onto the error bar). The
+        // one PATCH is the send's own signature sync before `POST /send`; the
+        // woken autosave made it two.
+        #expect(await api.updatedDrafts.count == 1, "a parked autosave raced the send")
+    }
+
+    /// An upload onto a draft with no server id creates the draft first; if the
+    /// upload itself then fails (a 413, a dropped link), the created draft's id
+    /// must survive. Fails if the create happens inside `attach`, whose error
+    /// throws the id away — the next save would create a second draft.
+    @Test func anUploadThatFailsAfterCreatingTheDraftKeepsItsID() async throws {
+        let api = await Self.composeAPI()
+        await api.setAttachmentError(.server(code: "PAYLOAD_TOO_LARGE", message: "too big"))
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: OutboxService(api: api),
+            autosaveDelay: .zero
+        )
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("d4-\(UUID().uuidString).txt")
+        try Data("attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        await model.attach(file)
+        #expect(model.status.message != nil, "the failed upload was not reported")
+        #expect(model.draft.serverDraft?.id == "draft-1", "the failed upload lost the draft it created")
+
+        model.subject = "After the failed upload"
+        await model.waitForAutosave()
+        #expect(await api.createdDrafts.count == 1, "a second server draft was created")
+        #expect(await api.updatedDrafts.first?.subject == "After the failed upload")
+    }
+
+    /// The close sheet's Save Draft on a composer whose account was signed out:
+    /// nothing can be saved, and it must SAY so. Fails if the press is silent
+    /// (the bar already showed the send failure, so nothing changed and
+    /// nothing was announced), or if the window closes over the only copy.
+    @Test func saveDraftOnASignedOutComposerSaysWhy() async {
+        let outbox = FakeOutbox()
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
+        )
+        model.bodyText = "Keep me"
+        model.accountSignedOut()
+        let announced = model.announcementCount
+
+        await model.saveAndClose()
+
+        #expect(model.status.message == ComposeViewModel.accountSignedOutSaveReason)
+        #expect(model.announcement == ComposeViewModel.accountSignedOutSaveReason)
+        #expect(model.announcementCount > announced, "Save Draft did nothing a VoiceOver user could hear")
+        #expect(model.isClosed == false)
+        #expect(await outbox.saveCount == 0)
+
+        // Pressed again: still heard, though the bar already says it.
+        let again = model.announcementCount
+        await model.saveAndClose()
+        #expect(model.announcementCount > again)
+    }
+
     /// Sign-out (and a re-auth that came back as a different user) must never
     /// let the window save or send through an account that is gone — and must
     /// not offer a Sign In that cannot bring it back. The text stays for the user
@@ -360,6 +553,10 @@ import Testing
         #expect(model.status.message == nil)
         #expect(model.bodyText == "Still here after signing in")
         #expect(model.isClosed == false, "signing in must not send by itself")
+        // AFTER the install: the composer's Sign In repaired a background
+        // account, and the window stays on the one the user is reading (W8).
+        #expect(environment.selectedAccountID == ReauthCancelTests.other.id, "the composer's Sign In took the window")
+        await environment.stopGraph(accountID: h.accountID)
     }
 
     /// Sign-out is NOT a re-auth: the composer's session goes, its view-model is

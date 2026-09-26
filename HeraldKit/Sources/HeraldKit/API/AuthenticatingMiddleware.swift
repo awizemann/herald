@@ -57,9 +57,20 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
             // otherwise every following request refreshes again, spending the
             // rotating refresh token each time for nothing (the 2026-09-26
             // incident: six "successful" refreshes in 65 s, all rejected).
+            //
+            // Only on an EXPLICIT `error="invalid_token"` challenge, though:
+            // latching condemns every surface of the account at once, so the
+            // evidence has to be the server's own word. HQBase always sends it
+            // on a dead token (verified live on 1.4.0 and 1.4.2); a bare 401 is
+            // a proxy or a misbehaving route, and gets today's one refresh and
+            // retry per request without taking the whole account down.
             if response.status.code == 401, Self.isRefreshable(response) {
-                logger.warning("401 persisted after refresh on \(operationID, privacy: .public); reporting the grant as dead")
-                await tokens.sessionRejected(token: refreshed)
+                if Self.isExplicitInvalidToken(response) {
+                    logger.warning("401 invalid_token persisted after refresh on \(operationID, privacy: .public); reporting the grant as dead")
+                    await tokens.sessionRejected(token: refreshed)
+                } else {
+                    logger.warning("401 persisted after refresh on \(operationID, privacy: .public) without an invalid_token challenge; not latching the grant")
+                }
             }
         }
 
@@ -76,6 +87,22 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
     static func isRefreshable(_ response: HTTPResponse) -> Bool {
         guard let challenge = response.headerFields[.wwwAuthenticate] else { return true }
         return authParameter("error", in: challenge) != "insufficient_scope"
+    }
+
+    /// Whether a 401 carries the server's explicit verdict on the TOKEN —
+    /// `WWW-Authenticate: Bearer … error="invalid_token"`. Stricter than
+    /// ``isRefreshable(_:)`` on purpose: a refresh is cheap to try on a bare
+    /// 401, but latching the grant (``BearerTokenProvider/sessionRejected(token:)``)
+    /// stops every request of the account, so it needs the explicit challenge.
+    static func isExplicitInvalidToken(_ response: HTTPResponse) -> Bool {
+        guard let challenge = response.headerFields[.wwwAuthenticate] else { return false }
+        return isExplicitInvalidToken(challenge: challenge)
+    }
+
+    /// The challenge-string half of ``isExplicitInvalidToken(_:)``, shared with
+    /// the wake socket's upgrade (which sees a `URLResponse`, not an `HTTPResponse`).
+    static func isExplicitInvalidToken(challenge: String) -> Bool {
+        authParameter("error", in: challenge) == "invalid_token"
     }
 
     static func error(from response: HTTPResponse, body: HTTPBody?, operationID: String) async -> MailAPIError {
@@ -150,10 +177,31 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
     }
 
     /// Pulls `name="value"` out of an RFC 6750 `WWW-Authenticate` challenge.
+    ///
+    /// Accepts both RFC 7235 forms — `name="value"` and the bare token
+    /// `name=value` — with a case-insensitive name that must START a parameter
+    /// (so `error=` never matches inside `error_description=` or `xerror=`). The
+    /// token form matters for the dead-grant latch: a proxy or a server that
+    /// re-serialized the challenge as `error=invalid_token` must still latch,
+    /// or every request would spend the rotating refresh token again.
     static func authParameter(_ name: String, in challenge: String) -> String? {
-        guard let range = challenge.range(of: "\(name)=\"") else { return nil }
-        let rest = challenge[range.upperBound...]
-        guard let end = rest.firstIndex(of: "\"") else { return nil }
-        return String(rest[..<end])
+        var search = challenge[...]
+        while let range = search.range(of: "\(name)=", options: .caseInsensitive) {
+            let rest = challenge[range.upperBound...]
+            let startsParameter = range.lowerBound == challenge.startIndex
+                || [" ", ",", "\t"].contains(challenge[challenge.index(before: range.lowerBound)])
+            guard startsParameter else {
+                search = rest
+                continue
+            }
+            if rest.first == "\"" {
+                let quoted = rest.dropFirst()
+                guard let end = quoted.firstIndex(of: "\"") else { return nil }
+                return String(quoted[..<end])
+            }
+            let end = rest.firstIndex { $0 == "," || $0.isWhitespace } ?? rest.endIndex
+            return rest[..<end].isEmpty ? nil : String(rest[..<end])
+        }
+        return nil
     }
 }

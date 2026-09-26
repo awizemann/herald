@@ -117,6 +117,10 @@ final class ComposeViewModel {
 
     nonisolated static let accountSignedOutReason =
         "This message’s account was signed out, so it can’t be sent. Copy anything you want to keep."
+    /// What Save Draft says for such a composer: the draft cannot be kept on the
+    /// server either.
+    nonisolated static let accountSignedOutSaveReason =
+        "This message’s account was signed out, so it can’t be saved as a draft. Copy anything you want to keep."
 
     /// Addresses that failed ``EmailAddress/isValid(_:)``, per field.
     private(set) var invalidAddresses: [Field: [String]] = [:]
@@ -533,11 +537,12 @@ final class ComposeViewModel {
             status = .idle
             announce("Signed in again. Press Send to send your message.")
         }
-        // Resume autosave for whatever was typed while it was paused. Not while
-        // a save or send is in flight on the old outbox: that one finishes, and
-        // a second save racing a first-time create through a DIFFERENT outbox
-        // would bypass the per-outbox create dedupe and orphan a server draft.
-        if draft.isDirty, status != .saving, status != .sending { scheduleAutosave() }
+        // Resume autosave for whatever was typed while it was paused. A save
+        // still in flight on the OLD outbox is fine to overlap: a first-time
+        // create there is waited out (``waitForDraftCreation()``), so this save
+        // updates the draft it created rather than creating a second one. Not
+        // during a send, which consumes the draft.
+        if draft.isDirty, status != .sending { scheduleAutosave() }
     }
 
     /// The account this composer belongs to was signed out (or re-auth came back
@@ -549,6 +554,52 @@ final class ComposeViewModel {
         isAccountSignedOut = true
         guard !isClosed else { return }
         status = .failed(Self.accountSignedOutReason)
+    }
+
+    // MARK: - One server-draft create at a time
+
+    /// Whether a call that may CREATE the server draft is in flight: a save or
+    /// an upload started while the draft had no server id yet.
+    ///
+    /// `OutboxService` deduplicates concurrent creates, but only per INSTANCE,
+    /// and a re-auth moves this composer onto a new graph's outbox
+    /// (``accountSignedIn(outbox:)``). A create still in flight on the old one
+    /// plus an edit after the rebind was two `POST /drafts` — a second server
+    /// draft, the first orphaned. So the composer serializes its own: every
+    /// later save or upload waits here (``waitForDraftCreation()``), then
+    /// re-reads the draft, and by then it carries the server id the first call
+    /// adopted and updates it instead. Waiting is structured (a continuation,
+    /// not a task), so a caller's cancellation still reaches its own call.
+    @ObservationIgnored private var isCreatingServerDraft = false
+    @ObservationIgnored private var draftCreationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Test seam: how many calls are parked in ``waitForDraftCreation()``.
+    var draftCreationWaiterCount: Int { draftCreationWaiters.count }
+
+    /// Returns once no server-draft create is in flight. The caller must read
+    /// ``draft`` AFTER this, with no suspension before its own outbox call.
+    private func waitForDraftCreation() async {
+        while isCreatingServerDraft {
+            await withCheckedContinuation { draftCreationWaiters.append($0) }
+        }
+    }
+
+    /// Claims the create slot when `sent` has no server draft; returns whether
+    /// it did, for ``endDraftCreation(_:)``.
+    private func beginDraftCreation(for sent: ComposeDraft) -> Bool {
+        guard sent.serverDraft == nil else { return false }
+        isCreatingServerDraft = true
+        return true
+    }
+
+    /// Releases the slot — after the result has been ADOPTED into ``draft``,
+    /// so a waiter sees the new server id — and wakes every waiter.
+    private func endDraftCreation(_ claimed: Bool) {
+        guard claimed else { return }
+        isCreatingServerDraft = false
+        let waiters = draftCreationWaiters
+        draftCreationWaiters = []
+        for waiter in waiters { waiter.resume() }
     }
 
     /// Debounced: every edit cancels the pending save, so a burst of typing
@@ -569,8 +620,16 @@ final class ComposeViewModel {
     /// Persists the draft if there is anything to persist. Never throws: an
     /// autosave failure is surfaced inline and the text stays in the window.
     func saveNow() async {
-        guard !isClosed, !isAccountSignedOut, draft.isDirty, !hasInvalidAddresses else { return }
-        guard !draft.to.isEmpty || !draft.subject.isEmpty || !draft.body.isEmpty else { return }
+        guard isSaveWorthwhile else { return }
+        // A create already in flight (possibly on the outbox this composer was
+        // moved OFF by a re-auth) finishes first; re-checked after, because it
+        // may have saved everything there was to save.
+        await waitForDraftCreation()
+        // Re-checked after the wait: the autosave that parked here may have
+        // been cancelled meanwhile (a Send cancels it before waiting itself),
+        // and a send in progress consumes the draft — a PATCH racing it would
+        // only 404 onto the error bar.
+        guard !Task.isCancelled, status != .sending, isSaveWorthwhile else { return }
         status = .saving
         // The snapshot that goes to the server; the response is MERGED into
         // whatever the user has typed since, never assigned over it. Assigning
@@ -579,6 +638,8 @@ final class ComposeViewModel {
         // body) left the draft dirty again — an autosave loop.
         let sent = draft
         let binding = outboxBinding
+        let creating = beginDraftCreation(for: sent)
+        defer { endDraftCreation(creating) }
         do {
             let saved = try await outbox.saveDraft(sent)
             draft.adoptServerState(from: saved, sent: sent)
@@ -591,6 +652,11 @@ final class ComposeViewModel {
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
             fail(error, binding: binding)
         }
+    }
+
+    private var isSaveWorthwhile: Bool {
+        guard !isClosed, !isAccountSignedOut, draft.isDirty, !hasInvalidAddresses else { return false }
+        return !draft.to.isEmpty || !draft.subject.isEmpty || !draft.body.isEmpty
     }
 
     /// Saves a pending edit and then stops the timer, for the window actually
@@ -638,6 +704,15 @@ final class ComposeViewModel {
         // ⌘⇧D can beat a queued upload to the punch; the attachment ids only exist
         // once the uploads have landed.
         await waitForUploads()
+        // Likewise a first save still creating the server draft: sent without
+        // its id, the message would go out and leave that draft orphaned.
+        await waitForDraftCreation()
+        // The account can be signed out during those waits; nothing may go out
+        // through an outbox whose graph is gone.
+        guard !isAccountSignedOut, !isClosed else {
+            if let reason = sendHoldReason { status = .failed(reason) }
+            return false
+        }
         commitRecipients()
         guard !hasInvalidAddresses else {
             status = .failed(hint(for: .to) ?? hint(for: .cc) ?? hint(for: .bcc) ?? "Check the recipients.")
@@ -693,10 +768,14 @@ final class ComposeViewModel {
         cancelAllUploads()
         isClosed = true
         record(.composeDiscarded)
-        let serverDraftID = draft.serverDraft?.id
         // A signed-out account's server draft is not ours to delete any more;
         // closing the window is all "Delete" can mean here.
         guard !isAccountSignedOut else { return }
+        // A first save still creating the server draft would otherwise land
+        // AFTER this delete and leave the draft the user threw away behind.
+        await waitForDraftCreation()
+        guard !isAccountSignedOut else { return }
+        let serverDraftID = draft.serverDraft?.id
         do {
             try await outbox.discard(draft)
         } catch {
@@ -720,6 +799,15 @@ final class ComposeViewModel {
     /// Closes without deleting the server draft — "Save" in the close sheet.
     func saveAndClose() async {
         autosaveTask?.cancel()
+        // The close sheet's Save Draft on a composer whose account is gone:
+        // nothing can be saved, and the window must say so — `saveNow` returns
+        // silently, and the bar already shows the same failure, so without this
+        // the button did nothing at all. The window stays, text and all.
+        guard !isAccountSignedOut else {
+            status = .failed(Self.accountSignedOutSaveReason)
+            announce(Self.accountSignedOutSaveReason)
+            return
+        }
         await waitForUploads()
         await saveNow()
         guard status.message == nil else { return } // Save failed: keep the window.
@@ -859,10 +947,37 @@ final class ComposeViewModel {
             uploadTasks[pending.id] = nil
         }
 
+        // Uploading onto a draft with no server id creates one first: wait out
+        // a create already in flight (see ``waitForDraftCreation()``), and
+        // claim the slot when this upload is the one creating.
+        await waitForDraftCreation()
+        guard !Task.isCancelled else { return }
         status = .saving
-        let sent = draft
-        let binding = outboxBinding
+        var sent = draft
+        var binding = outboxBinding
+        // The server draft is created HERE, as a save, rather than inside
+        // `outbox.attach`: an attach that creates the draft and then fails
+        // (413, unreadable file, network, a cancel from Delete Draft) throws
+        // the new draft's id away with the error, and the next save would
+        // create a second one. Skipped for a file the limits already refuse,
+        // so a rejected file leaves no empty draft behind — attach refuses it
+        // before any request. The slot is released as soon as the id is
+        // adopted, not after the (possibly long) upload.
+        var creating = beginDraftCreation(for: sent)
+        defer { endDraftCreation(creating) }
         do {
+            if creating, !Self.limitsRefuse(pending.byteCount, onto: sent) {
+                let created = try await outbox.saveDraft(sent)
+                draft.adoptServerState(from: created, sent: sent)
+                publishDraftState()
+                endDraftCreation(creating)
+                creating = false
+                // The upload goes through the CURRENT outbox (a re-auth may have
+                // rebound the composer while the create was out), so a failure
+                // is judged against the binding it actually started on.
+                sent = draft
+                binding = outboxBinding
+            }
             let saved = try await outbox.attach(url, to: sent)
             // Adopted even when this upload was CANCELLED: the bytes reached the
             // server, so the local attachment list has to include them or every
@@ -879,6 +994,14 @@ final class ComposeViewModel {
             guard !Task.isCancelled else { return }
             fail(error, binding: binding)
         }
+    }
+
+    /// Whether the server's attachment limits refuse this file outright (the
+    /// same check `OutboxService.attach` makes before any request). Unknown
+    /// size: not refused here.
+    private static func limitsRefuse(_ byteCount: Int?, onto draft: ComposeDraft) -> Bool {
+        guard let byteCount else { return false }
+        return AttachmentLimits.server.rejection(forAdding: byteCount, to: draft.uploadedAttachments) != nil
     }
 
     /// Stops waiting on an upload and takes its chip away.

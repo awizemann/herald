@@ -176,9 +176,13 @@ struct MailWindow: View {
 struct ReauthBanner: View {
     @Environment(AppEnvironment.self) private var environment
     let accountID: Account.ID
-    /// Set by the Cancel button, consumed by the state change it causes, so that
-    /// change is announced as a cancel rather than as a fresh expiry.
-    @State private var cancelledByUser = false
+    /// The account whose attempt the user's Cancel stopped. Set by the Cancel
+    /// button, consumed by the state change it causes, so that change is
+    /// announced as a cancel rather than as a fresh expiry. Keyed to the
+    /// ACCOUNT, and dropped when the banner switches accounts: this view's
+    /// state survives an account switch, and a flag left over from account A
+    /// must never turn account B's attempt ending into "Sign-in cancelled".
+    @State private var cancelledAccountID: Account.ID?
 
     var body: some View {
         // Herald tries the sign-in itself when the app is frontmost (see
@@ -203,7 +207,7 @@ struct ReauthBanner: View {
                 // gives the Sign In button back at once; an automatic attempt
                 // then waits out its cooldown before trying by itself again.
                 Button("Cancel") {
-                    cancelledByUser = true
+                    cancelledAccountID = accountID
                     environment.cancelReauthentication(accountID: accountID)
                 }
                 .accessibilityLabel("Cancel sign-in")
@@ -223,13 +227,26 @@ struct ReauthBanner: View {
         // button, and the announcement names the control that replaced it.
         .onAppear { announce(Self.announcement(isReauthenticating: isReauthenticating)) }
         .onChange(of: isReauthenticating) { _, reauthenticating in
-            if !reauthenticating, cancelledByUser {
-                announce(Self.cancelledAnnouncement)
-            } else {
-                announce(Self.announcement(isReauthenticating: reauthenticating))
-            }
-            cancelledByUser = false
+            announce(Self.stateChangeAnnouncement(
+                isReauthenticating: reauthenticating,
+                cancelledAccountID: cancelledAccountID,
+                accountID: accountID
+            ))
+            cancelledAccountID = nil
         }
+        .onChange(of: accountID) { _, _ in cancelledAccountID = nil }
+    }
+
+    /// What a change of the attempt state announces. The cancel wording only
+    /// for the account whose Cancel the user pressed — pure and static so the
+    /// cross-account rule is assertable without a rendered banner.
+    nonisolated static func stateChangeAnnouncement(
+        isReauthenticating: Bool,
+        cancelledAccountID: Account.ID?,
+        accountID: Account.ID
+    ) -> String {
+        if !isReauthenticating, cancelledAccountID == accountID { return cancelledAnnouncement }
+        return announcement(isReauthenticating: isReauthenticating)
     }
 
     private func announce(_ text: String) {

@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import HeraldKit
 
+/// Keeps the provider's announcements themselves, to re-check them later.
+actor DeathRecorder {
+    private(set) var deaths: [SessionDeath] = []
+    func record(_ death: SessionDeath) { deaths.append(death) }
+    var last: SessionDeath? { deaths.last }
+}
+
 /// Counts the provider's dead-session announcements, per account.
 actor RejectionRecorder {
     private(set) var accountIDs: [Account.ID] = []
@@ -70,7 +77,7 @@ actor RejectionRecorder {
             refreshLeeway: 60
         )
         let recorder = RejectionRecorder()
-        await provider.setSessionRejectedHandler { await recorder.record($0) }
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
         let client = HQBaseAPIClient(origin: FakeServer.origin, tokens: provider, session: session)
         return Harness(provider: provider, client: client, recorder: recorder)
     }
@@ -116,8 +123,11 @@ actor RejectionRecorder {
     /// The incident shape: several requests in flight when the session dies, each
     /// reporting its refused retry. The handler is held open (it hops to the main
     /// actor in the app), so every other report lands on the re-entrant actor
-    /// WHILE the first announcement is suspended. Fails if the latch is written
-    /// after awaiting the handler instead of before it — N announcements.
+    /// WHILE the first announcement is suspended. Fails if the ANNOUNCED death is
+    /// recorded after awaiting the handler instead of before it — N
+    /// announcements. (It does NOT pin the latch's own ordering: the announce
+    /// dedupe alone keeps this count at one. That is
+    /// ``aLatchedGrantFailsFastWhileItsAnnouncementIsInFlight()``'s job.)
     @Test("concurrent reports of one death announce it exactly once", .timeLimit(.minutes(1)))
     func concurrentReportsAnnounceOnce() async throws {
         let store = try Self.store(seeding: Self.tokens(1))
@@ -128,8 +138,8 @@ actor RejectionRecorder {
         let gate = Gate()
         // Only the FIRST announcement parks. A wrongly repeated one records and
         // returns, so the bug shows up as a count, not as a hung test.
-        await provider.setSessionRejectedHandler { id in
-            await recorder.record(id)
+        await provider.setSessionRejectedHandler { death in
+            await recorder.record(death.accountID)
             if await recorder.count == 1 { await gate.wait() }
         }
 
@@ -144,6 +154,181 @@ actor RejectionRecorder {
         await first.value
 
         #expect(await recorder.count == 1)
+    }
+
+    /// The latch half of the same moment: while the first announcement is still
+    /// parked in the handler (the app hopping to the main actor), other requests
+    /// already fail fast — no request with the dead token, no refresh spending
+    /// the rotating grant. Fails if the latch is written AFTER awaiting the
+    /// announcement: a request in that window is served the dead access token,
+    /// and a 401'd one refreshes again (the storm P1 exists to stop).
+    @Test("a latched grant fails fast while its announcement is still in flight", .timeLimit(.minutes(1)))
+    func aLatchedGrantFailsFastWhileItsAnnouncementIsInFlight() async throws {
+        let store = try Self.store(seeding: Self.tokens(1))
+        let refresher = GatedRefresher.counting()
+        let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
+        let gate = Gate()
+        await provider.setSessionRejectedHandler { _ in await gate.wait() }
+
+        let first = Task { await provider.sessionRejected(token: "access-1") }
+        try await waitUntil("the announcement is parked in the handler") { await gate.isWaiting }
+
+        await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await provider.accessToken() }
+        await #expect(throws: OAuthError.reauthenticationRequired) {
+            _ = try await provider.refreshAccessToken(failedToken: "access-1")
+        }
+        #expect(await refresher.callCount == 0, "the dead grant was spent while its death was being announced")
+
+        await gate.release()
+        await first.value
+    }
+
+    // MARK: - No handler yet (D6)
+
+    /// The app wires the handler after it builds the provider. A death found in
+    /// between used to be recorded as announced and then lost: the latch made
+    /// every later request fail fast without a word, so no banner ever came.
+    /// Fails if a handler-less death is recorded as announced, or if the
+    /// fail-fast path of a latched grant never announces.
+    @Test("a death found before the handler is set is announced once a handler is set")
+    func aDeathBeforeTheHandlerIsAnnouncedLater() async throws {
+        let store = try Self.store(seeding: Self.tokens(1))
+        let provider = AccountTokenProvider(
+            accountID: Self.accountA, store: store, refresher: GatedRefresher.counting(), refreshLeeway: 60
+        )
+        await provider.sessionRejected(token: "access-1")
+        await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await provider.accessToken() }
+
+        let recorder = RejectionRecorder()
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
+        for _ in 0..<3 {
+            await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await provider.accessToken() }
+        }
+
+        #expect(await recorder.accountIDs == [Self.accountA], "the early death was lost, or announced per request")
+    }
+
+    /// Same rule for `invalid_grant`, whose aftermath is an EMPTY store: the
+    /// first request after the handler is set announces it.
+    @Test("an invalid_grant before the handler is set is announced by the next request")
+    func anInvalidGrantBeforeTheHandlerIsAnnouncedLater() async throws {
+        let server = FakeServer()
+        server.route("POST", AuthFixtures.tokenPath, .json(400, #"{"error":"invalid_grant","error_description":"revoked"}"#))
+        let store = try Self.store(seeding: OAuthTokens(
+            accessToken: "expired", refreshToken: "refresh-0",
+            expiresAt: Date().addingTimeInterval(-10), scope: "mail:read offline_access"
+        ))
+        let provider = AccountTokenProvider(
+            accountID: Self.accountA,
+            store: store,
+            refresher: OAuthSession(configuration: AuthFixtures.configuration, clientID: "cid", session: server.makeSession()),
+            refreshLeeway: 60
+        )
+        await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await provider.accessToken() }
+
+        let recorder = RejectionRecorder()
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
+        for _ in 0..<2 {
+            await #expect(throws: OAuthError.missingRefreshToken) { _ = try await provider.accessToken() }
+        }
+
+        #expect(await recorder.count == 1)
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 1)
+    }
+
+    // MARK: - Is the reported death still current? (W11)
+
+    /// The announcement carries a way to ask whether it is still about the
+    /// stored grant, because it hops to the main actor and a re-auth can land
+    /// in that gap. Fails if a report stays "current" after a different grant
+    /// was stored (a stale report would raise the banner over a fresh sign-in),
+    /// or if an `invalid_grant`'s empty store reads as stale (a real death lost).
+    @Test("a reported death is current until the store holds a different grant")
+    func aReportedDeathIsCurrentUntilANewGrantIsStored() async throws {
+        let store = try Self.store(seeding: Self.tokens(1))
+        let provider = AccountTokenProvider(
+            accountID: Self.accountA, store: store, refresher: GatedRefresher.counting(), refreshLeeway: 60
+        )
+        let deaths = DeathRecorder()
+        await provider.setSessionRejectedHandler { await deaths.record($0) }
+
+        await provider.sessionRejected(token: "access-1")
+        let death = try #require(await deaths.last)
+        #expect(death.accountID == Self.accountA)
+        #expect(await death.isCurrent())
+
+        // Emptied (what an invalid_grant elsewhere leaves): still dead.
+        try store.setTokens(nil, for: Self.accountA)
+        #expect(await death.isCurrent())
+
+        // A re-auth stored a new grant: the report is stale.
+        try store.setTokens(Self.tokens(9), for: Self.accountA)
+        #expect(await death.isCurrent() == false)
+    }
+
+    /// The empty-store death (no grant at all) goes stale the same way.
+    @Test("an empty-store death goes stale once any grant is stored")
+    func anEmptyStoreDeathGoesStaleOnReauth() async throws {
+        let store = RecordingAccountStore()
+        let provider = AccountTokenProvider(
+            accountID: Self.accountA, store: store, refresher: GatedRefresher.counting(), refreshLeeway: 60
+        )
+        let deaths = DeathRecorder()
+        await provider.setSessionRejectedHandler { await deaths.record($0) }
+
+        await #expect(throws: OAuthError.missingRefreshToken) { _ = try await provider.accessToken() }
+        let death = try #require(await deaths.last)
+        #expect(await death.isCurrent())
+
+        try store.setTokens(Self.tokens(9), for: Self.accountA)
+        #expect(await death.isCurrent() == false)
+    }
+
+    // MARK: - Only an explicit invalid_token latches (D2)
+
+    /// A 401 without the server's `error="invalid_token"` — a proxy that drops
+    /// the challenge, a route answering with a bare 401 — still gets one refresh
+    /// and one retry per request, exactly as before, but must never latch the
+    /// grant: that would stop every surface of the account on a false positive.
+    /// Fails if the post-refresh 401 latches (the second call would then make
+    /// no request and spend no refresh) or announces.
+    @Test(
+        "a post-refresh 401 without an explicit invalid_token challenge neither latches nor announces",
+        arguments: [nil, #"Bearer realm="hqbase""#, #"Bearer error="server_error""#]
+    )
+    func aBareUnauthorizedDoesNotLatch(challenge: String?) async throws {
+        let bare = FakeResponse.error(
+            401, code: "UNAUTHORIZED", message: "no",
+            headers: challenge.map { ["WWW-Authenticate": $0] } ?? [:]
+        )
+        let server = Self.server(api: bare, bare, bare, bare)
+        let store = try Self.store(seeding: Self.tokens(0))
+        let h = await Self.harness(server: server, store: store)
+
+        await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+        await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+
+        #expect(await h.recorder.count == 0, "a bare 401 was announced as a dead session")
+        #expect(server.requests(path: Self.mailboxesPath).count == 4, "a bare 401 latched the grant")
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 2)
+        #expect(try await h.provider.accessToken() == "access-2")
+    }
+
+    /// Which challenges count as the server's explicit verdict. Fails if the
+    /// bare-token form (`error=invalid_token`, RFC 7235 allows it) is missed —
+    /// the storm would come back behind any proxy that re-serializes the header
+    /// — or if a look-alike parameter (`error_description`) is mistaken for it.
+    @Test("an explicit invalid_token is recognised in both challenge forms, and only as the error parameter")
+    func explicitInvalidTokenParsing() {
+        typealias M = AuthenticatingMiddleware
+        #expect(M.isExplicitInvalidToken(challenge: #"Bearer resource_metadata="x", scope="mail:read", error="invalid_token""#))
+        #expect(M.isExplicitInvalidToken(challenge: "Bearer error=invalid_token"))
+        #expect(M.isExplicitInvalidToken(challenge: "Bearer realm=hq, ERROR=invalid_token, scope=x"))
+        #expect(M.isExplicitInvalidToken(challenge: #"Bearer error_description="invalid_token""#) == false)
+        #expect(M.isExplicitInvalidToken(challenge: #"Bearer xerror="invalid_token""#) == false)
+        #expect(M.isExplicitInvalidToken(challenge: #"Bearer error="insufficient_scope""#) == false)
+        #expect(M.isExplicitInvalidToken(challenge: #"Bearer realm="hqbase""#) == false)
+        #expect(M.authParameter("scope", in: #"Bearer error="insufficient_scope", scope="mail:send""#) == "mail:send")
     }
 
     // MARK: - Must not latch
@@ -201,7 +386,7 @@ actor RejectionRecorder {
         let refresher = GatedRefresher.counting()
         let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
         let recorder = RejectionRecorder()
-        await provider.setSessionRejectedHandler { await recorder.record($0) }
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
 
         await provider.sessionRejected(token: "access-1")
 
@@ -317,7 +502,7 @@ actor RejectionRecorder {
         }
         let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
         let recorder = RejectionRecorder()
-        await provider.setSessionRejectedHandler { await recorder.record($0) }
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
 
         let callers = (0..<5).map { _ in Task { try await provider.accessToken() } }
         try await waitUntil("the refresh is in flight") { await refresher.callCount == 1 }
@@ -342,7 +527,7 @@ actor RejectionRecorder {
         let refresher = GatedRefresher.counting()
         let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
         let recorder = RejectionRecorder()
-        await provider.setSessionRejectedHandler { await recorder.record($0) }
+        await provider.setSessionRejectedHandler { await recorder.record($0.accountID) }
 
         for _ in 0..<3 {
             await #expect(throws: OAuthError.missingRefreshToken) { _ = try await provider.accessToken() }
@@ -439,9 +624,9 @@ actor RejectionRecorder {
         let refresher = GatedRefresher.counting()
         let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
         let rejections = RejectionRecorder()
-        await provider.setSessionRejectedHandler { await rejections.record($0) }
+        await provider.setSessionRejectedHandler { await rejections.record($0.accountID) }
         let recorder = SignalRecorder()
-        let channels = FakeMailEventChannels([.rejected(.unauthorized), .rejected(.unauthorized)])
+        let channels = FakeMailEventChannels([.rejected(.unauthorized(invalidToken: true)), .rejected(.unauthorized(invalidToken: true))])
         let socket = MailEventSocket(
             channels: channels,
             tokens: provider,

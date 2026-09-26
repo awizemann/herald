@@ -503,6 +503,13 @@ final class AppEnvironment {
         guard let store else { return false }
         do {
             let tokens = try await auth.tokenProvider(for: account)
+            // Wired the moment the provider exists, before anything can use it:
+            // a death found during the install (its first requests) must reach
+            // the banner. Routed by account id, so it needs no graph yet — see
+            // ``reportSessionDeath(_:)``. Before the `isStillWanted` check on
+            // purpose: this is a suspension, and nothing may suspend between
+            // that check and the install publishing the graph.
+            await tokens.setSessionRejectedHandler(sessionDeathHandler())
             guard isStillWanted() else { return false }
             await install(
                 account: account,
@@ -520,7 +527,8 @@ final class AppEnvironment {
                 // race each other into spending the rotating grant twice.
                 wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens),
                 // Every REST surface and the socket share this provider, so its
-                // dead-session hook is the one signal for all of them.
+                // dead-session hook (wired above) is the one signal for all of
+                // them. Kept on the graph.
                 tokenProvider: tokens
             )
             return true
@@ -558,10 +566,12 @@ final class AppEnvironment {
     ///   provider that authenticates it. `nil` in tests (and on any account
     ///   brought up without one), which leaves the poll loop at its full cadence
     ///   — the socket is an accelerator, never a dependency.
-    /// - Parameter tokenProvider: the provider behind `api` (and `wake`), whose
-    ///   dead-session hook is pointed at this account's banner — see
-    ///   ``reportSessionExpired(accountID:)``. `nil` in tests that drive a fake
-    ///   API client, where only the sync loop and the socket report expiry.
+    /// - Parameter tokenProvider: the provider behind `api` (and `wake`), kept
+    ///   on the graph (``AccountGraph/tokens``). Its dead-session hook is NOT
+    ///   wired here: ``activate(_:select:isAutomatic:isStillWanted:)`` wires it
+    ///   the moment the provider is built, so a death found before or during
+    ///   the install is never lost. `nil` in tests that drive a fake API
+    ///   client, where only the sync loop and the socket report expiry.
     func install(
         account: Account,
         api: any MailAPIClient,
@@ -628,7 +638,8 @@ final class AppEnvironment {
             outbox: OutboxService(api: api),
             signatures: SignatureManagementService(api: api),
             notifier: notifier,
-            wake: socket
+            wake: socket,
+            tokens: tokenProvider
         )
         // Published synchronously, so no second install can slip in and be
         // forgotten.
@@ -650,15 +661,6 @@ final class AppEnvironment {
         // launch restore) already accounts for.
         if select || selectedGraph == nil { selectAccount(account.id) }
         phase = .ready
-        // After publishing and selecting — the first suspension of the install,
-        // so nothing above it can interleave with another install — and before
-        // the graph starts, so no request can discover a death unheard. Routed
-        // by account id through the environment rather than bound to
-        // `viewModel`: see `reportSessionExpired(accountID:)` for why. `[weak
-        // self]`: the environment owns the graphs that own this provider.
-        await tokenProvider?.setSessionRejectedHandler { [weak self] accountID in
-            await self?.reportSessionExpired(accountID: accountID)
-        }
         // Its composers were already rebound above; stopping the old graph no
         // longer strands them.
         if let superseded { await superseded.stop() }
@@ -695,8 +697,42 @@ final class AppEnvironment {
     /// attempt it can start runs in its own `Task`: the provider AWAITS this from
     /// the reporting request or socket loop (which must not wait on a sign-in —
     /// and the socket loop must never end up waiting on its own `stop()`).
+    /// Providers reach it through ``reportSessionDeath(_:)``, which first drops
+    /// a report a re-auth has made stale.
     func reportSessionExpired(accountID: Account.ID) {
         guard let graph = graphs[accountID] else { return }
+        graph.mail.reportSessionExpired()
+    }
+
+    /// The handler every real token provider is given (``activate``). `[weak
+    /// self]`: the environment owns the graphs that own the providers.
+    func sessionDeathHandler() -> @Sendable (SessionDeath) async -> Void {
+        { [weak self] death in await self?.reportSessionDeath(death) }
+    }
+
+    /// A provider's announcement, checked against a re-auth that may have landed
+    /// while it hopped here, then routed like ``reportSessionExpired(accountID:)``.
+    ///
+    /// The provider read the store BEFORE the hop, and the main actor may since
+    /// have run a whole re-auth: new grant written, new graph installed. Routed
+    /// by account id, that stale report would raise the banner (and an
+    /// automatic sign-in) over the fresh, healthy graph. So: pin the graph the
+    /// report would go to, ask the provider whether the dead grant is still the
+    /// stored one (``SessionDeath/isCurrent()``), and deliver only if it is AND
+    /// the same graph is still installed afterwards — an install that landed
+    /// during the check wrote a new grant first, so the report is about the old
+    /// one. (A new grant's own death is announced by whichever provider next
+    /// trips over it; each provider tracks announcements per grant.)
+    func reportSessionDeath(_ death: SessionDeath) async {
+        guard let graph = graphs[death.accountID] else { return }
+        guard await death.isCurrent() else {
+            logger.info("a session-death report was about a grant a re-auth has replaced; ignored")
+            return
+        }
+        guard isCurrent(graph) else {
+            logger.info("a session-death report raced a re-install; ignored")
+            return
+        }
         graph.mail.reportSessionExpired()
     }
 

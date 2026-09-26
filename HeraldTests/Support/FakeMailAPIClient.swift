@@ -335,8 +335,22 @@ actor FakeMailAPIClient: MailAPIClient {
         if let composeError { throw composeError }
     }
 
+    /// Parks every `createDraft` (after it is counted as a request, before it
+    /// is recorded as created) until ``releaseCreates()`` — a `POST /drafts`
+    /// still in flight while the composer is rebound.
+    private var holdsCreates = false
+    private var parkedCreates: [CheckedContinuation<Void, Never>] = []
+    var parkedCreateCount: Int { parkedCreates.count }
+    func holdCreates() { holdsCreates = true }
+    func releaseCreates() {
+        holdsCreates = false
+        for parked in parkedCreates { parked.resume() }
+        parkedCreates = []
+    }
+
     func createDraft(_ input: DraftInput) async throws -> Draft {
         try composeGate()
+        if holdsCreates { await withCheckedContinuation { parkedCreates.append($0) } }
         createdDrafts.append(input)
         return Draft(
             id: "draft-\(createdDrafts.count)", version: 1, updatedAt: MailFixtures.epoch,
@@ -361,8 +375,17 @@ actor FakeMailAPIClient: MailAPIClient {
         mimeType: String,
         data: Data
     ) async throws -> DraftAttachment {
-        throw MailAPIError.notFound
+        try composeGate()
+        if let attachmentError { throw attachmentError }
+        uploadedAttachments.append(filename)
+        return DraftAttachment(
+            id: "att-\(uploadedAttachments.count)", filename: filename, contentType: mimeType, sizeBytes: data.count
+        )
     }
+    private(set) var uploadedAttachments: [String] = []
+    /// When set, only the attachment upload fails (a 413, a dropped link).
+    private var attachmentError: MailAPIError?
+    func setAttachmentError(_ error: MailAPIError?) { attachmentError = error }
     func removeDraftAttachment(draftID: String, attachmentID: String) async throws {}
     func signatures(from address: String) async throws -> SignatureCandidates { .empty }
     // Signature management (upstream 1.4.2). The app-hosted suites exercise the view

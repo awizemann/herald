@@ -47,9 +47,21 @@ struct URLSessionMailEventChannelTests {
             origin: URL(string: "https://mail.example.com")!,
             configuration: .ephemeral
         )
-        await #expect(throws: MailEventChannelError.unauthorized) {
+        await #expect(throws: MailEventChannelError.unauthorized(invalidToken: false)) {
             _ = try await channels.open(token: "")
         }
+    }
+
+    /// Only the server's explicit `error="invalid_token"` marks an upgrade 401
+    /// as a token verdict the provider may latch on. Fails if a bare or
+    /// differently-challenged 401 is reported as one.
+    @Test("an upgrade 401 records whether the challenge said invalid_token")
+    func upgradeRejectionReadsTheChallenge() {
+        #expect(WebSocketChannel.rejection(status: 401, challenge: #"Bearer resource_metadata="x", scope="mail:read", error="invalid_token""#)
+            == .unauthorized(invalidToken: true))
+        #expect(WebSocketChannel.rejection(status: 401, challenge: nil) == .unauthorized(invalidToken: false))
+        #expect(WebSocketChannel.rejection(status: 401, challenge: #"Bearer realm="hqbase""#) == .unauthorized(invalidToken: false))
+        #expect(WebSocketChannel.rejection(status: 403, challenge: #"Bearer error="insufficient_scope""#) == .rejected(status: 403))
     }
 
     @Test("a plaintext origin is refused before a token is even considered")

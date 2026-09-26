@@ -28,7 +28,10 @@ public nonisolated enum MailEventSignal: Sendable, Hashable {
 /// Why a connection ended, in the only terms the reconnect policy cares about.
 public nonisolated enum MailEventChannelError: Error, Sendable, Hashable {
     /// 401 at the upgrade. The token is stale (or dead): refresh and retry once.
-    case unauthorized
+    /// `invalidToken` is whether the answer carried an explicit
+    /// `WWW-Authenticate: Bearer error="invalid_token"` — only then may a
+    /// refused retry latch the grant (a bare 401 is a proxy's, not HQBase's).
+    case unauthorized(invalidToken: Bool)
     /// Any other non-101 answer — 403 (scope/origin), 426, 429, 503
     /// (`EVENT_SERVICE_UNAVAILABLE`), a proxy's 502.
     case rejected(status: Int)
@@ -296,21 +299,22 @@ public actor MailEventSocket {
         let opened: any MailEventChannel
         do {
             opened = try await channels.open(token: token)
-        } catch MailEventChannelError.unauthorized {
+        } catch MailEventChannelError.unauthorized(_) {
             // Exactly the middleware's contract for REST: refresh the token that
             // was actually rejected, retry ONCE, and escalate rather than loop.
             logger.warning("Event socket upgrade rejected (401); refreshing the token once")
             let refreshed = try await tokens.refreshAccessToken(failedToken: token)
             do {
                 opened = try await channels.open(token: refreshed)
-            } catch MailEventChannelError.unauthorized {
+            } catch MailEventChannelError.unauthorized(let invalidToken) {
                 // Refused with the token the provider just handed out: the grant
                 // is dead. Report it through the same chokepoint the REST
                 // middleware uses, so the provider latches it (no more refreshes
-                // for anyone) and announces it once; `handle(.unauthorized)`
-                // still stops this loop and escalates as before.
-                await tokens.sessionRejected(token: refreshed)
-                throw MailEventChannelError.unauthorized
+                // for anyone) and announces it once — but only on the server's
+                // explicit `invalid_token`, the middleware's rule too. Either way
+                // `handle(.unauthorized)` still stops this loop and escalates.
+                if invalidToken { await tokens.sessionRejected(token: refreshed) }
+                throw MailEventChannelError.unauthorized(invalidToken: invalidToken)
             }
         }
         // Nothing above is interruptible from here, so a teardown that happened

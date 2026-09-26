@@ -189,7 +189,17 @@ extension AppEnvironment {
             // (unreachable server, unreadable tokens) leaves the user exactly as
             // stuck as before, and reporting it as a success would also clear the
             // automatic attempt's cooldown for a repair that did not happen.
-            let activated = await activate(account, isAutomatic: isAutomatic, isStillWanted: isStillWanted)
+            // Selected only when the account is NEW here. A re-auth never
+            // takes the window: the user may be reading another account while
+            // Herald (or a composer's Sign In) repairs this one, and the
+            // selection is theirs. `install` still selects when nothing is
+            // showing at all.
+            let activated = await activate(
+                account,
+                select: graphs[account.id] == nil,
+                isAutomatic: isAutomatic,
+                isStillWanted: isStillWanted
+            )
             // Activation suspends before it installs, and a cancel landing in
             // that gap is the same late consent as one landing before it.
             if !activated, !isStillWanted() {
@@ -228,34 +238,55 @@ extension AppEnvironment {
     ///   the refresh token, the right end for consent nobody wanted.
     /// - An account that is ALREADY signed in (the re-auth case, or Add Account
     ///   for an origin that is already here — the id is the origin): the new
-    ///   grant is KEPT, and nothing is installed or selected. Signing out would
-    ///   delete the user's existing account from the Keychain (it shares the
-    ///   id), so the Cancel of a repair would lose the account outright at the
-    ///   next launch. Discarding only the new tokens is no better: the grant
-    ///   they replaced is the dead one, so the account would be exactly as
-    ///   broken as before and the next Sign In would mint the same grant again.
-    ///   Kept, it is invisible until wanted: the running graph's token provider
-    ///   re-reads the store per request and drops its dead-grant latch on
-    ///   seeing a different grant, so sends and message opens start working
-    ///   again; the banner stays up (the stopped sync loop and the sticky
-    ///   `.needsReauth` are left alone — the user said stop), and the next Sign
-    ///   In or launch picks the account up normally.
+    ///   grant is KEPT, and the account is re-installed on it WITHOUT being
+    ///   selected. Signing out would delete the user's existing account from
+    ///   the Keychain (it shares the id), so the Cancel of a repair would lose
+    ///   the account outright at the next launch. Discarding only the new
+    ///   tokens is no better: the grant they replaced is the dead one, so the
+    ///   account would be exactly as broken as before. Kept but NOT installed
+    ///   (P3) left the UI lying: the account worked, yet the banner and the
+    ///   composers' Sign In still said it was dead, and once the cancel's
+    ///   cooldown ran out the automatic attempt flashed a consent window for a
+    ///   healthy account. Re-installing clears all of that the way a normal
+    ///   sign-in does (fresh graph, sync restarted, composers rebound) — and
+    ///   leaves the window where the user put it.
     ///
-    /// A sign-out racing the late consent still wins either way: it stops the
+    /// A sign-out racing the late consent still wins either way: it removes the
     /// graph before it revokes, so the consent either lands after the graph is
-    /// gone (signed out here) or is overwritten by the sign-out's own revoke
-    /// and removal.
+    /// gone (signed out here) or finds it gone by the time the re-install would
+    /// publish (``activate``'s `isStillWanted`), and the sign-out's own revoke
+    /// and removal clear the grant.
     private func discardAbandonedSignIn(_ account: Account) async {
         if graphs[account.id] != nil {
-            logger.info("re-auth consent completed after it was cancelled; keeping the new grant, not installing")
+            logger.info("re-auth consent completed after it was cancelled; keeping the new grant and re-installing without selecting")
+            // In a task of its own: this runs inside the attempt the user
+            // CANCELLED, and the install (discovery if uncached, the new
+            // graph's start) must not inherit that cancellation. Awaited, so
+            // the attempt returns with the account already back.
+            // `isAutomatic: true` only keeps a failure off the onboarding
+            // sheet's error slot: nobody is waiting on this activation.
+            let revive = Task { [weak self] in
+                guard let self else { return }
+                await self.activate(account, select: false, isAutomatic: true) { [weak self] in
+                    self?.graphs[account.id] != nil
+                }
+            }
+            await revive.value
             return
         }
         logger.info("sign-in completed after it was cancelled; undoing it")
-        do {
-            try await auth.signOut(account)
-        } catch {
-            logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
+        // In a task of its own for the same reason as the re-install above:
+        // this runs inside the CANCELLED attempt, and the revocation is a
+        // network request — cancelled with it, the new refresh token would be
+        // deleted locally but stay live on the server.
+        let undo = Task { [auth] in
+            do {
+                try await auth.signOut(account)
+            } catch {
+                logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
+            }
         }
+        await undo.value
     }
 
     /// Re-runs the whole flow for the ONE account whose token died. The other
@@ -289,14 +320,6 @@ extension AppEnvironment {
         signInCancellation = nil
         signInReauthAccountID = nil
         autoReauth.finish(accountID: accountID, succeeded: succeeded)
-    }
-
-    /// Whether the re-auth running for this account is the USER's. False for an
-    /// automatic attempt and for a sign-in belonging to another account or to
-    /// the Add Account sheet. (Both kinds offer Cancel now — see
-    /// ``cancelReauthentication(accountID:)``.)
-    func isCancellableReauthentication(accountID: Account.ID) -> Bool {
-        isSigningIn && signInReauthAccountID == accountID
     }
 
     /// The re-auth banner's Cancel: stops whichever attempt is running for this
@@ -354,9 +377,9 @@ extension AppEnvironment {
     /// its own, so the whole repair is a window that flashes — worth doing for
     /// the user, and only when they are actually here to see it.
     ///
-    /// Scoped to the account the window is SHOWING. An account syncing behind the
-    /// window would have its sign-in select it (`install(select:)` follows a
-    /// sign-in), pulling the user off the mail they are reading; the others keep
+    /// Scoped to the account the window is SHOWING. A re-auth no longer selects
+    /// the account it repairs, but a consent window popping up for an account
+    /// the user is not looking at would still be a mystery; the others keep
     /// the banner until ``retryAutomaticReauthentication()`` picks them up —
     /// which is also how a session that died while Herald was in the background
     /// (the common case: the binding expires on a 7-day timer) is repaired the
@@ -447,10 +470,9 @@ extension AppEnvironment {
             resolved = (try? await auth.loadAccounts())?.first { $0.id == accountID }
         }
         guard let account = resolved else { return }
-        // An INTERACTIVE re-auth for this account would `install` it again — with
-        // a graph and the window selection — right after the sign-out removed it.
-        // Its automatic sibling is cancelled and awaited just below; this one is
-        // only cancelled, because the whole point of the handle is that its task
+        // An INTERACTIVE re-auth for this account would `install` it again right
+        // after the sign-out removed it. Only cancelled, like its automatic
+        // sibling just below: the whole point of the handle is that its task
         // may never return.
         if signInReauthAccountID == accountID {
             signInGeneration &+= 1
@@ -458,12 +480,17 @@ extension AppEnvironment {
             isSigningIn = false
             signInStage = nil
         }
-        // An automatic attempt still running would `install` this account again —
-        // selecting it — right after the sign-out removed it. Cancelled AND
-        // waited for, so nothing of it can land behind the removal.
+        // An automatic attempt still running would `install` this account again
+        // right after the sign-out removed it. Cancelled, NOT awaited: the
+        // attempt may be parked on a wedged authentication agent that never
+        // returns, and a sign-out that waited on it would hang with it. Nothing
+        // of it can land behind the removal anyway — a cancelled attempt fails
+        // `isStillWanted` at every step, and a late consent is handed to
+        // `discardAbandonedSignIn`, which finds no graph (`stopGraph` below
+        // removes it with no suspension after this cancel) and signs it back out. Deregistered
+        // first, so its eventual return leaves the policy alone.
         if let attempt = automaticReauthTasks.removeValue(forKey: accountID) {
             attempt.cancel()
-            _ = await attempt.value
         }
         record(.accountRemoved)
         // Signing back in later must not inherit the dead session's cooldown.

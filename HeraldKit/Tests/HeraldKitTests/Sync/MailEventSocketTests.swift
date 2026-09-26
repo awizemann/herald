@@ -200,7 +200,7 @@ struct MailEventSocketTests {
     func unauthorizedRefreshesOnce() async throws {
         let recorder = SignalRecorder()
         let tokens = FakeTokenProvider(initial: "token-1", refreshedTokens: ["token-2"])
-        let channels = FakeMailEventChannels([.rejected(.unauthorized), .parked(frames: [])])
+        let channels = FakeMailEventChannels([.rejected(.unauthorized(invalidToken: true)), .parked(frames: [])])
         let socket = Self.socket(channels: channels, tokens: tokens, recorder: recorder)
 
         await socket.start()
@@ -220,7 +220,7 @@ struct MailEventSocketTests {
     func unauthorizedTwiceEscalates() async throws {
         let recorder = SignalRecorder()
         let tokens = FakeTokenProvider(initial: "token-1", refreshedTokens: ["token-2"])
-        let channels = FakeMailEventChannels([.rejected(.unauthorized), .rejected(.unauthorized)])
+        let channels = FakeMailEventChannels([.rejected(.unauthorized(invalidToken: true)), .rejected(.unauthorized(invalidToken: true))])
         let socket = Self.socket(channels: channels, tokens: tokens, recorder: recorder)
 
         await socket.start()
@@ -236,6 +236,26 @@ struct MailEventSocketTests {
         await socket.stop()
     }
 
+    /// A refused retry WITHOUT the server's explicit `invalid_token` (a proxy's
+    /// bare 401 at the upgrade) still stops the socket and escalates, as
+    /// before, but must not latch the grant through the provider: REST would
+    /// then be stopped on a false positive too. Fails if the socket reports it.
+    @Test("A bare 401 that survives the refresh escalates without latching the grant")
+    func bareUnauthorizedTwiceEscalatesWithoutLatching() async throws {
+        let recorder = SignalRecorder()
+        let tokens = FakeTokenProvider(initial: "token-1", refreshedTokens: ["token-2"])
+        let channels = FakeMailEventChannels([
+            .rejected(.unauthorized(invalidToken: false)), .rejected(.unauthorized(invalidToken: false)),
+        ])
+        let socket = Self.socket(channels: channels, tokens: tokens, recorder: recorder)
+
+        await socket.start()
+        try await waitUntil("the escalation happened") { await recorder.reauthCount == 1 }
+        #expect(await channels.openCount == 2)
+        #expect(await tokens.rejectedTokens.isEmpty, "a bare 401 latched the grant")
+        await socket.stop()
+    }
+
     /// Same rule for the refresh itself failing: a dead grant is not a network
     /// blip and reconnecting cannot mend it.
     @Test("A refresh that reports a dead grant escalates instead of reconnecting")
@@ -243,7 +263,7 @@ struct MailEventSocketTests {
         let recorder = SignalRecorder()
         let tokens = FakeTokenProvider()
         await tokens.setRefreshFailure(OAuthError.reauthenticationRequired)
-        let channels = FakeMailEventChannels([.rejected(.unauthorized)])
+        let channels = FakeMailEventChannels([.rejected(.unauthorized(invalidToken: true))])
         let socket = Self.socket(channels: channels, tokens: tokens, recorder: recorder)
 
         await socket.start()

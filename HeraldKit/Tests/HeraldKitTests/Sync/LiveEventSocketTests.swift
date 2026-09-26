@@ -80,7 +80,7 @@ struct LiveEventSocketTests {
     func rejectedUpgrade() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         let channels = URLSessionMailEventChannels(origin: Self.origin, configuration: configuration)
-        await #expect(throws: MailEventChannelError.unauthorized) {
+        await #expect(throws: MailEventChannelError.unauthorized(invalidToken: true)) {
             _ = try await channels.open(token: "not-a-real-token")
         }
     }

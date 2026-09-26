@@ -44,6 +44,17 @@ public nonisolated protocol AccountStore: Sendable {
     /// The dynamically registered `client_id` for an origin, if Herald already has one.
     func clientID(for origin: URL) throws -> String?
     func setClientID(_ clientID: String, for origin: URL) throws
+    /// Forgets the origin's registration, but ONLY while it is still `clientID`
+    /// — the one the server just refused. Returns whether anything was removed.
+    ///
+    /// Compare-and-delete because the item is shared (every Herald process on
+    /// the Mac, and every account on that origin): if another process — or a
+    /// sign-in here — has already registered anew, its fresh `client_id` must
+    /// survive a late report about the old one. Never touches another origin.
+    /// The next sign-in finds no registration and registers again
+    /// (`AuthCoordinator` treats missing and empty alike).
+    @discardableResult
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool
 
     /// The OAuth discovery last resolved for an origin, so an account can come up
     /// (and read its cached mail) with no network. A cache, not a secret: stale
@@ -265,6 +276,19 @@ public nonisolated final class KeychainAccountStore: AccountStore {
 
     public func setClientID(_ clientID: String, for origin: URL) throws {
         try secrets.setString(clientID, for: Self.clientKey(origin))
+    }
+
+    /// Serialized with this process's other index work by the lock; across
+    /// processes the read-then-delete is not atomic, and the loser of that
+    /// race is at worst one extra registration on the next sign-in.
+    @discardableResult
+    public func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
+        try lock.withLock {
+            let key = Self.clientKey(origin)
+            guard try secrets.string(for: key) == clientID else { return false }
+            try secrets.removeValue(for: key)
+            return true
+        }
     }
 
     // MARK: Discovery

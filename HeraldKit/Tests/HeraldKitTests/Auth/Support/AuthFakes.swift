@@ -206,6 +206,15 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
         lock.withLock { clientIDs[Account.normalize(origin).absoluteString] = clientID }
     }
 
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
+        lock.withLock {
+            let key = Account.normalize(origin).absoluteString
+            guard clientIDs[key] == clientID else { return false }
+            clientIDs[key] = nil
+            return true
+        }
+    }
+
     var tokenReadCount: Int { lock.withLock { reads } }
 
     /// Zeroes the read/write counters so test setup does not show up in assertions.
@@ -299,6 +308,7 @@ nonisolated final class StaleReadingStore: AccountStore, @unchecked Sendable {
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
     func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
     func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }
 
 /// One process's view of the shared store whose READS start failing after N of
@@ -343,6 +353,7 @@ nonisolated final class FailingReadStore: AccountStore, @unchecked Sendable {
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
     func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
     func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }
 
 /// A ``TokenRefreshing`` that behaves like better-auth's oauth-provider: every

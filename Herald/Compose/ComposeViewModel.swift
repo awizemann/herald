@@ -107,6 +107,18 @@ final class ComposeViewModel {
     /// point shares.
     var isSigningIn: Bool { isReauthenticating() }
 
+    /// Why the last sign-in for this composer's account failed, shown under
+    /// the error bar's message next to the Sign In button — only while that
+    /// button is offered (``signInAffordance`` `.available`).
+    var signInFailureReason: String? {
+        guard signInAffordance == .available, let reason = reauthError() else { return nil }
+        return Self.signInFailureDetail(reason)
+    }
+
+    nonisolated static func signInFailureDetail(_ reason: String) -> String {
+        "The last sign-in didn’t work: \(reason)"
+    }
+
     /// Set once this composer's account has been signed out (or replaced by a
     /// different user on re-auth). Its outbox belongs to a graph that is gone,
     /// so nothing is saved or sent from here any more — the window keeps the
@@ -209,6 +221,10 @@ final class ComposeViewModel {
     /// selected one — see `AppEnvironment.makeComposeViewModel`).
     @ObservationIgnored private let reauthenticate: @MainActor () async -> Void
     @ObservationIgnored private let isReauthenticating: @MainActor () -> Bool
+    /// Why the last re-auth of this composer's account failed, if it did
+    /// (`AppEnvironment.reauthErrors`, audit W5) — read through the
+    /// environment, so a failure from the banner or the sidebar shows here too.
+    @ObservationIgnored private let reauthError: @MainActor () -> String?
     private let autosaveDelay: Duration
     /// The draft as opened: what "the user has typed something" is measured against.
     private let initialDraft: ComposeDraft
@@ -229,7 +245,8 @@ final class ComposeViewModel {
         record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in },
         draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in },
         reauthenticate: @escaping @MainActor () async -> Void = {},
-        isReauthenticating: @escaping @MainActor () -> Bool = { false }
+        isReauthenticating: @escaping @MainActor () -> Bool = { false },
+        reauthError: @escaping @MainActor () -> String? = { nil }
     ) {
         let draft = context.makeDraft()
         self.draft = draft
@@ -241,6 +258,7 @@ final class ComposeViewModel {
         self.draftCache = draftCache
         self.reauthenticate = reauthenticate
         self.isReauthenticating = isReauthenticating
+        self.reauthError = reauthError
         self.toText = draft.to.joined(separator: ", ")
         self.ccText = draft.cc.joined(separator: ", ")
         self.bccText = draft.bcc.joined(separator: ", ")
@@ -513,6 +531,13 @@ final class ComposeViewModel {
         guard requiresSignIn, !isSigningIn else { return }
         announce("Signing in. Your message stays in this window.")
         await reauthenticate()
+        // A success rebinds this composer (``accountSignedIn(outbox:)``), which
+        // clears the failure and announces that. A failure leaves the bar up:
+        // say why, once, here — the window's own attempt, so the user is
+        // listening for its outcome. A Cancel records no reason and stays quiet.
+        if requiresSignIn, !isSigningIn, let reason = reauthError() {
+            announce("Sign-in didn’t work: \(reason)")
+        }
     }
 
     /// The account this composer belongs to was signed in again and has a new

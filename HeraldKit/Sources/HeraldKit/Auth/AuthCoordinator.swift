@@ -138,9 +138,23 @@ public final class AuthCoordinator {
             url: request.url,
             callbackScheme: DynamicClientRegistration.callbackScheme
         )
-        let code = try oauth.authorizationCode(from: callback, for: request)
-        step(.exchanging)
-        let tokens = try await oauth.exchange(code: code, pkce: request.pkce)
+        let tokens: OAuthTokens
+        do {
+            let code = try oauth.authorizationCode(from: callback, for: request)
+            step(.exchanging)
+            tokens = try await oauth.exchange(code: code, pkce: request.pkce)
+        } catch let error as OAuthError where error.isRejectedClient {
+            // The server no longer knows (or no longer trusts) this `client_id`
+            // — reinstalled, or its client table reset. Forget the registration
+            // so the NEXT sign-in registers anew (audit W3), and say so in words
+            // rather than echoing a bare `invalid_client`. Not retried here: a
+            // retry is a second browser window the user did not ask for.
+            // Callback errors only reach here when the server chose to
+            // redirect; HQBase shows its own error page for an unknown client,
+            // which is why the refresh path forgets the registration too.
+            await forgetRejectedClient(clientID, for: origin)
+            throw OAuthError.clientRegistrationRejected
+        }
 
         let account = Account(
             origin: origin,
@@ -161,6 +175,19 @@ public final class AuthCoordinator {
         }
         logger.info("added account for \(origin.absoluteString, privacy: .public)")
         return account
+    }
+
+    /// Forgets `clientID` as `origin`'s registration, if it still is. Best
+    /// effort: a failure only means the next sign-in fails the same way.
+    private func forgetRejectedClient(_ clientID: String, for origin: URL) async {
+        do {
+            let forgotten = try await offMain { [store] in try store.forgetClientID(clientID, for: origin) }
+            if forgotten {
+                logger.warning("client registration for \(origin.absoluteString, privacy: .public) was refused at sign-in; forgotten")
+            }
+        } catch {
+            logger.error("could not forget the refused client registration for \(origin.absoluteString, privacy: .public)")
+        }
     }
 
     /// Runs a synchronous ``AccountStore`` call off the main actor.
@@ -275,7 +302,11 @@ public final class AuthCoordinator {
             store: store,
             refresher: DiscoveringRefresher(clientID: account.clientID, session: session) { [self, fallback] in
                 try await self.refreshConfiguration(for: origin, fallback: fallback, generation: generation)
-            }
+            },
+            // What the provider forgets when the token endpoint refuses THIS
+            // client (audit W3) — the same id the refresher sends.
+            origin: origin,
+            clientID: account.clientID
         )
     }
 

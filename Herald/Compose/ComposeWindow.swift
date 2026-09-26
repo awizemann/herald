@@ -360,7 +360,18 @@ struct ComposeView: View {
             // fold the button into the sentence).
             HStack(spacing: MailTheme.Spacing.sm) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MailTheme.failure)
-                Text(message).font(.callout)
+                VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                    Text(message).font(.callout)
+                    // Why the last sign-in for this account failed (audit W5);
+                    // only while Sign In is offered.
+                    if let reason = model.signInFailureReason {
+                        Text(reason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .help(reason)
+                    }
+                }
             }
             .accessibilityElement(children: .combine)
             Spacer()

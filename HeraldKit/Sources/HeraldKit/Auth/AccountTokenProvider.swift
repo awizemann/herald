@@ -22,7 +22,10 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// `invalid_grant`: a refreshable 401 for a token this provider just handed out
 /// (reported through ``sessionRejected(token:)``) latches the grant, and every
 /// later call fails fast with ``OAuthError/reauthenticationRequired`` instead of
-/// spending the rotating refresh token again. See ``deadGrant``.
+/// spending the rotating refresh token again. See ``deadGrant``. A refresh the
+/// token endpoint refuses in a way no retry can fix
+/// (``OAuthError/isTerminalRefreshRefusal``: a dead client registration, a
+/// token-endpoint 401, `invalid_scope`/`invalid_target`) latches the same way.
 /// One announced session death, handed to the handler set with
 /// ``AccountTokenProvider/setSessionRejectedHandler(_:)``.
 ///
@@ -50,6 +53,10 @@ public actor AccountTokenProvider: BearerTokenProvider {
     private let accountID: Account.ID
     private let store: any AccountStore
     private let refresher: any TokenRefreshing
+    /// The origin and `client_id` the refresher authenticates as, when known —
+    /// what gets forgotten (``AccountStore/forgetClientID(_:for:)``) when the
+    /// token endpoint says the client itself is dead. `nil`: nothing to forget.
+    private let clientRegistration: (origin: URL, clientID: String)?
     /// Injected so tests get deterministic expiry without waiting.
     private let now: @Sendable () -> Date
 
@@ -64,7 +71,9 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// One retry, only for transport/5xx — and only after re-reading the store.
     private static let maxRefreshAttempts = 2
 
-    /// The grant (``grantKey(_:)``) a server has refused even after a refresh.
+    /// The grant (``grantKey(_:)``) a server has refused even after a refresh —
+    /// or whose refresh the token endpoint refused for good
+    /// (``OAuthError/isTerminalRefreshRefusal``).
     ///
     /// Keyed to the GRANT, never to this provider's lifetime: the store is the
     /// arbiter, so the moment it holds a different grant (a re-auth landed — in
@@ -73,7 +82,10 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// a superseded graph's provider (an open composer's outbox) keep working
     /// after the user signs back in. In memory only: the Keychain item is NOT
     /// cleared here (unlike `invalid_grant`) — on a 1.4.2 server the refresh
-    /// token may well be fine, and re-auth overwrites it anyway.
+    /// token may well be fine, and re-auth overwrites it anyway. The same goes
+    /// for a terminal refusal: a gateway's 401 can be transient, and another
+    /// process may be about to write a fresh grant under a NEW client into the
+    /// very item a clear would delete; a relaunch simply tries it once more.
     private var deadGrant: String?
 
     /// Told once per dead grant, after it is latched. See
@@ -100,11 +112,18 @@ public actor AccountTokenProvider: BearerTokenProvider {
         store: any AccountStore,
         refresher: any TokenRefreshing,
         refreshLeeway: TimeInterval = OAuthTokens.jitteredRefreshLeeway(),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        origin: URL? = nil,
+        clientID: String? = nil
     ) {
         self.accountID = accountID
         self.store = store
         self.refresher = refresher
+        if let origin, let clientID, !clientID.isEmpty {
+            self.clientRegistration = (Account.normalize(origin), clientID)
+        } else {
+            self.clientRegistration = nil
+        }
         self.refreshLeeway = refreshLeeway
         self.now = now
     }
@@ -112,7 +131,8 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// Installs (or, with `nil`, removes) the hook told when a grant is found dead.
     ///
     /// The ONE dead-session signal for the app: a grant refused after a refresh
-    /// (``sessionRejected(token:)``), a refresh answered `invalid_grant`, and a
+    /// (``sessionRejected(token:)``), a refresh answered `invalid_grant` or
+    /// refused for good (``OAuthError/isTerminalRefreshRefusal``), and a
     /// refresh that has no refresh token to spend all announce here — whichever
     /// request tripped over it (sync, a send, a draft autosave, a message open).
     ///
@@ -288,7 +308,15 @@ public actor AccountTokenProvider: BearerTokenProvider {
     // MARK: - Refresh
 
     private func refreshTokens(replacing stale: OAuthTokens?) async throws -> OAuthTokens {
-        if let refreshTask { return try await refreshTask.value }
+        if let refreshTask {
+            do {
+                return try await refreshTask.value
+            } catch is TerminalRefusal {
+                // A joiner: the caller that started the refresh latches and
+                // announces; this one just gets the public error.
+                throw OAuthError.reauthenticationRequired
+            }
+        }
 
         guard let stale, let refreshToken = stale.refreshToken else {
             logger.warning("no refresh token for account \(self.accountID, privacy: .public)")
@@ -317,8 +345,25 @@ public actor AccountTokenProvider: BearerTokenProvider {
             // request arriving meanwhile joins the failed task and fails too.
             await announceDeath(ofGrant: refreshToken)
             throw OAuthError.reauthenticationRequired
+        } catch is TerminalRefusal {
+            // The token endpoint refused this grant in a way no retry fixes
+            // (audit W3). Latched like a grant refused after a refresh — with no
+            // suspension since the task finished, and BEFORE the announcement
+            // awaits the handler — so every later request fails fast instead of
+            // POSTing the token endpoint again (it used to, once per sync pass,
+            // socket reconnect and user action, behind a useless "Sync problem /
+            // Retry"). NOT cleared from the store: see ``deadGrant``.
+            deadGrant = Self.grantKey(stale)
+            await announceDeath(ofGrant: refreshToken)
+            throw OAuthError.reauthenticationRequired
         }
     }
+
+    /// Thrown by ``performRefresh(replacing:)`` for a terminal refusal of the
+    /// grant it spent (``OAuthError/isTerminalRefreshRefusal``), and turned
+    /// into ``OAuthError/reauthenticationRequired`` by ``refreshTokens(replacing:)``
+    /// — which, being actor-isolated, is where the latch can be set.
+    private struct TerminalRefusal: Error {}
 
     /// The refresh body. `nonisolated` so it runs inside the shared `Task` without
     /// re-entering the actor on every step — everything it touches is an immutable
@@ -380,6 +425,22 @@ public actor AccountTokenProvider: BearerTokenProvider {
                     logger.error("could not clear the dead grant for \(self.accountID, privacy: .public)")
                 }
                 throw OAuthError.reauthenticationRequired
+            } catch let error as OAuthError where error.isTerminalRefreshRefusal {
+                // Same arbitration as invalid_grant: if the store has moved past
+                // the refresh token we spent, another process (or a sign-in here)
+                // already holds a newer grant — possibly under a NEW client — and
+                // this refusal is about the old one. Adopt, never latch.
+                if let rotated = try tokens(replacing: refreshToken) {
+                    logger.warning("refresh refusal for \(self.accountID, privacy: .public) was about a superseded grant; adopting the stored tokens")
+                    return rotated
+                }
+                // `.public` is safe: `isTerminalRefreshRefusal` admits only a
+                // fixed set of codes, never the server's free text.
+                if case .server(let code, _) = error {
+                    logger.warning("refresh refused for \(self.accountID, privacy: .public) (\(code, privacy: .public)); re-auth required")
+                }
+                if error.isRejectedClient { forgetRejectedRegistration() }
+                throw TerminalRefusal()
             } catch {
                 let oauth = OAuthError.wrapTransport(error)
                 guard attempt < Self.maxRefreshAttempts, oauth.isRetryable else {
@@ -396,6 +457,23 @@ public actor AccountTokenProvider: BearerTokenProvider {
 
         // Unreachable: the loop either returns or throws on its last attempt.
         throw OAuthError.reauthenticationRequired
+    }
+
+    /// Forgets the registration the token endpoint just refused, so the next
+    /// sign-in registers Herald anew instead of sending the browser to a
+    /// consent page for a client the server no longer has (it shows an error
+    /// page there, never a callback). Compare-and-delete, this origin only.
+    /// Best effort: a failure leaves the old id, and the sign-in's own exchange
+    /// then fails with ``OAuthError/clientRegistrationRejected`` and forgets it.
+    private nonisolated func forgetRejectedRegistration() {
+        guard let clientRegistration else { return }
+        do {
+            if try store.forgetClientID(clientRegistration.clientID, for: clientRegistration.origin) {
+                logger.warning("client registration for \(clientRegistration.origin.absoluteString, privacy: .public) was refused; forgotten so the next sign-in registers again")
+            }
+        } catch {
+            logger.error("could not forget the refused client registration for \(clientRegistration.origin.absoluteString, privacy: .public)")
+        }
     }
 
     // MARK: - Store arbitration

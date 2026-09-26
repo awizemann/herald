@@ -100,13 +100,21 @@ extension AppEnvironment {
     /// that gap too.
     private func abandonInteractiveSignIn() {
         logger.info("sign-in cancelled by the user at stage \(self.signInStage?.logName ?? "none", privacy: .public)")
+        // Read before `cancelInteractiveSignIn` releases it.
+        let reauthenticating = signInReauthAccountID
         // Orphans the attempt in flight: whatever it does from here cannot touch
         // the sign-in UI or install an account.
         signInGeneration &+= 1
         cancelInteractiveSignIn()
         isSigningIn = false
         signInStage = nil
-        signInError = nil
+        // A cancel is not an error. The onboarding sheet's slot is Add
+        // Account's; a re-auth's reason lives per account.
+        if let reauthenticating {
+            reauthErrors[reauthenticating] = nil
+        } else {
+            signInError = nil
+        }
     }
 
     /// Publishes a stage, if the attempt reporting it still owns the screen.
@@ -129,6 +137,9 @@ extension AppEnvironment {
         var outcome: UsageAccountOutcome
         var kind: UsageOAuthErrorKind?
         var account: Account?
+        /// Why a `.failed` round trip failed, as the user should read it. For a
+        /// re-auth, which has no onboarding sheet to show it on.
+        var failureReason: String?
     }
 
     /// The sign-in flow itself, reduced to the two values an event may carry.
@@ -144,14 +155,23 @@ extension AppEnvironment {
     /// - Parameter refusesExistingOrigin: Add Account only (see
     ///   ``existingAccount(for:)``). Re-auth deliberately signs an existing
     ///   origin in again, so it passes `false`.
+    /// - Parameter isReauthentication: a repair of an account already here.
+    ///   Its failure goes back in ``SignInResult/failureReason`` (for
+    ///   ``reauthErrors``), never into `signInError`: the onboarding sheet is
+    ///   not what the user is looking at, and a message left there surfaced,
+    ///   stale, in the next Add Account (audit W5).
     private func performSignIn(
         originText: String,
         generation: Int? = nil,
-        refusesExistingOrigin: Bool = false
+        refusesExistingOrigin: Bool = false,
+        isReauthentication: Bool = false
     ) async -> SignInResult {
         let isAutomatic = generation == nil
+        // Whether a failure may be written into the onboarding sheet — asked at
+        // the moment of writing, since the generation can move meanwhile.
+        func ownsOnboardingError() -> Bool { ownsSignInUI(generation) && !isReauthentication }
         guard let origin = Self.normalizedOrigin(from: originText) else {
-            if ownsSignInUI(generation) {
+            if ownsOnboardingError() {
                 signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
             }
             // A typo in the address field, not an OAuth fault: there is no kind
@@ -161,8 +181,8 @@ extension AppEnvironment {
         if ownsSignInUI(generation) {
             isSigningIn = true
             signInStage = nil
-            signInError = nil
         }
+        if ownsOnboardingError() { signInError = nil }
         // Runs on every exit INCLUDING cancellation — but only clears state this
         // attempt still owns, so a cancel that already reset the screen (and a
         // second attempt started behind it) is not undone here.
@@ -210,33 +230,40 @@ extension AppEnvironment {
             // Herald (or a composer's Sign In) repairs this one, and the
             // selection is theirs. `install` still selects when nothing is
             // showing at all.
-            let activated = await activate(
+            let activation = await activateAccount(
                 account,
                 select: graphs[account.id] == nil,
-                isAutomatic: isAutomatic,
                 isStillWanted: isStillWanted
             )
-            // Activation suspends before it installs, and a cancel landing in
-            // that gap is the same late consent as one landing before it.
-            if !activated, !isStillWanted() {
+            switch activation {
+            case .installed:
+                return SignInResult(outcome: .success, account: account)
+            case .abandoned:
+                // Activation suspends before it installs, and a cancel landing
+                // in that gap is the same late consent as one landing before it.
                 await discardAbandonedSignIn(account)
                 return SignInResult(outcome: .cancelled)
+            case .failed(let error):
+                if !isStillWanted() {
+                    await discardAbandonedSignIn(account)
+                    return SignInResult(outcome: .cancelled)
+                }
+                // With nothing else up, `activateAccount` already ended the
+                // launch on `.failed`; otherwise the sheet (Add Account) or the
+                // re-auth's own reason says what went wrong.
+                if ownsOnboardingError(), !graphs.isEmpty { signInError = error.localizedDescription }
+                return SignInResult(outcome: .failed, kind: .other, failureReason: error.localizedDescription)
             }
-            return SignInResult(
-                outcome: activated ? .success : .failed,
-                kind: activated ? nil : .other,
-                account: activated ? account : nil
-            )
         } catch {
             logger.warning("Sign-in failed: \(error.localizedDescription, privacy: .private)")
-            if ownsSignInUI(generation) { signInError = error.localizedDescription }
+            if ownsOnboardingError() { signInError = error.localizedDescription }
             // A failure that is not an `OAuthError` still failed: it counts as
             // `other` rather than being dropped, and carries nothing of itself.
             let kind = UsageOAuthErrorKind(anyError: error)
             // Closing the browser window is a choice, not a failure.
             return kind == .cancelled
                 ? SignInResult(outcome: .cancelled)
-                : SignInResult(outcome: .failed, kind: kind)
+                : SignInResult(outcome: .failed, kind: kind, failureReason: error.localizedDescription)
         }
     }
 
@@ -340,11 +367,10 @@ extension AppEnvironment {
             // CANCELLED, and the install (discovery if uncached, the new
             // graph's start) must not inherit that cancellation. Awaited, so
             // the attempt returns with the account already back.
-            // `isAutomatic: true` only keeps a failure off the onboarding
-            // sheet's error slot: nobody is waiting on this activation.
+            // A failure is only logged: nobody is waiting on this activation.
             let revive = Task { [weak self] in
                 guard let self else { return }
-                await self.activate(account, select: false, isAutomatic: true) { [weak self] in
+                await self.activate(account, select: false) { [weak self] in
                     self?.graphs[account.id] != nil
                 }
             }
@@ -378,6 +404,8 @@ extension AppEnvironment {
         // automatic attempt is running would open a second consent window over
         // the first.
         guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
+        // A new attempt: the last one's reason no longer describes anything.
+        reauthErrors[accountID] = nil
         // Retained and generation-stamped like a first sign-in: a re-auth is just
         // as capable of stalling in the browser hand-off, and the banner's spinner
         // has to be escapable too — the banner's Cancel lands on
@@ -406,6 +434,8 @@ extension AppEnvironment {
     /// user-initiated attempt holds the account from the moment it is claimed,
     /// before its task has raised `isSigningIn`.
     func cancelReauthentication(accountID: Account.ID) {
+        // A cancel is not a failure: nothing to explain afterwards.
+        reauthErrors[accountID] = nil
         if signInReauthAccountID == accountID {
             abandonInteractiveSignIn()
         } else {
@@ -468,6 +498,7 @@ extension AppEnvironment {
             accountID: accountID,
             isApplicationActive: isApplicationActive()
         ) else { return }
+        reauthErrors[accountID] = nil
         // Held so a sign-out can CANCEL the attempt: its `install` would
         // otherwise land after the account was removed and bring it — and its
         // window selection — straight back.
@@ -509,8 +540,19 @@ extension AppEnvironment {
         let accountID = account.id
         let result = await performSignIn(
             originText: account.origin.absoluteString,
-            generation: generation
+            generation: generation,
+            isReauthentication: true
         )
+        // Said only while this attempt still owns the account: a cancelled one
+        // (the user's Cancel moves the generation on and cancels the task; a
+        // cancelled automatic one is cancelled too) or one superseded by a
+        // newer attempt must not write a stale reason over what is on screen.
+        // A closed browser window is `.cancelled`, never a reason.
+        if result.outcome == .failed, let reason = result.failureReason, !Task.isCancelled,
+           isAutomatic || signInGeneration == generation,
+           graphs[accountID] != nil {
+            reauthErrors[accountID] = reason
+        }
         record(.accountReauthenticated(
             outcome: result.outcome,
             kind: result.kind,
@@ -570,8 +612,10 @@ extension AppEnvironment {
             attempt.cancel()
         }
         record(.accountRemoved)
-        // Signing back in later must not inherit the dead session's cooldown.
+        // Signing back in later must not inherit the dead session's cooldown —
+        // nor the reason its last attempt failed.
         autoReauth.forget(accountID: accountID)
+        reauthErrors[accountID] = nil
         await stopGraph(accountID: accountID)
         accountIDs.removeAll { $0 == accountID }
         // The window settles BEFORE the slow half. Revocation is a network round
@@ -585,7 +629,10 @@ extension AppEnvironment {
             try await auth.signOut(account)
         } catch {
             logger.error("Sign-out failed: \(error.localizedDescription, privacy: .private)")
-            signInError = error.localizedDescription
+            // Only when the onboarding screen is what is showing (the last
+            // account went): with accounts left, the sheet is closed and the
+            // message would only greet the next Add Account, stale.
+            if graphs.isEmpty { signInError = error.localizedDescription }
         }
         // Signing the same origin back in during the revoke round trip would
         // otherwise have its freshly synced rows deleted underneath it.

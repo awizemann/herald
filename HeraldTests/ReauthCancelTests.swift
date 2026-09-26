@@ -546,4 +546,5 @@ nonisolated final class SaveGatedAccountStore: AccountStore, @unchecked Sendable
     }
     func clientID(for origin: URL) throws -> String? { try backing.clientID(for: origin) }
     func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try backing.forgetClientID(clientID, for: origin) }
 }

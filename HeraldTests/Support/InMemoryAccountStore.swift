@@ -60,6 +60,15 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         state.withLock { $0.clientIDs[Account.normalize(origin).absoluteString] = clientID }
     }
 
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
+        state.withLock { state in
+            let key = Account.normalize(origin).absoluteString
+            guard state.clientIDs[key] == clientID else { return false }
+            state.clientIDs[key] = nil
+            return true
+        }
+    }
+
     func oauthConfiguration(for origin: URL) throws -> OAuthConfiguration? {
         let key = Account.normalize(origin).absoluteString
         return state.withLock { state in

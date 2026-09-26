@@ -93,9 +93,40 @@ final class AppEnvironment {
     /// The step the visible sign-in is on; `nil` when none is running. Only ever
     /// set by an INTERACTIVE sign-in — an automatic re-auth is silent by design.
     var signInStage: SignInStage?
+    /// The onboarding sheet's error slot — Add Account and the first sign-in
+    /// ONLY. A re-auth never writes it (its reason goes to ``reauthErrors``):
+    /// the sheet is not on screen for a re-auth, so the message used to sit
+    /// here unseen and then greet the user, stale, in the next Add Account.
     var signInError: String?
     /// Drives the "Add Account…" sheet over the mail UI.
-    var presentsAddAccount = false
+    var presentsAddAccount = false {
+        didSet {
+            // A fresh sheet starts clean: whatever failed before it was last
+            // closed is history. Not while a sign-in is running — that one's
+            // own failure may be about to land here.
+            if presentsAddAccount, !oldValue, !isSigningIn { signInError = nil }
+        }
+    }
+
+    /// Why the last re-auth attempt for an account failed, per account (audit
+    /// W5), in words the user can read — shown by the re-auth banner and by a
+    /// composer's Sign In for THAT account only.
+    ///
+    /// Set by a failed re-auth, user-initiated or automatic. Automatic ones
+    /// too: the banner is already up and says the session expired, and a quiet
+    /// secondary line saying WHY Herald's own attempt did not fix it (server
+    /// unreachable, the server no longer recognizes Herald) is what tells the
+    /// user whether pressing Sign In is worth it. It is not noisy: automatic
+    /// attempts are rate-limited by ``AutoReauthPolicy``, a failure is announced
+    /// once (with the banner's state change), and a closed browser window or a
+    /// Cancel is never a failure. Cleared when an attempt for the account
+    /// starts, when the user cancels one, when the account is (re)installed,
+    /// and on sign-out.
+    var reauthErrors: [Account.ID: String] = [:]
+
+    func reauthError(accountID: Account.ID) -> String? {
+        reauthErrors[accountID]
+    }
 
     /// Every signed-in account's live graph, keyed by account id.
     private(set) var graphs: [Account.ID: AccountGraph] = [:]
@@ -496,10 +527,9 @@ final class AppEnvironment {
     /// Builds one account's graph and hands its view-model its feeds.
     ///
     /// `select: false` is for the accounts a restore brings up behind whatever
-    /// the window is already showing.
-    /// - Parameter isAutomatic: whether this is Herald repairing an account by
-    ///   itself. Its failures stay off `signInError`, which belongs to the
-    ///   onboarding sheet nobody opened.
+    /// the window is already showing. A failure is logged (and, with nothing
+    /// else up, ends the launch) but written to no user-facing slot: the caller
+    /// that has somewhere to show it uses ``activateAccount(_:select:isStillWanted:)``.
     /// - Parameter isStillWanted: asked after the one suspension before the
     ///   install; `false` returns without installing (and without reporting a
     ///   failure). A sign-in abandoned in that gap must not publish — and
@@ -509,10 +539,32 @@ final class AppEnvironment {
     func activate(
         _ account: Account,
         select: Bool = true,
-        isAutomatic: Bool = false,
         isStillWanted: () -> Bool = { true }
     ) async -> Bool {
-        guard let store else { return false }
+        if case .installed = await activateAccount(account, select: select, isStillWanted: isStillWanted) { return true }
+        return false
+    }
+
+    /// How ``activateAccount(_:select:isStillWanted:)`` ended.
+    enum ActivationOutcome {
+        case installed
+        /// `isStillWanted` said no; nothing was installed or reported.
+        case abandoned
+        case failed(any Error)
+    }
+
+    /// ``activate(_:select:isStillWanted:)``, returning the failure instead of
+    /// dropping it, so a sign-in can show it where its user is looking — the
+    /// onboarding sheet for Add Account, ``reauthErrors`` for a re-auth.
+    /// Previously every non-automatic activation failure landed in
+    /// `signInError`, including a restore's and a re-auth's, where nobody saw
+    /// it until the next Add Account.
+    func activateAccount(
+        _ account: Account,
+        select: Bool = true,
+        isStillWanted: () -> Bool = { true }
+    ) async -> ActivationOutcome {
+        guard let store else { return .failed(OAuthError.unknownAccount(account.id)) }
         do {
             let tokens = try await auth.tokenProvider(for: account)
             // Wired the moment the provider exists, before anything can use it:
@@ -522,7 +574,7 @@ final class AppEnvironment {
             // purpose: this is a suspension, and nothing may suspend between
             // that check and the install publishing the graph.
             await tokens.setSessionRejectedHandler(sessionDeathHandler())
-            guard isStillWanted() else { return false }
+            guard isStillWanted() else { return .abandoned }
             await install(
                 account: account,
                 // `includeLabels: true` asks every label-capable route to embed
@@ -543,7 +595,7 @@ final class AppEnvironment {
                 // them. Kept on the graph.
                 tokenProvider: tokens
             )
-            return true
+            return .installed
         } catch {
             logger.error("Account activation failed: \(error.localizedDescription, privacy: .private)")
             // One unreachable account must not take the whole app down when
@@ -553,10 +605,8 @@ final class AppEnvironment {
                 // Nothing came up at all: the launch failed, for a reason that is
                 // neither the cache nor the account list.
                 record(.launchFailed(kind: .other))
-            } else if !isAutomatic {
-                signInError = error.localizedDescription
             }
-            return false
+            return .failed(error)
         }
     }
 
@@ -656,6 +706,9 @@ final class AppEnvironment {
         // Published synchronously, so no second install can slip in and be
         // forgotten.
         let superseded = graphs.updateValue(graph, forKey: account.id)
+        // The account is signed in again: whatever the last failed attempt said
+        // is no longer true (a late consent kept after Cancel lands here too).
+        reauthErrors[account.id] = nil
         // A re-auth: this account's open composers move onto the new graph NOW,
         // before any suspension — so they can never be pointed at a graph a
         // second, overlapping install has already replaced. Rebinding (not

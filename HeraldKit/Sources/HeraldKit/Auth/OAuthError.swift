@@ -33,6 +33,14 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     case unknownAccount(String)
     /// The request never produced an HTTP response.
     case transport(MailAPIError.TransportFailure)
+    /// The server refused Herald's `client_id` during a sign-in (`invalid_client`
+    /// or `unauthorized_client` on the callback or the code exchange): the
+    /// dynamic registration it was minted under is gone — typically the server
+    /// was reinstalled or its client table reset. The stored registration for
+    /// that origin has already been forgotten when this is thrown, so the NEXT
+    /// sign-in registers Herald again. Not retried automatically: that would
+    /// open a second browser window the user did not ask for.
+    case clientRegistrationRejected
 
     public nonisolated enum DiscoveryFailure: String, Sendable, Hashable {
         case status
@@ -48,6 +56,46 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     public var isInvalidGrant: Bool {
         if case .server(let error, _) = self { return error == "invalid_grant" }
         return false
+    }
+
+    /// The token endpoint (or the authorization callback) says the CLIENT is the
+    /// problem, not the grant: `invalid_client` (unknown or disabled `client_id`
+    /// — HQBase's better-auth answers 400 `invalid_client` "missing client" for a
+    /// public client it no longer has) or `unauthorized_client` (the client may
+    /// no longer use this grant type). Only a new registration fixes either, so
+    /// the stored `client.<origin>` must be forgotten.
+    ///
+    /// Deliberately the server's explicit words only. A 401 with no readable
+    /// OAuth error body (`http_401`) is NOT this: HQBase always sends the JSON
+    /// body, so a bare 401 is a proxy or gateway speaking, and discarding a
+    /// registration on its say-so would only orphan a working client.
+    public var isRejectedClient: Bool {
+        guard case .server(let error, _) = self else { return false }
+        return error == "invalid_client" || error == "unauthorized_client"
+    }
+
+    /// A refresh refusal that no retry of the same grant can ever turn into a
+    /// token, so ``AccountTokenProvider`` treats it as a dead session (latch,
+    /// announce once, stop spending) instead of surfacing it as a sync error
+    /// whose Retry repeats the doomed request (audit W3).
+    ///
+    /// - ``isRejectedClient`` (the registration is dead).
+    /// - `http_401`: the token endpoint refused to authenticate the request at
+    ///   all. For a public client RFC 6749 §5.2 reserves 401 for client
+    ///   authentication failure; a gateway in front of the server (an expired
+    ///   access proxy) answers the same way and is equally only fixed by a trip
+    ///   through the browser. The latch is in memory, so a transient one costs
+    ///   a banner, never the stored grant.
+    /// - `invalid_scope` / `invalid_target`: the grant can no longer be
+    ///   exchanged for the scopes or the audience (`resource`) Herald asks for —
+    ///   a fresh consent against the current discovery can.
+    ///
+    /// NOT `invalid_grant`: that one has its own, stricter path (the grant is
+    /// cleared from the store) — see ``isInvalidGrant``.
+    public var isTerminalRefreshRefusal: Bool {
+        guard case .server(let error, _) = self else { return false }
+        if isRejectedClient { return true }
+        return error == "http_401" || error == "invalid_scope" || error == "invalid_target"
     }
 
     /// Worth exactly one more attempt: the network or the server failed us, so the
@@ -100,6 +148,8 @@ nonisolated extension OAuthError: LocalizedError {
             "That account is no longer signed in."
         case .transport(let failure):
             failure.localizedDescription
+        case .clientRegistrationRejected:
+            "This server no longer recognizes Herald. Sign in again and Herald will register with it anew."
         }
     }
 }

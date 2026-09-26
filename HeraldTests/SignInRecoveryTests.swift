@@ -257,6 +257,7 @@ nonisolated final class GatedAccountStore: AccountStore, @unchecked Sendable {
         try backing.setTokens(tokens, for: accountID)
     }
     func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try backing.forgetClientID(clientID, for: origin) }
 }
 
 // MARK: - Servers

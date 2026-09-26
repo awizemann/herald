@@ -191,10 +191,14 @@ struct ReauthBanner: View {
         // happening and swaps Sign In for Cancel: a second Sign In would open a
         // second authorization window over the one already up.
         let isReauthenticating = environment.isReauthenticating(accountID: accountID)
+        // Only while no attempt is running: an attempt clears it as it starts,
+        // and this keeps a stale line from sitting under "Signing you back in…".
+        let failureReason = isReauthenticating ? nil : environment.reauthError(accountID: accountID)
         BannerView(
             systemImage: "lock.fill",
             tint: MailTheme.failure,
-            text: Self.message(isReauthenticating: isReauthenticating)
+            text: Self.message(isReauthenticating: isReauthenticating),
+            detail: failureReason.map(Self.failureDetail)
         ) {
             if isReauthenticating {
                 ProgressView()
@@ -230,7 +234,10 @@ struct ReauthBanner: View {
             announce(Self.stateChangeAnnouncement(
                 isReauthenticating: reauthenticating,
                 cancelledAccountID: cancelledAccountID,
-                accountID: accountID
+                accountID: accountID,
+                // Read fresh: the attempt records its reason before it releases
+                // the account, so the reason is already there when this fires.
+                failureReason: environment.reauthError(accountID: accountID)
             ))
             cancelledAccountID = nil
         }
@@ -240,13 +247,29 @@ struct ReauthBanner: View {
     /// What a change of the attempt state announces. The cancel wording only
     /// for the account whose Cancel the user pressed — pure and static so the
     /// cross-account rule is assertable without a rendered banner.
+    ///
+    /// An attempt that ended in failure says why, once, here — the banner's
+    /// secondary line shows the same reason to sighted users (audit W5).
     nonisolated static func stateChangeAnnouncement(
         isReauthenticating: Bool,
         cancelledAccountID: Account.ID?,
-        accountID: Account.ID
+        accountID: Account.ID,
+        failureReason: String? = nil
     ) -> String {
         if !isReauthenticating, cancelledAccountID == accountID { return cancelledAnnouncement }
+        if !isReauthenticating, let failureReason { return failureAnnouncement(failureReason) }
         return announcement(isReauthenticating: isReauthenticating)
+    }
+
+    /// The banner's secondary line after a failed attempt.
+    nonisolated static func failureDetail(_ reason: String) -> String {
+        "The last sign-in didn’t work: \(reason)"
+    }
+
+    /// What VoiceOver hears when an attempt ends in failure: the reason, and
+    /// where the way back in is.
+    nonisolated static func failureAnnouncement(_ reason: String) -> String {
+        "Sign-in didn’t work: \(reason) Use the Sign In button in the banner to try again."
     }
 
     private func announce(_ text: String) {
@@ -279,6 +302,9 @@ struct BannerView<Actions: View>: View {
     let systemImage: String
     let tint: Color
     let text: String
+    /// An optional secondary line under ``text`` (the re-auth banner's reason
+    /// the last attempt failed). Read together with the text as one element.
+    var detail: String?
     @ViewBuilder var actions: Actions
 
     var body: some View {
@@ -289,7 +315,19 @@ struct BannerView<Actions: View>: View {
             Image(systemName: systemImage)
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
-            Text(text).font(.callout)
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                Text(text).font(.callout)
+                if let detail {
+                    // Server-supplied wording can run long: two lines here,
+                    // the whole of it in the tooltip and for VoiceOver.
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .help(detail)
+                }
+            }
+            .accessibilityElement(children: .combine)
             Spacer()
             actions
         }

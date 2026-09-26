@@ -31,10 +31,57 @@ public nonisolated struct Account: Sendable, Codable, Hashable, Identifiable {
         let normalized = Account.normalize(origin)
         self.id = id ?? normalized.absoluteString
         self.origin = normalized
-        self.label = label ?? normalized.host ?? normalized.absoluteString
+        self.label = label ?? Account.defaultLabel(for: normalized)
         self.userEmail = userEmail
         self.clientID = clientID
         self.scopes = scopes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, origin, label, userEmail, clientID, scopes
+    }
+
+    /// Tolerant on purpose: the index is one Keychain blob shared by every Herald
+    /// build on the Mac (a release app and a dev copy), so a record written by a
+    /// newer or older build must still decode. Only `origin` and `clientID` are
+    /// required — without them there is no account to refresh. Everything else
+    /// falls back to what ``init(id:origin:label:userEmail:clientID:scopes:)``
+    /// would have chosen, and unknown keys are ignored. The ENCODED shape is
+    /// unchanged (all six keys), so older builds keep reading what this one
+    /// writes. See "Herald Architecture" (#account-index).
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let origin = try container.decode(URL.self, forKey: .origin)
+        self.origin = origin
+        self.id = try container.decodeIfPresent(String.self, forKey: .id)
+            ?? Account.normalize(origin).absoluteString
+        self.label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? Account.defaultLabel(for: origin)
+        self.userEmail = try container.decodeIfPresent(String.self, forKey: .userEmail)
+        self.clientID = try container.decode(String.self, forKey: .clientID)
+        self.scopes = try container.decodeIfPresent([String].self, forKey: .scopes) ?? []
+    }
+
+    /// What ``label`` defaults to for an origin: its host.
+    public static func defaultLabel(for origin: URL) -> String {
+        let normalized = normalize(origin)
+        return normalized.host ?? normalized.absoluteString
+    }
+
+    /// This record written over `existing` (same id): the incoming values win,
+    /// except the ones a sign-in cannot know — a `userEmail` it did not learn,
+    /// and a `label` it only defaulted — which keep what `existing` had.
+    ///
+    /// A re-auth builds its record from scratch (origin, client id, scopes), so a
+    /// plain replace would silently drop a label the user chose or an address
+    /// `/me` disclosed (neither is set by anything yet; the multi-account
+    /// picker will). It assumes both records are the SAME user: once identity
+    /// is origin+sub, only merge records whose identity matches.
+    public func merging(over existing: Account) -> Account {
+        var merged = self
+        if merged.userEmail == nil { merged.userEmail = existing.userEmail }
+        if merged.label == Account.defaultLabel(for: merged.origin) { merged.label = existing.label }
+        return merged
     }
 
     /// Scheme + host + port only, with no trailing slash, so `https://x/` and

@@ -14,6 +14,8 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         var accounts: [Account] = []
         var tokens: [Account.ID: OAuthTokens] = [:]
         var clientIDs: [String: String] = [:]
+        var configurations: [String: OAuthConfiguration] = [:]
+        var configurationReads: [String] = []
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -26,8 +28,12 @@ nonisolated final class InMemoryAccountStore: AccountStore {
 
     func add(_ account: Account) throws {
         state.withLock { state in
-            state.accounts.removeAll { $0.id == account.id }
-            state.accounts.append(account)
+            // Merged in place, like the Keychain store.
+            if let index = state.accounts.firstIndex(where: { $0.id == account.id }) {
+                state.accounts[index] = account.merging(over: state.accounts[index])
+            } else {
+                state.accounts.append(account)
+            }
         }
     }
 
@@ -53,4 +59,20 @@ nonisolated final class InMemoryAccountStore: AccountStore {
     func setClientID(_ clientID: String, for origin: URL) throws {
         state.withLock { $0.clientIDs[Account.normalize(origin).absoluteString] = clientID }
     }
+
+    func oauthConfiguration(for origin: URL) throws -> OAuthConfiguration? {
+        let key = Account.normalize(origin).absoluteString
+        return state.withLock { state in
+            state.configurationReads.append(key)
+            return state.configurations[key]
+        }
+    }
+
+    func setOAuthConfiguration(_ configuration: OAuthConfiguration?, for origin: URL) throws {
+        state.withLock { $0.configurations[Account.normalize(origin).absoluteString] = configuration }
+    }
+
+    /// Every origin whose persisted discovery was read — one per activation that
+    /// found no live discovery, so it doubles as "was this account activated".
+    var configurationReads: [String] { state.withLock { $0.configurationReads } }
 }

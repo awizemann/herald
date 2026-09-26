@@ -33,7 +33,11 @@ extension AppEnvironment {
         let generation = beginInteractiveSignIn()
         let task = Task { [weak self] in
             guard let self else { return }
-            let result = await self.performSignIn(originText: originText, generation: generation)
+            let result = await self.performSignIn(
+                originText: originText,
+                generation: generation,
+                refusesExistingOrigin: true
+            )
             self.record(.accountAdded(outcome: result.outcome, kind: result.kind))
         }
         signInCancellation = { task.cancel() }
@@ -137,9 +141,13 @@ extension AppEnvironment {
     ///   the re-auth banner that is already up rather than raising sheet state
     ///   over the mail the user is reading. A stale generation — the user
     ///   cancelled — behaves the same way, and additionally refuses to install.
+    /// - Parameter refusesExistingOrigin: Add Account only (see
+    ///   ``existingAccount(for:)``). Re-auth deliberately signs an existing
+    ///   origin in again, so it passes `false`.
     private func performSignIn(
         originText: String,
-        generation: Int? = nil
+        generation: Int? = nil,
+        refusesExistingOrigin: Bool = false
     ) async -> SignInResult {
         let isAutomatic = generation == nil
         guard let origin = Self.normalizedOrigin(from: originText) else {
@@ -163,6 +171,14 @@ extension AppEnvironment {
                 isSigningIn = false
                 signInStage = nil
             }
+        }
+        if refusesExistingOrigin, let refusal = await addAccountRefusal(for: origin) {
+            // The check suspended (a Keychain read): the user may have cancelled.
+            guard ownsSignInUI(generation), !Task.isCancelled else { return SignInResult(outcome: .cancelled) }
+            signInError = refusal
+            logger.info("Add Account refused before OAuth")
+            // Not an OAuth fault — nothing was attempted — so no kind.
+            return SignInResult(outcome: .failed)
         }
         do {
             let account = try await auth.addAccount(origin: origin) { [weak self] step in
@@ -222,6 +238,67 @@ extension AppEnvironment {
                 ? SignInResult(outcome: .cancelled)
                 : SignInResult(outcome: .failed, kind: kind)
         }
+    }
+
+    /// Why Add Account must not run for `origin`, as the text the onboarding
+    /// sheet shows — or `nil` to go ahead.
+    ///
+    /// Two reasons, both checked BEFORE the browser opens (a refusal after
+    /// consent would strand a freshly minted grant):
+    /// - The origin is already signed in (``existingAccount(for:)``).
+    /// - The Keychain account list cannot be read: the store would refuse to
+    ///   save the new account anyway (``AccountStoreError/indexUnreadable``).
+    ///
+    /// Any OTHER failure to read the list (a Keychain error) does not block:
+    /// the sign-in's own save surfaces it.
+    private func addAccountRefusal(for origin: URL) async -> String? {
+        let stored: [Account]
+        do {
+            stored = try await auth.loadAccounts()
+        } catch AccountStoreError.indexUnreadable {
+            return AccountStoreError.indexUnreadable.localizedDescription
+        } catch {
+            stored = []
+        }
+        guard let existing = existingAccount(for: origin, stored: stored) else { return nil }
+        let host = existing.origin.host ?? existing.origin.absoluteString
+        return "You're already signed in to \(host). If its session has expired, use Sign In on that account instead."
+    }
+
+    /// The account already signed in to `origin`, if any — live here, or only in
+    /// the Keychain index `stored` (still queued behind the launch restore, or
+    /// one whose activation did not come up).
+    ///
+    /// Why Add Account refuses one (audit W1): an account IS its origin today,
+    /// so a second sign-in to the same server — possibly as a DIFFERENT user —
+    /// would replace the existing account's grant under the same id, rebind its
+    /// open composers to the other user and mix two mailboxes in one cache. The
+    /// re-auth paths never come through here. Origins compare case-insensitively
+    /// on scheme and host: `MAIL.example.com` is the same server.
+    private func existingAccount(for origin: URL, stored: [Account]) -> Account? {
+        let key = Self.originKey(origin)
+        if let live = graphs.values.first(where: { Self.originKey($0.account.origin) == key }) {
+            return live.account
+        }
+        return stored.first { Self.originKey($0.origin) == key }
+    }
+
+    /// Scheme, host and port, lowercased, with the default https port and a
+    /// trailing root dot dropped (`https://x.com:443` and `https://x.com.` are
+    /// `https://x.com`) — for COMPARING origins only. Never a key: account ids
+    /// and Keychain keys keep `Account.normalize`, or existing items would be
+    /// orphaned.
+    nonisolated static func originKey(_ origin: URL) -> String {
+        guard var components = URLComponents(url: Account.normalize(origin), resolvingAgainstBaseURL: false) else {
+            return Account.normalize(origin).absoluteString.lowercased()
+        }
+        components.scheme = components.scheme?.lowercased()
+        if components.scheme == "https", components.port == 443 { components.port = nil }
+        if var host = components.host?.lowercased() {
+            while host.hasSuffix(".") { host.removeLast() }
+            components.host = host
+        }
+        return (components.url ?? origin).absoluteString.lowercased()
     }
 
     /// What to do with a consent that completed after its attempt was abandoned.

@@ -402,6 +402,17 @@ final class AppEnvironment {
         let accounts: [Account]
         do {
             accounts = try await auth.loadAccounts()
+        } catch AccountStoreError.indexUnreadable {
+            // Not "could not start": the user can still read the explanation and
+            // decide (typically: this is an older copy than the one that wrote
+            // the list). The store refuses to overwrite the list, so nothing is
+            // lost by showing onboarding — and Add Account says the same thing
+            // before it would open a browser.
+            logger.error("Account list unreadable; showing onboarding with an explanation")
+            signInError = AccountStoreError.indexUnreadable.localizedDescription
+            phase = .signedOut
+            record(.launchFailed(kind: .restore))
+            return
         } catch {
             logger.error("Account list unreadable: \(error.localizedDescription, privacy: .private)")
             phase = .failed(error.localizedDescription)
@@ -412,10 +423,11 @@ final class AppEnvironment {
             phase = .signedOut
             return
         }
-        // The remembered account comes up FIRST and alone: every other account's
-        // activation is a discovery round trip, and restoring them in line would
-        // hold the whole window on the launch placeholder until the slowest —
-        // or unreachable — server answered.
+        // The remembered account comes up FIRST and alone. Activation no longer
+        // waits on the network (discovery is persisted and resolved lazily —
+        // see `AuthCoordinator.tokenProvider(for:)`), but each one is still
+        // Keychain reads and a graph start, so the rest come up behind the
+        // live window rather than in line.
         var ordered = accounts
         if let remembered = defaults.string(forKey: Self.selectedAccountKey),
            let index = ordered.firstIndex(where: { $0.id == remembered }) {

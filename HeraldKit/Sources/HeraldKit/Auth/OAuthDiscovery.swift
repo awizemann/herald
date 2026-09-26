@@ -62,7 +62,11 @@ public nonisolated struct ProtectedResourceMetadata: Sendable, Codable, Hashable
 }
 
 /// Everything the flow needs about one origin, resolved once per sign-in.
-public nonisolated struct OAuthConfiguration: Sendable, Hashable {
+///
+/// `Codable` because it is persisted (Keychain, `discovery.<origin>`) so an
+/// account can activate with no network. It holds endpoints and scopes only —
+/// no secrets.
+public nonisolated struct OAuthConfiguration: Sendable, Hashable, Codable {
     public let origin: URL
     public let server: OAuthServerMetadata
     /// The audience every token must be bound to — `{origin}/api/v1`.

@@ -53,4 +53,6 @@ nonisolated final class InMemorySecretStore: SecretStore, @unchecked Sendable {
     func data(for key: String) throws -> Data? { lock.withLock { storage[key] } }
     func set(_ data: Data, for key: String) throws { lock.withLock { storage[key] = data } }
     func removeValue(for key: String) throws { lock.withLock { storage[key] = nil } }
+
+    var keys: [String] { lock.withLock { Array(storage.keys) } }
 }

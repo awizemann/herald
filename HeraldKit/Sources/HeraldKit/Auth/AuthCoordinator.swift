@@ -39,9 +39,25 @@ public final class AuthCoordinator {
     private let registration: DynamicClientRegistration
     private let session: URLSession
 
-    /// Discovery results for this launch. Endpoints are stable, and re-running
-    /// discovery on every token refresh would double the request count.
+    /// Discovery results fetched LIVE this launch. Endpoints are stable, and
+    /// re-running discovery on every token refresh would double the request
+    /// count. Only live results land here — never the persisted copy — so a
+    /// sign-in (``addAccount(origin:onStep:)``) always runs against endpoints
+    /// the server confirmed this launch.
     private var configurations: [String: OAuthConfiguration] = [:]
+
+    /// The background discovery running for an origin, if any (see
+    /// ``discoverInBackground(_:)``). Cleared by ``signOut(_:)`` so a result that
+    /// lands after the sign-out is dropped.
+    private var discoveries: [String: Task<OAuthConfiguration, any Error>] = [:]
+
+    /// Bumped by every ``signOut(_:)`` of an origin. A provider remembers the
+    /// value it was built under, and its refreshes refuse to resolve endpoints
+    /// once it has moved: otherwise a refresh still in flight at sign-out
+    /// (retrying the discovery the sign-out cancelled) would start a NEW
+    /// discovery and put back the cache the sign-out just evicted — then spend
+    /// the refresh token it just revoked.
+    private var signOutGenerations: [String: Int] = [:]
 
     /// The session every auth call uses unless one is injected.
     ///
@@ -109,6 +125,11 @@ public final class AuthCoordinator {
 
         let configuration = try await configuration(for: origin, step: step)
         let clientID = try await clientID(for: origin, configuration: configuration, step: step)
+        // BEFORE the browser: an account list the store will refuse to write
+        // (`AccountStoreError.indexUnreadable`) must stop the sign-in here, not
+        // after consent has minted a grant that then has nowhere to go. Covers
+        // re-auth too, which the app's own Add Account check does not.
+        try await offMain { [store] in _ = try store.accounts() }
 
         let oauth = OAuthSession(configuration: configuration, clientID: clientID, session: session)
         let request = oauth.makeAuthorizationRequest()
@@ -130,6 +151,13 @@ public final class AuthCoordinator {
         try await offMain { [store] in
             try store.add(account)
             try store.setTokens(tokens, for: account.id)
+            // What lets the NEXT launch bring this account up with no network.
+            // Not fatal: without it activation discovers lazily instead.
+            do {
+                try store.setOAuthConfiguration(configuration, for: origin)
+            } catch {
+                logger.warning("could not persist discovery for \(origin.absoluteString, privacy: .public)")
+            }
         }
         logger.info("added account for \(origin.absoluteString, privacy: .public)")
         return account
@@ -161,14 +189,34 @@ public final class AuthCoordinator {
     /// nothing can ever revoke. A failure is logged and removal proceeds anyway —
     /// the user asked to sign out.
     public func signOut(_ account: Account) async throws {
+        // BEFORE revoking: an account list the store refuses to rewrite would
+        // leave the account in it with a grant the server no longer honours.
+        try await offMain { [store] in _ = try store.accounts() }
         await revokeRefreshToken(for: account)
         let accountID = account.id
-        try await offMain { [store] in try store.remove(accountID) }
+        let origin = Account.normalize(account.origin)
         // Keyed by the ORIGIN, exactly as `configuration(for:)` writes it. Keying
         // the eviction by `account.id` left the entry in place, so a server
         // reinstalled between a sign-out and a re-add in the same launch would
-        // have been signed into with the PREVIOUS install's endpoints.
-        configurations[cacheKey(account.origin)] = nil
+        // have been signed into with the PREVIOUS install's endpoints. The
+        // persisted copy goes too (below), for the same reason across launches,
+        // and a background discovery still in flight is disowned so its result
+        // cannot put either back.
+        let key = cacheKey(origin)
+        signOutGenerations[key, default: 0] += 1
+        configurations[key] = nil
+        discoveries.removeValue(forKey: key)?.cancel()
+        try await offMain { [store] in
+            // Evicted even when the removal throws: it is only a cache.
+            defer {
+                do {
+                    try store.setOAuthConfiguration(nil, for: origin)
+                } catch {
+                    logger.warning("could not evict persisted discovery for \(origin.absoluteString, privacy: .public)")
+                }
+            }
+            try store.remove(accountID)
+        }
         logger.info("signed out \(account.origin.absoluteString, privacy: .public)")
     }
 
@@ -202,17 +250,116 @@ public final class AuthCoordinator {
     }
 
     /// The provider ``HQBaseAPIClient`` is constructed with.
+    ///
+    /// Does NO network I/O, so an account comes up — cached mail readable — with
+    /// the server unreachable (audit W4: activation used to run discovery here,
+    /// and an offline launch ended on "Herald could not start"). The endpoints
+    /// are resolved when a refresh actually needs them
+    /// (``refreshConfiguration(for:fallback:generation:)``): this launch's live discovery
+    /// if there is one, else the copy persisted at sign-in, else a live
+    /// discovery awaited then. A background discovery started here keeps the
+    /// persisted copy fresh whenever the server is reachable.
+    ///
+    /// Still `throws` for source compatibility; it no longer fails.
     public func tokenProvider(for account: Account) async throws -> AccountTokenProvider {
-        let configuration = try await configuration(for: account.origin)
+        let origin = Account.normalize(account.origin)
+        let generation = signOutGenerations[cacheKey(origin), default: 0]
+        var fallback: OAuthConfiguration?
+        if configurations[cacheKey(origin)] == nil {
+            fallback = await persistedConfiguration(for: origin)
+            // Re-checked: the read above suspended.
+            if configurations[cacheKey(origin)] == nil { _ = discoverInBackground(origin) }
+        }
         return AccountTokenProvider(
             accountID: account.id,
             store: store,
-            refresher: OAuthSession(
-                configuration: configuration,
-                clientID: account.clientID,
-                session: session
-            )
+            refresher: DiscoveringRefresher(clientID: account.clientID, session: session) { [self, fallback] in
+                try await self.refreshConfiguration(for: origin, fallback: fallback, generation: generation)
+            }
         )
+    }
+
+    /// The endpoints a refresh uses. See ``tokenProvider(for:)``.
+    ///
+    /// With a persisted copy in hand it never WAITS on the network: a server that
+    /// accepts connections and then says nothing would otherwise hold every
+    /// refresh on discovery's timeouts. It starts (or joins) a background
+    /// discovery instead, whose result the next refresh uses — which is also how
+    /// a stale copy (the server moved its endpoints) heals once the server is
+    /// reachable.
+    ///
+    /// - Parameter generation: the origin's sign-out generation the provider was
+    ///   built under. Once the origin has been signed out since, this throws
+    ///   (``OAuthError/unknownAccount(_:)``, not retryable) instead of
+    ///   rediscovering for an account that is gone.
+    func refreshConfiguration(
+        for origin: URL,
+        fallback: OAuthConfiguration?,
+        generation: Int
+    ) async throws -> OAuthConfiguration {
+        guard signOutGenerations[cacheKey(origin), default: 0] == generation else {
+            logger.info("refresh for a signed-out origin refused: \(origin.absoluteString, privacy: .public)")
+            throw OAuthError.unknownAccount(origin.absoluteString)
+        }
+        if let live = configurations[cacheKey(origin)] { return live }
+        let pending = discoverInBackground(origin)
+        if let fallback { return fallback }
+        return try await pending.value
+    }
+
+    /// Starts (or joins) a live discovery for `origin` that fills this launch's
+    /// cache and refreshes the persisted copy.
+    ///
+    /// Persisted only while an account for the origin is still in the index: a
+    /// sign-out that lands meanwhile disowns the task (its result is dropped),
+    /// and the index check keeps a late write from resurrecting a copy for an
+    /// origin nobody is signed in to.
+    private func discoverInBackground(_ origin: URL) -> Task<OAuthConfiguration, any Error> {
+        let key = cacheKey(origin)
+        if let running = discoveries[key] { return running }
+        let task = Task { [discovery] in try await discovery.configuration(for: origin) }
+        discoveries[key] = task
+        Task { [weak self] in
+            let result = await task.result
+            guard let self, self.discoveries[key] == task else { return }
+            self.discoveries[key] = nil
+            guard case .success(let configuration) = result else {
+                logger.info("background discovery failed for \(origin.absoluteString, privacy: .public); will retry on the next refresh")
+                return
+            }
+            self.configurations[key] = configuration
+            do {
+                try await self.offMain { [store, key] in
+                    let signedIn = try store.accounts().contains { Account.normalize($0.origin).absoluteString == key }
+                    guard signedIn else { return }
+                    try store.setOAuthConfiguration(configuration, for: origin)
+                }
+            } catch {
+                logger.warning("could not persist discovery for \(origin.absoluteString, privacy: .public)")
+            }
+        }
+        return task
+    }
+
+    /// The copy persisted at the last successful discovery, if it is usable for
+    /// THIS origin. Anything else — unreadable, for another origin, pointing
+    /// off-origin — is a miss, never an error: discovery just runs again.
+    private func persistedConfiguration(for origin: URL) async -> OAuthConfiguration? {
+        let stored: OAuthConfiguration?
+        do {
+            stored = try await offMain { [store] in try store.oauthConfiguration(for: origin) }
+        } catch {
+            logger.warning("persisted discovery unreadable for \(origin.absoluteString, privacy: .public); will rediscover")
+            return nil
+        }
+        guard let stored else { return nil }
+        guard cacheKey(stored.origin) == cacheKey(origin),
+              OAuthDiscovery.endpointsAreTrusted(stored.server, for: origin)
+        else {
+            logger.error("persisted discovery does not match \(origin.absoluteString, privacy: .public); ignoring it")
+            return nil
+        }
+        return stored
     }
 
     // MARK: - Steps
@@ -258,5 +405,20 @@ public final class AuthCoordinator {
         )
         try await offMain { [store] in try store.setClientID(clientID, for: origin) }
         return clientID
+    }
+}
+
+/// A ``TokenRefreshing`` that resolves its endpoints at refresh time rather than
+/// at construction, so building the token provider needs no network. See
+/// ``AuthCoordinator/tokenProvider(for:)``.
+nonisolated struct DiscoveringRefresher: TokenRefreshing {
+    let clientID: String
+    let session: URLSession
+    let resolve: @Sendable () async throws -> OAuthConfiguration
+
+    func refresh(refreshToken: String) async throws -> OAuthTokens {
+        let configuration = try await resolve()
+        return try await OAuthSession(configuration: configuration, clientID: clientID, session: session)
+            .refresh(refreshToken: refreshToken)
     }
 }

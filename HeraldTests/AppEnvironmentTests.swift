@@ -428,26 +428,26 @@ import Testing
     // MARK: Launch restore (audit C10)
 
     /// The launch restore brings the accounts behind the first one up ONE AT A
-    /// TIME, each behind a discovery round trip, and it used to do so from an
-    /// unretained `Task` that consulted nothing. An account signed out while a
-    /// slower one ahead of it was still being contacted was therefore activated
-    /// anyway — and came back with a live `SyncEngine` that no sign-out would
-    /// ever stop, because `graphs` had been purged before the install landed.
+    /// TIME, and it used to do so from an unretained `Task` that consulted
+    /// nothing. An account signed out while it was still queued was therefore
+    /// activated anyway — and came back with a live `SyncEngine` that no
+    /// sign-out would ever stop, because `graphs` had been purged before the
+    /// install landed.
     ///
     /// Fails on the unretained loop: `b` is still in the queue when the sign-out
-    /// lands, so the loop activates it and a second `launch_failed` is recorded
-    /// for an account the user had already removed.
+    /// lands, so the loop activates it — observable as a read of its persisted
+    /// discovery, which every activation makes (activation no longer fails for
+    /// an unreachable server, so a `launch_failed` count no longer shows it).
     @Test func signingOutAnAccountQueuedBehindASlowOneKeepsItOut() async throws {
-        // Three unreachable accounts: the first is restored inline, the second
-        // holds the loop on a real (refused) connection, and `b` is the one
-        // queued behind it. Every activation fails, which is what makes an
-        // attempt on `b` observable as a `launch_failed` event.
+        // Three unreachable accounts: the first is restored inline, and `b` is
+        // queued behind `slow`.
         let first = Self.unreachableAccount()
         let slow = Account(origin: URL(string: "https://127.0.0.1:10")!, clientID: "cid", scopes: [])
         let b = Account(origin: URL(string: "https://127.0.0.1:11")!, clientID: "cid", scopes: [])
         let tracker = RecordingUsageTracker()
+        let accountStore = InMemoryAccountStore(accounts: [first, slow, b])
         let environment = AppEnvironment(
-            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, slow, b])),
+            auth: AuthCoordinator(store: accountStore),
             defaults: Self.scratchDefaults(),
             usage: tracker,
             isApplicationActive: { false }
@@ -455,8 +455,7 @@ import Testing
         environment.store = try MailStore.inMemory()
 
         await environment.restoreAccounts()
-        // Returns as soon as the background loop is spawned; the loop is now
-        // suspended inside `slow`'s discovery.
+        // Returns as soon as the background loop is spawned; it has not run yet.
         #expect(environment.pendingRestoreAccountIDs == [slow.id, b.id])
 
         // The user signs `b` out while it is still queued. `signOut` drops it
@@ -470,9 +469,9 @@ import Testing
 
         #expect(environment.graphs[b.id] == nil, "the signed-out account was restored anyway")
         #expect(environment.accountIDs.contains(b.id) == false)
-        let launchFailures = await tracker.events.filter { $0.name == "launch_failed" }
+        #expect(accountStore.configurationReads.contains(slow.id), "the rest of the restore never ran")
         #expect(
-            launchFailures.count == 2,
+            accountStore.configurationReads.contains(b.id) == false,
             "activation was attempted for an account that had been signed out"
         )
     }
@@ -484,8 +483,9 @@ import Testing
         let first = Self.unreachableAccount()
         let b = Account(origin: URL(string: "https://127.0.0.1:11")!, clientID: "cid", scopes: [])
         let c = Account(origin: URL(string: "https://127.0.0.1:12")!, clientID: "cid", scopes: [])
+        let accountStore = InMemoryAccountStore(accounts: [first, b, c])
         let environment = AppEnvironment(
-            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, b, c])),
+            auth: AuthCoordinator(store: accountStore),
             defaults: Self.scratchDefaults(),
             isApplicationActive: { false }
         )
@@ -493,12 +493,40 @@ import Testing
 
         await environment.restoreAccounts()
         await environment.signOut(accountID: b.id)
+        await environment.drainPendingRestore()
 
+        // Activation is fast now (no discovery), so `c` may already be up by the
+        // time the sign-out returns: what matters is that it DOES come up.
         #expect(
-            environment.pendingRestoreAccountIDs.contains(c.id),
+            environment.graphs[c.id] != nil,
             "signing one account out cancelled the restore of another"
         )
+        #expect(environment.graphs[b.id] == nil)
+    }
+
+    // MARK: Offline launch (audit W4)
+
+    /// Fails if activation still needs the server: an unreachable account's
+    /// launch ended on "Herald could not start" (`phase == .failed`) instead of
+    /// its cached mail, and a secondary unreachable account never got a graph.
+    @Test func unreachableAccountsStillComeUpAtLaunch() async throws {
+        let first = Self.unreachableAccount()
+        let second = Account(origin: URL(string: "https://127.0.0.1:13")!, clientID: "cid", scopes: [])
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, second])),
+            defaults: Self.scratchDefaults(),
+            isApplicationActive: { false }
+        )
+        environment.store = try MailStore.inMemory()
+
+        await environment.restoreAccounts()
         await environment.drainPendingRestore()
+
+        #expect(environment.phase == .ready)
+        #expect(environment.graphs[first.id] != nil)
+        #expect(environment.graphs[second.id] != nil, "a secondary offline account vanished")
+        #expect(environment.selectedAccountID == first.id)
+        for id in [first.id, second.id] { await environment.signOut(accountID: id) }
     }
 
     /// A throwaway suite, so a test never writes the developer's real pick.

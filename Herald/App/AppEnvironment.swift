@@ -508,7 +508,10 @@ final class AppEnvironment {
                 // The wake socket authenticates with the SAME provider as the
                 // REST client, so one refresh serves both and the two can never
                 // race each other into spending the rotating grant twice.
-                wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens)
+                wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens),
+                // Every REST surface and the socket share this provider, so its
+                // dead-session hook is the one signal for all of them.
+                tokenProvider: tokens
             )
             return true
         } catch {
@@ -545,12 +548,17 @@ final class AppEnvironment {
     ///   provider that authenticates it. `nil` in tests (and on any account
     ///   brought up without one), which leaves the poll loop at its full cadence
     ///   — the socket is an accelerator, never a dependency.
+    /// - Parameter tokenProvider: the provider behind `api` (and `wake`), whose
+    ///   dead-session hook is pointed at this account's banner — see
+    ///   ``reportSessionExpired(accountID:)``. `nil` in tests that drive a fake
+    ///   API client, where only the sync loop and the socket report expiry.
     func install(
         account: Account,
         api: any MailAPIClient,
         store: MailStore,
         select: Bool = true,
-        wake: (channels: any MailEventChannelOpening, tokens: any BearerTokenProvider)? = nil
+        wake: (channels: any MailEventChannelOpening, tokens: any BearerTokenProvider)? = nil,
+        tokenProvider: AccountTokenProvider? = nil
     ) async {
         // All accounts share the one container; keeping the reference here is
         // what lets sign-out purge THIS account's rows out of it.
@@ -595,7 +603,7 @@ final class AppEnvironment {
                 // A plain `await` on the isolated method, not `MainActor.run`:
                 // `MailViewModel` is `@MainActor`, so the hop is the call.
                 reauthenticationRequired: { [weak viewModel] in
-                    await viewModel?.wakeSocketRequiresReauthentication()
+                    await viewModel?.reportSessionExpired()
                 },
                 signal: { [weak viewModel] signal in
                     await viewModel?.handleWakeSignal(signal)
@@ -626,6 +634,15 @@ final class AppEnvironment {
         // launch restore) already accounts for.
         if select || selectedGraph == nil { selectAccount(account.id) }
         phase = .ready
+        // After publishing and selecting — the first suspension of the install,
+        // so nothing above it can interleave with another install — and before
+        // the graph starts, so no request can discover a death unheard. Routed
+        // by account id through the environment rather than bound to
+        // `viewModel`: see `reportSessionExpired(accountID:)` for why. `[weak
+        // self]`: the environment owns the graphs that own this provider.
+        await tokenProvider?.setSessionRejectedHandler { [weak self] accountID in
+            await self?.reportSessionExpired(accountID: accountID)
+        }
         if let superseded {
             // Its composers point at an OutboxService that is about to go away.
             closeComposeSessions(accountID: account.id)
@@ -646,6 +663,27 @@ final class AppEnvironment {
             pendingRoute = nil
             await open(route, isLaunchReplay: true)
         }
+    }
+
+    /// A token provider found this account's session dead (a grant refused after
+    /// a refresh, `invalid_grant`, or no refresh token) — on whatever request hit
+    /// it first: a send, an autosave, a message open, a mark-read, a poll.
+    ///
+    /// Routed by account id to the graph CURRENTLY installed, not to the graph
+    /// the provider was built for. The provider announces only a death of the
+    /// grant the store holds right now (it re-reads the Keychain first), so even
+    /// a superseded graph's provider — an open composer's — is reporting on the
+    /// current grant; sending that to a stopped view-model would lose it.
+    ///
+    /// A no-op when the account has no graph: after a sign-out (or while one is
+    /// racing a restore) a late report must never bring the account, its banner
+    /// or an automatic sign-in back. Synchronous past the hop, and the automatic
+    /// attempt it can start runs in its own `Task`: the provider AWAITS this from
+    /// the reporting request or socket loop (which must not wait on a sign-in —
+    /// and the socket loop must never end up waiting on its own `stop()`).
+    func reportSessionExpired(accountID: Account.ID) {
+        guard let graph = graphs[accountID] else { return }
+        graph.mail.reportSessionExpired()
     }
 
     /// Whether this graph is still the one ``graphs`` holds for its account.

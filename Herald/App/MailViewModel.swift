@@ -132,8 +132,9 @@ final class MailViewModel {
     /// so the badge updates exactly when the count does. Observation-ignored: no
     /// view reads it, and assigning it would otherwise invalidate every observer.
     @ObservationIgnored var unreadCountDidChange: (@MainActor (Int) -> Void)?
-    /// Called with this account's id the moment sync decides only a fresh
-    /// sign-in can fix things — on the TRANSITION into ``SyncStatus/needsReauth``
+    /// Called with this account's id the moment Herald decides only a fresh
+    /// sign-in can fix things (see ``reportSessionExpired()``) — on the
+    /// TRANSITION into ``SyncStatus/needsReauth``
     /// and not on the failed passes that follow it, so one expired session is one
     /// request no matter how many polls fail behind it. ``AppEnvironment`` decides
     /// whether to act on it; the banner is up either way.
@@ -1175,19 +1176,26 @@ final class MailViewModel {
         }
     }
 
-    // MARK: - Wake socket
+    // MARK: - Session expiry
 
-    /// The wake socket could not authenticate even after refreshing its token.
+    /// The ONE transition into ``SyncStatus/needsReauth``: this account's session
+    /// is dead and only a fresh sign-in can fix it.
     ///
-    /// Routed through the SAME transition the sync loop uses, rather than setting
-    /// the banner directly: the socket and the poll loop discover a dead session
-    /// within seconds of each other, and two independent announcements would ask
-    /// for two authorization windows for one expiry.
-    func wakeSocketRequiresReauthentication() {
+    /// Every discoverer of a dead session lands here — a failed sync pass, the
+    /// wake socket that could not authenticate, and the token provider's
+    /// dead-session hook (routed by ``AppEnvironment``), which is how a failed
+    /// send, draft autosave, message open, auto mark-read or signature read
+    /// raises the banner at once instead of on the next poll. They discover the
+    /// same death within moments of each other, so only the TRANSITION announces
+    /// (``reauthenticationRequired``): one expiry, one automatic attempt, however
+    /// many reporters. Idempotent while the banner is up.
+    func reportSessionExpired() {
         let isNewExpiry = status != .needsReauth
         status = .needsReauth
         if isNewExpiry { reauthenticationRequired?(accountID) }
     }
+
+    // MARK: - Wake socket
 
     /// Handles one frame from `GET /events`.
     ///
@@ -1273,9 +1281,7 @@ final class MailViewModel {
                     // The transition is the event: every poll while the session
                     // is dead fails the same way, and re-announcing it would ask
                     // for a new authorization window per cadence tick.
-                    let isNewExpiry = status != .needsReauth
-                    status = .needsReauth
-                    if isNewExpiry { reauthenticationRequired?(accountID) }
+                    reportSessionExpired()
                 } else {
                     status = .failed(error.localizedDescription)
                 }
@@ -1288,9 +1294,15 @@ final class MailViewModel {
     /// Retry just repeats the doomed refresh (issue #1: "not granted offline
     /// access" after ~1 h, Retry did nothing). Covers a rejected token, a refresh
     /// the server refused, and a missing refresh token, however deeply the API
-    /// layer wrapped it.
+    /// layer wrapped it — including the compose and signature services' own
+    /// `.api(_:)` wrappers, so a composer can tell "sign in again" from "retry".
+    ///
+    /// Classification only: it raises nothing. The banner itself is raised by
+    /// the token provider's hook the moment the death is discovered.
     nonisolated static func requiresReauthentication(_ error: any Error) -> Bool {
         if let api = error as? MailAPIError { return api == .unauthorized }
+        if case .api(let api)? = error as? OutboxError { return api == .unauthorized }
+        if case .api(let api)? = error as? SignatureManagementError { return api == .unauthorized }
         if let oauth = error as? OAuthError {
             switch oauth {
             case .reauthenticationRequired, .missingRefreshToken: return true

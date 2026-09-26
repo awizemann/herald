@@ -291,9 +291,11 @@ extension AppEnvironment {
     /// Re-offers the automatic repair for whatever the window is showing.
     ///
     /// The gates in ``attemptAutomaticReauthentication(accountID:)`` DEFER, they
-    /// do not consume: the expiry is announced once, by the sync pass that found
-    /// it, and that pass usually runs while Herald is in the background or on an
-    /// account the window is not showing. Herald becoming frontmost and the user
+    /// do not consume: the expiry is announced once, by whatever found it first
+    /// (a sync pass, the wake socket, or any request through the token
+    /// provider's hook — see ``reportSessionExpired(accountID:)``), and that
+    /// usually happens while Herald is in the background or on an account the
+    /// window is not showing. Herald becoming frontmost and the user
     /// switching accounts are the two moments a deferred repair becomes possible.
     func retryAutomaticReauthentication() async {
         guard let accountID = selectedAccountID else { return }

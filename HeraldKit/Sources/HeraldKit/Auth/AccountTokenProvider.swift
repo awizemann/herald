@@ -57,6 +57,21 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// ``setSessionRejectedHandler(_:)``.
     private var sessionRejectedHandler: (@Sendable (Account.ID) async -> Void)?
 
+    /// The grant (``grantKey(_:)``) whose death was last announced, or
+    /// ``emptyStoreKey`` for "no grant stored at all".
+    ///
+    /// Separate from ``deadGrant`` because not every death is a latch: an
+    /// `invalid_grant` clears the item instead, and a grant with no refresh
+    /// token simply cannot be renewed. All three announce through the one
+    /// handler, and this is what keeps that to ONCE per grant however many
+    /// requests trip over it. Forgotten as soon as the store holds a grant other
+    /// than the announced one — see ``observe(_:)``.
+    private var announcedDeath: String?
+
+    /// Stands in for "the store holds nothing" in ``announcedDeath``. Not a
+    /// possible grant key: real refresh and access tokens are never empty.
+    private static let emptyStoreKey = ""
+
     public init(
         accountID: Account.ID,
         store: any AccountStore,
@@ -72,6 +87,11 @@ public actor AccountTokenProvider: BearerTokenProvider {
     }
 
     /// Installs (or, with `nil`, removes) the hook told when a grant is found dead.
+    ///
+    /// The ONE dead-session signal for the app: a grant refused after a refresh
+    /// (``sessionRejected(token:)``), a refresh answered `invalid_grant`, and a
+    /// refresh that has no refresh token to spend all announce here — whichever
+    /// request tripped over it (sync, a send, a draft autosave, a message open).
     ///
     /// Settable after construction because the provider is built
     /// (``AuthCoordinator/tokenProvider(for:)``) before the app graph that routes
@@ -93,6 +113,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
         // This read and the `refreshTask` check below happen with no suspension in
         // between, so a caller either starts the refresh or joins the existing one.
         let stored = try store.tokens(for: accountID)
+        observe(stored)
         try checkLatch(against: stored)
         if let stored, stored.isUsable(at: now(), leeway: refreshLeeway) { return stored.accessToken }
         return try await refreshTokens(replacing: stored).accessToken
@@ -102,6 +123,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
         let stored = try store.tokens(for: accountID)
         // Before the stale-401 shortcut too: a latched grant's access token is
         // dead however recently it was minted.
+        observe(stored)
         try checkLatch(against: stored)
         // The 401 was for a token we have since replaced: a concurrent request — in
         // this process or another one — already refreshed. Refreshing again would
@@ -136,13 +158,46 @@ public actor AccountTokenProvider: BearerTokenProvider {
             logger.warning("post-refresh 401 for \(self.accountID, privacy: .public) was for a superseded token; not latching")
             return
         }
+        observe(stored)
         let grant = Self.grantKey(stored)
         // Latched and checked with no suspension in between, so concurrent
         // reports of the same death announce it exactly once.
         guard grant != deadGrant else { return }
         deadGrant = grant
         logger.warning("session rejected after refresh for \(self.accountID, privacy: .public); grant latched, re-auth required")
+        await announceDeath(ofGrant: grant)
+    }
+
+    /// Tells the handler this account's session is dead, once per grant.
+    ///
+    /// - Parameter grant: the dead grant's ``grantKey(_:)``, or `nil` when the
+    ///   store holds no grant at all. An empty store is announced only when no
+    ///   death has been announced since the last live grant: it is usually the
+    ///   AFTERMATH of an `invalid_grant` this provider already announced (that
+    ///   path clears the item), and every later request finding it empty is the
+    ///   same death, not a new one.
+    ///
+    /// Recorded BEFORE awaiting the handler: the actor is re-entrant across that
+    /// await, and the concurrent requests that hit the same death must find it
+    /// already announced.
+    private func announceDeath(ofGrant grant: String?) async {
+        if let grant {
+            guard grant != announcedDeath else { return }
+            announcedDeath = grant
+        } else {
+            guard announcedDeath == nil else { return }
+            announcedDeath = Self.emptyStoreKey
+        }
         await sessionRejectedHandler?(accountID)
+    }
+
+    /// Forgets the announced death once the store holds a DIFFERENT grant (a
+    /// re-auth landed, here or in another process), so that grant's own death
+    /// is announced again. An empty store forgets nothing — see
+    /// ``announceDeath(ofGrant:)``.
+    private func observe(_ stored: OAuthTokens?) {
+        guard let announcedDeath, let stored, Self.grantKey(stored) != announcedDeath else { return }
+        self.announcedDeath = nil
     }
 
     /// Throws when `stored` is the latched dead grant; clears a latch the store
@@ -167,8 +222,11 @@ public actor AccountTokenProvider: BearerTokenProvider {
     private func refreshTokens(replacing stale: OAuthTokens?) async throws -> OAuthTokens {
         if let refreshTask { return try await refreshTask.value }
 
-        guard let stale, stale.refreshToken != nil else {
+        guard let stale, let refreshToken = stale.refreshToken else {
             logger.warning("no refresh token for account \(self.accountID, privacy: .public)")
+            // Nothing to renew with, so only a fresh sign-in helps: a dead
+            // session like any other, announced like one.
+            await announceDeath(ofGrant: stale.map(Self.grantKey))
             throw OAuthError.missingRefreshToken
         }
 
@@ -178,7 +236,20 @@ public actor AccountTokenProvider: BearerTokenProvider {
         refreshTask = task
 
         defer { refreshTask = nil }
-        return try await task.value
+        do {
+            return try await task.value
+        } catch OAuthError.reauthenticationRequired {
+            // `performRefresh` throws this only for an `invalid_grant` that was
+            // NOT the echo of somebody else's rotation — the refresh token it
+            // spent is dead (and the item already cleared). Announced here, by
+            // the one caller that started the refresh, rather than inside the
+            // nonisolated body: `announceDeath` is actor state. Callers that
+            // JOINED the task get the same error without announcing again.
+            // While this awaits the handler `refreshTask` is still set, so a
+            // request arriving meanwhile joins the failed task and fails too.
+            await announceDeath(ofGrant: refreshToken)
+            throw OAuthError.reauthenticationRequired
+        }
     }
 
     /// The refresh body. `nonisolated` so it runs inside the shared `Task` without

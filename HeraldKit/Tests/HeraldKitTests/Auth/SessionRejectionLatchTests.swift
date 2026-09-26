@@ -270,14 +270,17 @@ actor RejectionRecorder {
         await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await a.provider.accessToken() }
     }
 
-    // MARK: - invalid_grant is unchanged
+    // MARK: - The other deaths announce through the same handler (P2)
 
     /// `invalid_grant` is the OTHER death — the refresh itself refused — and keeps
     /// its own handling: the dead item is cleared and the call surfaces as
-    /// `.unauthorized`. Fails if the latch work leaks into it (the item kept, or
-    /// a second refresh attempted).
-    @Test("invalid_grant still clears the item and never reaches the latch")
-    func invalidGrantUnchanged() async throws {
+    /// `.unauthorized`. Since P2 it ALSO announces, so the app has one signal for
+    /// every dead session. Fails if the latch work leaks into it (the item kept,
+    /// or a second refresh attempted), if it stays silent (a send or autosave
+    /// that hit it would leave no banner until the next poll), or if the empty
+    /// store the clear leaves behind is announced as a second death.
+    @Test("invalid_grant clears the item, never latches, and announces exactly once")
+    func invalidGrantAnnouncesOnce() async throws {
         let server = FakeServer()
         server.route("POST", AuthFixtures.tokenPath, .json(400, #"{"error":"invalid_grant","error_description":"revoked"}"#))
         server.route("GET", Self.mailboxesPath, Self.unauthorized())
@@ -288,7 +291,140 @@ actor RejectionRecorder {
         #expect(server.requests(path: AuthFixtures.tokenPath).count == 1)
         #expect(server.requests(path: Self.mailboxesPath).count == 1)
         #expect(try store.tokens(for: Self.accountA) == nil)
-        #expect(await h.recorder.count == 0)
+        #expect(await h.recorder.accountIDs == [Self.accountA])
+
+        // Every later request finds the item gone (missingRefreshToken) — the
+        // same death, not a new one.
+        for _ in 0..<3 {
+            await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+        }
+        await #expect(throws: OAuthError.missingRefreshToken) { _ = try await h.provider.accessToken() }
+        #expect(await h.recorder.count == 1, "the aftermath of one invalid_grant was announced again")
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 1)
+    }
+
+    /// Several requests in flight when the refresh token dies all JOIN the one
+    /// refresh. Fails if every joiner announces, rather than only the caller
+    /// that started the refresh.
+    @Test("concurrent requests that share one invalid_grant refresh announce once", .timeLimit(.minutes(1)))
+    func concurrentInvalidGrantAnnouncesOnce() async throws {
+        let store = try Self.store(seeding: OAuthTokens(
+            accessToken: "expired", refreshToken: "refresh-0",
+            expiresAt: Date().addingTimeInterval(-10), scope: "mail:read offline_access"
+        ))
+        let refresher = GatedRefresher(released: false) { _ in
+            throw OAuthError.server(error: "invalid_grant", description: "revoked")
+        }
+        let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
+        let recorder = RejectionRecorder()
+        await provider.setSessionRejectedHandler { await recorder.record($0) }
+
+        let callers = (0..<5).map { _ in Task { try await provider.accessToken() } }
+        try await waitUntil("the refresh is in flight") { await refresher.callCount == 1 }
+        await refresher.release()
+        for caller in callers {
+            await #expect(throws: OAuthError.reauthenticationRequired) { _ = try await caller.value }
+        }
+
+        #expect(await refresher.callCount == 1)
+        #expect(await recorder.count == 1)
+    }
+
+    /// A grant with no refresh token (the server did not grant `offline_access`)
+    /// dies at its first expiry. Fails if that stays silent, or if each request
+    /// after it announces again.
+    @Test("a grant with no refresh token announces its death once")
+    func missingRefreshTokenAnnouncesOnce() async throws {
+        let store = try Self.store(seeding: OAuthTokens(
+            accessToken: "no-offline", refreshToken: nil,
+            expiresAt: Date().addingTimeInterval(-10), scope: "mail:read"
+        ))
+        let refresher = GatedRefresher.counting()
+        let provider = AccountTokenProvider(accountID: Self.accountA, store: store, refresher: refresher, refreshLeeway: 60)
+        let recorder = RejectionRecorder()
+        await provider.setSessionRejectedHandler { await recorder.record($0) }
+
+        for _ in 0..<3 {
+            await #expect(throws: OAuthError.missingRefreshToken) { _ = try await provider.accessToken() }
+        }
+        await #expect(throws: OAuthError.missingRefreshToken) {
+            _ = try await provider.refreshAccessToken(failedToken: "no-offline")
+        }
+
+        #expect(await recorder.accountIDs == [Self.accountA])
+        #expect(await refresher.callCount == 0)
+    }
+
+    /// "Once per grant", not "once per provider": after a re-auth writes a new
+    /// grant, that grant's own `invalid_grant` is a new death. Fails if the
+    /// announced state is never forgotten — the second expiry would then raise
+    /// no banner and no automatic attempt.
+    @Test("a re-auth's new grant dying by invalid_grant is announced again")
+    func newGrantInvalidGrantAnnouncesAgain() async throws {
+        let server = FakeServer()
+        server.route("POST", AuthFixtures.tokenPath, .json(400, #"{"error":"invalid_grant","error_description":"revoked"}"#))
+        server.route("GET", Self.mailboxesPath, Self.unauthorized())
+        let store = try Self.store(seeding: Self.tokens(0))
+        let h = await Self.harness(server: server, store: store)
+
+        await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+        #expect(await h.recorder.count == 1)
+
+        try store.setTokens(Self.tokens(9), for: Self.accountA)
+        await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+
+        #expect(await h.recorder.count == 2)
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 2)
+    }
+
+    /// The item can also be emptied by SOMEONE ELSE (another process's
+    /// `invalid_grant` on a grant this provider only ever read). Once this
+    /// provider has seen a live grant since its last announcement, that empty
+    /// store is a new death. Fails if the announced state is only ever compared
+    /// by key — the earlier death would then silence this one.
+    @Test("an empty store after a re-auth this provider has seen is announced as a new death")
+    func emptiedAfterReauthAnnouncesAgain() async throws {
+        let server = FakeServer()
+        server.route("POST", AuthFixtures.tokenPath, .json(400, #"{"error":"invalid_grant","error_description":"revoked"}"#))
+        server.route("GET", Self.mailboxesPath, Self.unauthorized())
+        let store = try Self.store(seeding: Self.tokens(0))
+        let h = await Self.harness(server: server, store: store)
+
+        await #expect(throws: MailAPIError.unauthorized) { _ = try await h.client.listMailboxes() }
+        #expect(await h.recorder.count == 1)
+
+        try store.setTokens(Self.tokens(9), for: Self.accountA)
+        #expect(try await h.provider.accessToken() == "access-9")
+        // Another process found the new grant dead and cleared it.
+        try store.setTokens(nil, for: Self.accountA)
+        await #expect(throws: OAuthError.missingRefreshToken) { _ = try await h.provider.accessToken() }
+
+        #expect(await h.recorder.count == 2)
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 1)
+    }
+
+    /// The surface the incident actually hurt: a SEND, not the sync loop. Every
+    /// REST call shares the one middleware, so a send's refused retry reaches
+    /// the handler exactly like a poll's — and the composer sees
+    /// `OutboxError.api(.unauthorized)`, which is what the app keys its
+    /// re-auth handling on. Fails if the outbox path swallows the report.
+    @Test("a send refused after a refresh announces the death and surfaces as OutboxError.api(.unauthorized)")
+    func sendRefusedAfterRefreshAnnounces() async throws {
+        let server = Self.server()
+        server.route("POST", "/api/v1/send", Self.unauthorized())
+        let store = try Self.store(seeding: Self.tokens(0))
+        let h = await Self.harness(server: server, store: store)
+        let outbox = OutboxService(api: h.client)
+        let draft = ComposeDraft(mode: .new(mailboxID: nil), fromAddress: "support@example.com", to: ["a@b.test"], subject: "Hi", body: "Hello")
+
+        await #expect(throws: OutboxError.api(.unauthorized)) { _ = try await outbox.send(draft) }
+        #expect(await h.recorder.accountIDs == [Self.accountA])
+
+        // The next send fails fast: no refresh, no request.
+        await #expect(throws: OutboxError.api(.unauthorized)) { _ = try await outbox.send(draft) }
+        #expect(server.requests(path: "/api/v1/send").count == 2)
+        #expect(server.requests(path: AuthFixtures.tokenPath).count == 1)
+        #expect(await h.recorder.count == 1)
     }
 
     // MARK: - The wake socket

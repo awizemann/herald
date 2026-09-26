@@ -176,68 +176,86 @@ struct MailWindow: View {
 struct ReauthBanner: View {
     @Environment(AppEnvironment.self) private var environment
     let accountID: Account.ID
+    /// Set by the Cancel button, consumed by the state change it causes, so that
+    /// change is announced as a cancel rather than as a fresh expiry.
+    @State private var cancelledByUser = false
 
     var body: some View {
         // Herald tries the sign-in itself when the app is frontmost (see
         // `AppEnvironment.attemptAutomaticReauthentication`). The banner does not
         // disappear for it — the account IS still signed out — it says what is
-        // happening and withdraws the button, which would otherwise open a second
-        // authorization window over the one already up.
-        let isAutomatic = environment.isReauthenticating(accountID: accountID)
+        // happening and swaps Sign In for Cancel: a second Sign In would open a
+        // second authorization window over the one already up.
+        let isReauthenticating = environment.isReauthenticating(accountID: accountID)
         BannerView(
             systemImage: "lock.fill",
             tint: MailTheme.failure,
-            text: Self.message(isAutomatic: isAutomatic)
+            text: Self.message(isReauthenticating: isReauthenticating)
         ) {
-            if isAutomatic {
+            if isReauthenticating {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityHidden(true)
-                // A re-auth the USER started can stall in the browser hand-off
-                // exactly like a first sign-in (issue #9), and without this the
-                // spinner is the end of the road: the button is withdrawn and
-                // nothing else here can stop the attempt. Never shown for an
-                // automatic attempt — it withdraws on its own.
-                if environment.isCancellableReauthentication(accountID: accountID) {
-                    Button("Cancel") { environment.cancelSignIn() }
-                        .accessibilityLabel("Cancel sign-in")
+                // For EVERY attempt, the automatic one included. Either kind can
+                // stall in the browser hand-off (issue #9; the 2026-09-26
+                // incident was an automatic one), and without this the spinner
+                // is the end of the road until the 10-minute watchdog. Cancel
+                // gives the Sign In button back at once; an automatic attempt
+                // then waits out its cooldown before trying by itself again.
+                Button("Cancel") {
+                    cancelledByUser = true
+                    environment.cancelReauthentication(accountID: accountID)
                 }
+                .accessibilityLabel("Cancel sign-in")
+                .accessibilityHint("Stops signing in. The Sign In button comes back.")
             } else {
                 Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
             }
         }
-        // The banner appears BELOW the toolbar without taking focus, and the
-        // automatic attempt then swaps the text and withdraws the Sign In button
-        // underneath a VoiceOver cursor that may be sitting on it. Both moments
-        // are announced, so the change is heard rather than discovered: same
+        // The banner appears BELOW the toolbar without taking focus, and an
+        // attempt then swaps the text and the button underneath a VoiceOver
+        // cursor that may be sitting on it. Every state change is announced, so
+        // it is heard rather than discovered: same
         // `AccessibilityNotification.Announcement` pattern as the compose window.
         //
         // Announce only — no forced focus move: yanking the cursor out of the
-        // list to a banner the user did not ask for is worse than the dropped
-        // button, and the announcement carries the state that button conveyed.
-        .onAppear { announce(isAutomatic: isAutomatic) }
-        .onChange(of: isAutomatic) { _, automatic in announce(isAutomatic: automatic) }
+        // list to a banner the user did not ask for is worse than the swapped
+        // button, and the announcement names the control that replaced it.
+        .onAppear { announce(Self.announcement(isReauthenticating: isReauthenticating)) }
+        .onChange(of: isReauthenticating) { _, reauthenticating in
+            if !reauthenticating, cancelledByUser {
+                announce(Self.cancelledAnnouncement)
+            } else {
+                announce(Self.announcement(isReauthenticating: reauthenticating))
+            }
+            cancelledByUser = false
+        }
     }
 
-    private func announce(isAutomatic: Bool) {
-        AccessibilityNotification.Announcement(Self.announcement(isAutomatic: isAutomatic)).post()
+    private func announce(_ text: String) {
+        AccessibilityNotification.Announcement(text).post()
     }
 
     /// The banner's own text. Pure and static so it is assertable without a
     /// rendered banner.
-    nonisolated static func message(isAutomatic: Bool) -> String {
-        isAutomatic
+    nonisolated static func message(isReauthenticating: Bool) -> String {
+        isReauthenticating
             ? "Your session expired. Signing you back in…"
             : "Your session expired. Sign in again to keep syncing."
     }
 
-    /// What VoiceOver hears. The manual case names the control the sighted user
-    /// can see, because the announcement is all the cursor gets.
-    nonisolated static func announcement(isAutomatic: Bool) -> String {
-        isAutomatic
-            ? "Your session expired. Signing you back in…"
+    /// What VoiceOver hears. Each state names the control the sighted user can
+    /// see, because the announcement is all the cursor gets.
+    nonisolated static func announcement(isReauthenticating: Bool) -> String {
+        isReauthenticating
+            ? "Your session expired. Signing you back in… Use the Cancel button in the banner to stop."
             : "Your session expired. Use the Sign In button in the banner to keep syncing."
     }
+
+    /// What VoiceOver hears when the user's own Cancel stopped an attempt:
+    /// that it worked, and where the way back in is now.
+    nonisolated static let cancelledAnnouncement =
+        "Sign-in cancelled. Use the Sign In button in the banner when you're ready."
 }
 
 struct BannerView<Actions: View>: View {

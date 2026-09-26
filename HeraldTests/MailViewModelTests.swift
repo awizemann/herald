@@ -13,7 +13,10 @@ private struct Harness {
 
     /// `markReadDelay` is injected rather than waited on: the dwell rule is
     /// tested from both sides without a real timer.
-    static func make(markReadDelay: Duration = .seconds(3600)) async throws -> Harness {
+    static func make(
+        markReadDelay: Duration = .seconds(3600),
+        record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in }
+    ) async throws -> Harness {
         let store = try MailStore.inMemory()
         let api = FakeMailAPIClient()
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
@@ -24,7 +27,8 @@ private struct Harness {
             store: store,
             actions: MailActionService(api: api, store: store),
             events: stream,
-            markReadDelay: markReadDelay
+            markReadDelay: markReadDelay,
+            record: record
         )
         return Harness(store: store, api: api, model: model, events: continuation)
     }
@@ -446,7 +450,10 @@ func wait(
     /// poll fails identically while the session is dead, and `AppEnvironment`
     /// would be asked for a new authorization window on every cadence tick.
     @Test func anExpiredSessionAsksForReauthenticationExactlyOncePerExpiry() async throws {
-        let harness = try await Harness.make()
+        let failures = FailureCount()
+        let harness = try await Harness.make(record: { event in
+            if case .syncFailed = event { failures.value += 1 }
+        })
         var requests: [String] = []
         harness.model.reauthenticationRequired = { requests.append($0) }
         await harness.model.start()
@@ -459,14 +466,15 @@ func wait(
         // the banner; it must not re-arm the announcement either.
         harness.events.yield(.began)
         harness.events.yield(.finished)
-        // The stream is ordered: a later event landing proves the ones above were
-        // consumed, without waiting on a clock.
+        // Nor does a NON-auth failure (a blip) replace it: `.needsReauth` is
+        // sticky until a sign-in installs a fresh graph (session-recovery P3).
         harness.events.yield(.failed(MailAPIError.server(code: "boom", message: "boom")))
-        try await wait("every queued pass to be consumed") {
-            if case .failed = harness.model.status { return true } else { return false }
-        }
+        // The stream is ordered and every failure is recorded: the fourth one
+        // landing proves the events above were consumed, without a clock.
+        try await wait("every queued pass to be consumed") { failures.value == 4 }
 
         #expect(requests == ["acct"], "one expired session is one re-auth request")
+        #expect(harness.model.status == .needsReauth, "a blip replaced the sign-in banner")
     }
 
     /// Fails if an ordinary sync failure (offline, 500) asked for a sign-in — it
@@ -1222,4 +1230,10 @@ func wait(
             "the .newItem group must be REPLACED, or SwiftUI's New Window keeps ⌘N"
         )
     }
+}
+
+/// A main-actor counter a `@Sendable` record hook can bump.
+@MainActor
+private final class FailureCount {
+    var value = 0
 }

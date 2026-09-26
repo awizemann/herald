@@ -235,22 +235,28 @@ import Testing
 /// that post them (the `accessibilitySummary`/`accessibilityPhrase` pattern).
 @MainActor
 @Suite struct AnnouncementCopyTests {
-    /// The reauth banner's two states must be distinguishable BY EAR: the visual
-    /// difference is a button being replaced by a spinner, which VoiceOver would
-    /// otherwise experience as its cursor landing on nothing.
-    @Test func theReauthBannerAnnouncesBothOfItsStates() {
-        let manual = ReauthBanner.announcement(isAutomatic: false)
-        let automatic = ReauthBanner.announcement(isAutomatic: true)
+    /// The reauth banner's states must be distinguishable BY EAR: the visual
+    /// difference is one button being swapped for another under a spinner, which
+    /// VoiceOver would otherwise experience as its cursor landing on something
+    /// else. Each announcement names the control the state offers — the cursor
+    /// may never reach it on its own. Fails if the in-progress announcement
+    /// stops naming Cancel (the control P3 added for automatic attempts too), or
+    /// if a cancel is announced as a fresh expiry.
+    @Test func theReauthBannerAnnouncesEachOfItsStates() {
+        let idle = ReauthBanner.announcement(isReauthenticating: false)
+        let running = ReauthBanner.announcement(isReauthenticating: true)
+        let cancelled = ReauthBanner.cancelledAnnouncement
 
-        #expect(manual != automatic)
-        // The manual state's only affordance is the button, so the announcement
-        // has to name it — the cursor may never reach it on its own.
-        #expect(manual.contains("Sign In"))
-        #expect(automatic.contains("Signing you back in"))
+        #expect(Set([idle, running, cancelled]).count == 3)
+        #expect(idle.contains("Sign In"))
+        #expect(running.contains("Signing you back in"))
+        #expect(running.contains("Cancel"))
+        #expect(cancelled.contains("cancelled"))
+        #expect(cancelled.contains("Sign In"), "after a cancel the way back in is the Sign In button")
         // The drawn text stays the drawn text: the announcement is allowed to say
         // more, never less.
-        #expect(ReauthBanner.message(isAutomatic: true) == automatic)
-        #expect(ReauthBanner.message(isAutomatic: false).hasPrefix("Your session expired."))
+        #expect(running.hasPrefix(ReauthBanner.message(isReauthenticating: true)))
+        #expect(ReauthBanner.message(isReauthenticating: false).hasPrefix("Your session expired."))
     }
 
     /// One source for what the banner draws and what it announces. Fails if the

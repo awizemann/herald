@@ -488,12 +488,22 @@ final class AppEnvironment {
     /// - Parameter isAutomatic: whether this is Herald repairing an account by
     ///   itself. Its failures stay off `signInError`, which belongs to the
     ///   onboarding sheet nobody opened.
+    /// - Parameter isStillWanted: asked after the one suspension before the
+    ///   install; `false` returns without installing (and without reporting a
+    ///   failure). A sign-in abandoned in that gap must not publish — and
+    ///   select — the account the user just cancelled out of.
     /// - Returns: whether the account came up.
     @discardableResult
-    func activate(_ account: Account, select: Bool = true, isAutomatic: Bool = false) async -> Bool {
+    func activate(
+        _ account: Account,
+        select: Bool = true,
+        isAutomatic: Bool = false,
+        isStillWanted: () -> Bool = { true }
+    ) async -> Bool {
         guard let store else { return false }
         do {
             let tokens = try await auth.tokenProvider(for: account)
+            guard isStillWanted() else { return false }
             await install(
                 account: account,
                 // `includeLabels: true` asks every label-capable route to embed

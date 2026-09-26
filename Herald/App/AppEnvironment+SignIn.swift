@@ -87,6 +87,14 @@ extension AppEnvironment {
     /// abort a background repair, and vice versa.
     func cancelSignIn() {
         guard isSigningIn else { return }
+        abandonInteractiveSignIn()
+    }
+
+    /// The body of ``cancelSignIn()``, without its `isSigningIn` gate: a
+    /// user-initiated re-auth claims the account synchronously but only raises
+    /// `isSigningIn` once its task starts, and the banner's Cancel must work in
+    /// that gap too.
+    private func abandonInteractiveSignIn() {
         logger.info("sign-in cancelled by the user at stage \(self.signInStage?.logName ?? "none", privacy: .public)")
         // Orphans the attempt in flight: whatever it does from here cannot touch
         // the sign-in UI or install an account.
@@ -163,19 +171,14 @@ extension AppEnvironment {
             // Consent finished, but the user may have given up while the browser
             // window was open. Installing now would drag them into a mailbox they
             // just cancelled out of.
-            guard isAutomatic || ownsSignInUI(generation), !Task.isCancelled else {
-                logger.info("sign-in completed after it was cancelled; undoing it")
-                // `addAccount` has ALREADY written the account and its tokens to
-                // the Keychain. Leaving them there would make Cancel a merely
-                // deferred sign-in: the next launch would restore the account and
-                // open the mailbox the user walked away from. Signing it back out
-                // also revokes the refresh token, which is the right end for
-                // consent nobody wanted.
-                do {
-                    try await auth.signOut(account)
-                } catch {
-                    logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
-                }
+            // Whether anybody still wants this round trip: an automatic attempt
+            // is abandoned by cancelling its task (the banner's Cancel, a
+            // sign-out), an interactive one by losing its generation.
+            func isStillWanted() -> Bool {
+                (isAutomatic || ownsSignInUI(generation)) && !Task.isCancelled
+            }
+            guard isStillWanted() else {
+                await discardAbandonedSignIn(account)
                 return SignInResult(outcome: .cancelled)
             }
             if ownsSignInUI(generation) {
@@ -186,7 +189,13 @@ extension AppEnvironment {
             // (unreachable server, unreadable tokens) leaves the user exactly as
             // stuck as before, and reporting it as a success would also clear the
             // automatic attempt's cooldown for a repair that did not happen.
-            let activated = await activate(account, isAutomatic: isAutomatic)
+            let activated = await activate(account, isAutomatic: isAutomatic, isStillWanted: isStillWanted)
+            // Activation suspends before it installs, and a cancel landing in
+            // that gap is the same late consent as one landing before it.
+            if !activated, !isStillWanted() {
+                await discardAbandonedSignIn(account)
+                return SignInResult(outcome: .cancelled)
+            }
             return SignInResult(
                 outcome: activated ? .success : .failed,
                 kind: activated ? nil : .other,
@@ -205,6 +214,50 @@ extension AppEnvironment {
         }
     }
 
+    /// What to do with a consent that completed after its attempt was abandoned.
+    ///
+    /// `addAccount` has ALREADY written the account and its tokens to the
+    /// Keychain by the time the cancel is seen. Two cases, told apart by whether
+    /// the account is signed in HERE right now:
+    ///
+    /// - A NEW account (an Add Account the user cancelled, a re-auth that came
+    ///   back under a different id, or an account signed out while its re-auth
+    ///   was running): signed back out. Leaving it would make Cancel a merely
+    ///   deferred sign-in — the next launch would restore the account and open
+    ///   the mailbox the user walked away from — and the sign-out also revokes
+    ///   the refresh token, the right end for consent nobody wanted.
+    /// - An account that is ALREADY signed in (the re-auth case, or Add Account
+    ///   for an origin that is already here — the id is the origin): the new
+    ///   grant is KEPT, and nothing is installed or selected. Signing out would
+    ///   delete the user's existing account from the Keychain (it shares the
+    ///   id), so the Cancel of a repair would lose the account outright at the
+    ///   next launch. Discarding only the new tokens is no better: the grant
+    ///   they replaced is the dead one, so the account would be exactly as
+    ///   broken as before and the next Sign In would mint the same grant again.
+    ///   Kept, it is invisible until wanted: the running graph's token provider
+    ///   re-reads the store per request and drops its dead-grant latch on
+    ///   seeing a different grant, so sends and message opens start working
+    ///   again; the banner stays up (the stopped sync loop and the sticky
+    ///   `.needsReauth` are left alone — the user said stop), and the next Sign
+    ///   In or launch picks the account up normally.
+    ///
+    /// A sign-out racing the late consent still wins either way: it stops the
+    /// graph before it revokes, so the consent either lands after the graph is
+    /// gone (signed out here) or is overwritten by the sign-out's own revoke
+    /// and removal.
+    private func discardAbandonedSignIn(_ account: Account) async {
+        if graphs[account.id] != nil {
+            logger.info("re-auth consent completed after it was cancelled; keeping the new grant, not installing")
+            return
+        }
+        logger.info("sign-in completed after it was cancelled; undoing it")
+        do {
+            try await auth.signOut(account)
+        } catch {
+            logger.error("could not undo a cancelled sign-in: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+
     /// Re-runs the whole flow for the ONE account whose token died. The other
     /// accounts keep syncing throughout.
     func reauthenticate(accountID: Account.ID?) async {
@@ -219,8 +272,9 @@ extension AppEnvironment {
         guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
         // Retained and generation-stamped like a first sign-in: a re-auth is just
         // as capable of stalling in the browser hand-off, and the banner's spinner
-        // has to be escapable too — the banner shows Cancel while
-        // ``isSigningIn`` and it lands on ``cancelSignIn()``.
+        // has to be escapable too — the banner's Cancel lands on
+        // ``cancelReauthentication(accountID:)``, which abandons it like
+        // ``cancelSignIn()`` does.
         let generation = beginInteractiveSignIn(reauthenticating: accountID)
         let task = Task { [weak self] in
             guard let self else { return false }
@@ -237,12 +291,51 @@ extension AppEnvironment {
         autoReauth.finish(accountID: accountID, succeeded: succeeded)
     }
 
-    /// Whether the re-auth running for this account is the USER's, and therefore
-    /// has a Cancel to offer. False for an automatic attempt (nobody asked for it,
-    /// and it withdraws by itself) and for a sign-in belonging to another account
-    /// or to the Add Account sheet.
+    /// Whether the re-auth running for this account is the USER's. False for an
+    /// automatic attempt and for a sign-in belonging to another account or to
+    /// the Add Account sheet. (Both kinds offer Cancel now — see
+    /// ``cancelReauthentication(accountID:)``.)
     func isCancellableReauthentication(accountID: Account.ID) -> Bool {
         isSigningIn && signInReauthAccountID == accountID
+    }
+
+    /// The re-auth banner's Cancel: stops whichever attempt is running for this
+    /// account, the user's or Herald's own.
+    ///
+    /// Dispatched on `signInReauthAccountID` rather than `isSigningIn`: a
+    /// user-initiated attempt holds the account from the moment it is claimed,
+    /// before its task has raised `isSigningIn`.
+    func cancelReauthentication(accountID: Account.ID) {
+        if signInReauthAccountID == accountID {
+            abandonInteractiveSignIn()
+        } else {
+            cancelAutomaticReauthentication(accountID: accountID)
+        }
+    }
+
+    /// Stops the automatic attempt running for this account and gives the
+    /// banner its Sign In button back.
+    ///
+    /// The incident this exists for (2026-09-26): an automatic attempt waited on
+    /// a browser window that never reported back, the banner read "Signing you
+    /// back in…" with no control at all, and the only hard stop is the
+    /// presentation watchdog's 10 minutes.
+    ///
+    /// Releases the ``AutoReauthPolicy`` claim as UNSUCCESSFUL right here rather
+    /// than when the task unwinds, for the same reason as
+    /// ``cancelInteractiveSignIn()``: a wedged authentication agent may never
+    /// return, and cancellation only helps a presenter that honours it. The
+    /// unsuccessful finish starts the cooldown, so Herald does not reopen the
+    /// window the user just closed; the user's own Sign In ignores the cooldown
+    /// and works at once. The attempt, if it does come back, finds its task no
+    /// longer registered and leaves the policy alone (see
+    /// ``attemptAutomaticReauthentication(accountID:)``), and a consent that
+    /// completes anyway is handled by ``discardAbandonedSignIn(_:)``.
+    func cancelAutomaticReauthentication(accountID: Account.ID) {
+        guard let attempt = automaticReauthTasks.removeValue(forKey: accountID) else { return }
+        logger.info("automatic re-auth cancelled by the user")
+        attempt.cancel()
+        autoReauth.finish(accountID: accountID, succeeded: false)
     }
 
     /// Whether a re-auth round trip is running for this account. The banner stays
@@ -284,6 +377,13 @@ extension AppEnvironment {
         }
         automaticReauthTasks[accountID] = task
         let succeeded = await task.value
+        // Only if this attempt is still the registered one. A Cancel (or a
+        // sign-out) has already deregistered it and released the claim, and the
+        // account may since have been claimed again — the user clicking Sign In
+        // right after Cancel. Finishing here would release THAT claim, bring the
+        // Sign In button back under a running consent window, and let a second
+        // one open over it.
+        guard automaticReauthTasks[accountID] == task else { return }
         automaticReauthTasks[accountID] = nil
         autoReauth.finish(accountID: accountID, succeeded: succeeded)
     }

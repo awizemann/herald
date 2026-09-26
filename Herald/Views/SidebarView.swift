@@ -140,7 +140,14 @@ struct SidebarView: View {
                 Text(model.accountLabel)
                     .font(.headline)
                     .lineLimit(1)
-                SyncStatusLabel(status: model.status, lastSyncedAt: model.lastSyncedAt)
+                SyncStatusLabel(
+                    status: model.status,
+                    lastSyncedAt: model.lastSyncedAt,
+                    isReauthenticating: environment.isReauthenticating(accountID: model.accountID),
+                    signIn: { [environment, accountID = model.accountID] in
+                        Task { await environment.reauthenticate(accountID: accountID) }
+                    }
+                )
             }
             Spacer()
             // The help tag and the label belong on the MENU, not on its label
@@ -227,23 +234,72 @@ private struct AccountSwitcher: View {
 struct SyncStatusLabel: View {
     let status: MailViewModel.SyncStatus
     let lastSyncedAt: Date?
+    /// Whether a re-auth round trip is already running for this account.
+    var isReauthenticating = false
+    /// What clicking "Sign in again" does — the re-auth banner's Sign In.
+    var signIn: () -> Void = {}
+
+    /// What the slot offers besides its text.
+    enum SignInAffordance: Equatable {
+        /// Plain status text.
+        case none
+        /// "Sign in again" is a button.
+        case available
+        /// "Sign in again" is a button, disabled: a sign-in is already running,
+        /// and a second click would only be refused by the policy — the control
+        /// says so instead of looking dead.
+        case inProgress
+    }
+
+    /// Pure and static so the rule is assertable without a rendered sidebar.
+    nonisolated static func signInAffordance(
+        for status: MailViewModel.SyncStatus,
+        isReauthenticating: Bool
+    ) -> SignInAffordance {
+        guard case .needsReauth = status else { return .none }
+        return isReauthenticating ? .inProgress : .available
+    }
 
     var body: some View {
+        let affordance = Self.signInAffordance(for: status, isReauthenticating: isReauthenticating)
         HStack(spacing: MailTheme.Spacing.xs) {
             if status == .syncing {
                 ProgressView()
                     .controlSize(.mini)
                     .accessibilityHidden(true)
             }
-            Text(MailViewModel.statusDescription(for: status, lastSyncedAt: lastSyncedAt))
-                .font(isProblem ? .caption.bold() : .caption)
-                .foregroundStyle(isProblem ? MailTheme.failure : MailTheme.syncing)
-                .lineLimit(1)
+            if affordance == .none {
+                statusText
+            } else {
+                // The red text the user is already looking at IS the way back
+                // in — the same action as the banner's Sign In. Borderless, so
+                // it draws exactly the text it replaces and the slot keeps its
+                // height.
+                Button(action: signIn) { statusText }
+                    .buttonStyle(.borderless)
+                    .disabled(affordance == .inProgress)
+                    .help("Sign in to this account again")
+                    .accessibilityLabel("Sign in again")
+                    .accessibilityHint(
+                        affordance == .inProgress
+                            ? "Signing in is already in progress."
+                            : "Opens the sign-in window for this account."
+                    )
+            }
         }
         // The slot, not the text, owns the height: whatever is inside it, nothing
         // below moves.
         .frame(height: MailTheme.statusSlotHeight, alignment: .leading)
-        .accessibilityElement(children: .combine)
+        // Combined into one element while it is only text; a button stays its
+        // own element so VoiceOver can find and press it.
+        .accessibilityElement(children: affordance == .none ? .combine : .contain)
+    }
+
+    private var statusText: some View {
+        Text(MailViewModel.statusDescription(for: status, lastSyncedAt: lastSyncedAt))
+            .font(isProblem ? .caption.bold() : .caption)
+            .foregroundStyle(isProblem ? MailTheme.failure : MailTheme.syncing)
+            .lineLimit(1)
     }
 
     /// Bold and a system red: caption-sized `.red` on the sidebar material does

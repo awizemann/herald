@@ -56,6 +56,40 @@ import Testing
         #expect(driver?.cancelCount == 1)
     }
 
+    /// Cancelling the awaiting task is what the re-auth banner's Cancel does
+    /// (for automatic attempts too, since P3 of the 2026-09-26 plan), and it
+    /// must reach the browser session: the driver is cancelled and the call
+    /// ends as `.userCancelled` at once — not at the 10-minute deadline. Fails
+    /// if the cancellation handler is lost, leaving a consent window open that
+    /// nothing will ever close.
+    @MainActor
+    @Test("cancelling the awaiting task tears the browser session down")
+    func cancellingTheTaskCancelsTheSession() async throws {
+        nonisolated(unsafe) var driver: SilentDriver?
+        let attempt = Task { @MainActor in
+            try await WebAuthenticationRunner.authorize(
+                url: URL(string: "https://mail.test.invalid/authorize")!,
+                callbackScheme: "com.wizemann.herald",
+                prefersEphemeralWebBrowserSession: false,
+                // Never fires: only the cancel can end this.
+                sleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+                makeDriver: { _, _, _, completion in
+                    let made = SilentDriver(completion: completion)
+                    driver = made
+                    return made
+                }
+            )
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while driver == nil, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(driver != nil, "the session never started")
+
+        attempt.cancel()
+
+        await #expect(throws: OAuthError.userCancelled) { _ = try await attempt.value }
+        #expect(driver?.cancelCount == 1)
+    }
+
     /// Fails if the watchdog is armed as a fire-and-forget timer: a slow but
     /// SUCCESSFUL authorization — a user who takes their time on the consent
     /// screen — must not be killed, and the timer must not outlive the session.

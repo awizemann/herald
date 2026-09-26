@@ -1282,9 +1282,16 @@ final class MailViewModel {
                     // is dead fails the same way, and re-announcing it would ask
                     // for a new authorization window per cadence tick.
                     reportSessionExpired()
-                } else {
+                } else if status != .needsReauth {
                     status = .failed(error.localizedDescription)
                 }
+                // Otherwise `.needsReauth` stays, like it does across `.began`
+                // and `.finished`: a transport blip says nothing about the
+                // session, and replacing the sign-in banner with "Sync problem /
+                // Retry" hid the only way back in until the next pass against
+                // the latched grant re-raised it (and re-announced it, into the
+                // automatic attempt's cooldown). It clears only when a sign-in
+                // installs a fresh graph for the account.
             }
         }
     }

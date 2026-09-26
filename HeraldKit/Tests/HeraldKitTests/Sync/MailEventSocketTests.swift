@@ -210,6 +210,8 @@ struct MailEventSocketTests {
         #expect(await channels.tokens == ["token-1", "token-2"])
         #expect(await tokens.refreshCallCount == 1, "exactly one refresh, never a loop of them")
         #expect(await recorder.reauthCount == 0)
+        // The retry was accepted: the grant is alive and must not be latched.
+        #expect(await tokens.rejectedTokens.isEmpty)
     }
 
     /// Fails if a dead session leaves the socket retrying forever: every attempt
@@ -217,8 +219,9 @@ struct MailEventSocketTests {
     @Test("A 401 that survives the refresh escalates to re-authentication and stops")
     func unauthorizedTwiceEscalates() async throws {
         let recorder = SignalRecorder()
+        let tokens = FakeTokenProvider(initial: "token-1", refreshedTokens: ["token-2"])
         let channels = FakeMailEventChannels([.rejected(.unauthorized), .rejected(.unauthorized)])
-        let socket = Self.socket(channels: channels, recorder: recorder)
+        let socket = Self.socket(channels: channels, tokens: tokens, recorder: recorder)
 
         await socket.start()
         try await waitUntil("the escalation happened") { await recorder.reauthCount == 1 }
@@ -226,6 +229,10 @@ struct MailEventSocketTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(await channels.openCount == 2)
         #expect(await recorder.signals.isEmpty)
+        // Fails if the socket escalates only to its own owner: the provider is
+        // the one chokepoint that stops REST from refreshing the dead grant
+        // again, so it has to hear about the refreshed token being refused.
+        #expect(await tokens.rejectedTokens == ["token-2"])
         await socket.stop()
     }
 

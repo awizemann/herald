@@ -45,6 +45,9 @@ import Testing
         #expect(attempts.count == 2)
         #expect(attempts.map(\.authorization) == ["Bearer stale", "Bearer fresh"])
         #expect(await tokens.refreshCallCount == 1)
+        // A refresh that WORKED is the healthy path; reporting it would latch a
+        // live grant and sign the user out after every hourly token expiry.
+        #expect(await tokens.rejectedTokens.isEmpty)
     }
 
     /// Issue #1 (bermanto): with no refresh token, the provider's
@@ -87,6 +90,11 @@ import Testing
         }
         #expect(server.requests(path: "/api/v1/mailboxes").count == 2)
         #expect(await tokens.refreshCallCount == 1)
+        // The 2026-09-26 storm: this second 401 was dropped on the floor, so the
+        // next request refreshed again. Fails if it is not reported, or if the
+        // report names the token that was merely stale rather than the one the
+        // provider handed out.
+        #expect(await tokens.rejectedTokens == ["also-stale"])
     }
 
     @Test("403 insufficient_scope surfaces the required scope and does NOT refresh")
@@ -105,6 +113,8 @@ import Testing
         }
         // Refreshing on a scope failure would burn a refresh token for nothing.
         #expect(await tokens.refreshCallCount == 0)
+        // Nor is a scope failure a dead session.
+        #expect(await tokens.rejectedTokens.isEmpty)
         #expect(server.requests(path: "/api/v1/send").count == 1)
     }
 

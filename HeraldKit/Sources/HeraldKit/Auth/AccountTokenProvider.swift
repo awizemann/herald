@@ -17,6 +17,12 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// arbiter. Every point where this type is about to spend a refresh token, and every
 /// point where one was rejected, re-reads the store first and adopts whatever another
 /// process already rotated in. See ``rotatedTokens(past:)``.
+///
+/// It is also the ONE place that decides "this account's session is dead" short of
+/// `invalid_grant`: a refreshable 401 for a token this provider just handed out
+/// (reported through ``sessionRejected(token:)``) latches the grant, and every
+/// later call fails fast with ``OAuthError/reauthenticationRequired`` instead of
+/// spending the rotating refresh token again. See ``deadGrant``.
 public actor AccountTokenProvider: BearerTokenProvider {
     private let accountID: Account.ID
     private let store: any AccountStore
@@ -35,6 +41,22 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// One retry, only for transport/5xx — and only after re-reading the store.
     private static let maxRefreshAttempts = 2
 
+    /// The grant (``grantKey(_:)``) a server has refused even after a refresh.
+    ///
+    /// Keyed to the GRANT, never to this provider's lifetime: the store is the
+    /// arbiter, so the moment it holds a different grant (a re-auth landed — in
+    /// this graph, a newer one, or another process) the latch no longer matches
+    /// and those tokens are served. That is what lets a component still holding
+    /// a superseded graph's provider (an open composer's outbox) keep working
+    /// after the user signs back in. In memory only: the Keychain item is NOT
+    /// cleared here (unlike `invalid_grant`) — on a 1.4.2 server the refresh
+    /// token may well be fine, and re-auth overwrites it anyway.
+    private var deadGrant: String?
+
+    /// Told once per dead grant, after it is latched. See
+    /// ``setSessionRejectedHandler(_:)``.
+    private var sessionRejectedHandler: (@Sendable (Account.ID) async -> Void)?
+
     public init(
         accountID: Account.ID,
         store: any AccountStore,
@@ -49,16 +71,38 @@ public actor AccountTokenProvider: BearerTokenProvider {
         self.now = now
     }
 
+    /// Installs (or, with `nil`, removes) the hook told when a grant is found dead.
+    ///
+    /// Settable after construction because the provider is built
+    /// (``AuthCoordinator/tokenProvider(for:)``) before the app graph that routes
+    /// the signal exists. Called with the account id, once per dead grant, and
+    /// AWAITED — so it runs before the request that discovered the death returns
+    /// its `.unauthorized`. The actor is re-entrant across that await: a handler
+    /// may call straight back into this provider without deadlocking.
+    ///
+    /// The handler MUST return promptly and start any long work (the re-auth
+    /// attempt) in its own `Task`, like the app's other expiry callbacks: the
+    /// request or socket loop that reported the death is suspended until it
+    /// returns. In particular it must never await `MailEventSocket.stop()` — the
+    /// socket's loop is one of the reporters, so that wait is a deadlock.
+    public func setSessionRejectedHandler(_ handler: (@Sendable (Account.ID) async -> Void)?) {
+        sessionRejectedHandler = handler
+    }
+
     public func accessToken() async throws -> String {
         // This read and the `refreshTask` check below happen with no suspension in
         // between, so a caller either starts the refresh or joins the existing one.
         let stored = try store.tokens(for: accountID)
+        try checkLatch(against: stored)
         if let stored, stored.isUsable(at: now(), leeway: refreshLeeway) { return stored.accessToken }
         return try await refreshTokens(replacing: stored).accessToken
     }
 
     public func refreshAccessToken(failedToken: String) async throws -> String {
         let stored = try store.tokens(for: accountID)
+        // Before the stale-401 shortcut too: a latched grant's access token is
+        // dead however recently it was minted.
+        try checkLatch(against: stored)
         // The 401 was for a token we have since replaced: a concurrent request — in
         // this process or another one — already refreshed. Refreshing again would
         // redeem an already-rotated refresh token and sign the account out. No
@@ -69,6 +113,53 @@ public actor AccountTokenProvider: BearerTokenProvider {
             return stored.accessToken
         }
         return try await refreshTokens(replacing: stored).accessToken
+    }
+
+    /// Latches the grant `token` belongs to when the server refused it after a
+    /// refresh. See ``BearerTokenProvider/sessionRejected(token:)``.
+    ///
+    /// Only when `token` is STILL the stored access token: if the store has moved
+    /// on (another request or process refreshed, or a re-auth landed) the
+    /// rejection is about a superseded token and says nothing about the live
+    /// grant — the next request simply uses the new one.
+    public func sessionRejected(token: String) async {
+        let stored: OAuthTokens?
+        do {
+            stored = try store.tokens(for: accountID)
+        } catch {
+            // Cannot tell which grant is live, so latch nothing. Not a storm
+            // risk: an unreadable store also aborts every refresh.
+            logger.error("token store unreadable for \(self.accountID, privacy: .public); rejection not latched")
+            return
+        }
+        guard let stored, stored.accessToken == token else {
+            logger.warning("post-refresh 401 for \(self.accountID, privacy: .public) was for a superseded token; not latching")
+            return
+        }
+        let grant = Self.grantKey(stored)
+        // Latched and checked with no suspension in between, so concurrent
+        // reports of the same death announce it exactly once.
+        guard grant != deadGrant else { return }
+        deadGrant = grant
+        logger.warning("session rejected after refresh for \(self.accountID, privacy: .public); grant latched, re-auth required")
+        await sessionRejectedHandler?(accountID)
+    }
+
+    /// Throws when `stored` is the latched dead grant; clears a latch the store
+    /// has moved past.
+    private func checkLatch(against stored: OAuthTokens?) throws {
+        guard let deadGrant, let stored else { return }
+        if Self.grantKey(stored) == deadGrant {
+            throw OAuthError.reauthenticationRequired
+        }
+        logger.info("a new grant replaced the rejected one for \(self.accountID, privacy: .public); latch cleared")
+        self.deadGrant = nil
+    }
+
+    /// Identifies a grant. The refresh token is what rotates with it; an access
+    /// token stands in only for a grant that never had one.
+    private nonisolated static func grantKey(_ tokens: OAuthTokens) -> String {
+        tokens.refreshToken ?? tokens.accessToken
     }
 
     // MARK: - Refresh

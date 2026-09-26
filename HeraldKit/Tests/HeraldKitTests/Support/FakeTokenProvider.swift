@@ -10,6 +10,8 @@ actor FakeTokenProvider: BearerTokenProvider {
     private var refreshed: [String]
     private(set) var accessTokenCallCount = 0
     private(set) var refreshCallCount = 0
+    /// Every token reported through `sessionRejected(token:)`, in order.
+    private(set) var rejectedTokens: [String] = []
     /// When set, `refreshAccessToken(failedToken:)` throws it instead of a token.
     var refreshFailure: (any Error)?
 
@@ -31,6 +33,10 @@ actor FakeTokenProvider: BearerTokenProvider {
         if let refreshFailure { throw refreshFailure }
         current = refreshed[min(refreshCallCount - 1, refreshed.count - 1)]
         return current
+    }
+
+    func sessionRejected(token: String) async {
+        rejectedTokens.append(token)
     }
 
     func setRefreshFailure(_ error: any Error) {

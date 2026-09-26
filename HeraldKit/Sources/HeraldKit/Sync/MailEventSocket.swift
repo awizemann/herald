@@ -301,7 +301,17 @@ public actor MailEventSocket {
             // was actually rejected, retry ONCE, and escalate rather than loop.
             logger.warning("Event socket upgrade rejected (401); refreshing the token once")
             let refreshed = try await tokens.refreshAccessToken(failedToken: token)
-            opened = try await channels.open(token: refreshed)
+            do {
+                opened = try await channels.open(token: refreshed)
+            } catch MailEventChannelError.unauthorized {
+                // Refused with the token the provider just handed out: the grant
+                // is dead. Report it through the same chokepoint the REST
+                // middleware uses, so the provider latches it (no more refreshes
+                // for anyone) and announces it once; `handle(.unauthorized)`
+                // still stops this loop and escalates as before.
+                await tokens.sessionRejected(token: refreshed)
+                throw MailEventChannelError.unauthorized
+            }
         }
         // Nothing above is interruptible from here, so a teardown that happened
         // while the handshake was in flight is only observable NOW. Reporting

@@ -51,6 +51,16 @@ nonisolated struct AuthenticatingMiddleware: ClientMiddleware {
             // token another request already replaced must not refresh again.
             let refreshed = try await tokens.refreshAccessToken(failedToken: used)
             (response, responseBody) = try await attempt(token: refreshed)
+            // Rejected AGAIN with the token the provider just handed out (freshly
+            // minted, or the replacement another request minted): the grant is
+            // dead, not the token. Tell the provider so it latches the grant —
+            // otherwise every following request refreshes again, spending the
+            // rotating refresh token each time for nothing (the 2026-09-26
+            // incident: six "successful" refreshes in 65 s, all rejected).
+            if response.status.code == 401, Self.isRefreshable(response) {
+                logger.warning("401 persisted after refresh on \(operationID, privacy: .public); reporting the grant as dead")
+                await tokens.sessionRejected(token: refreshed)
+            }
         }
 
         guard response.status.code < 400 else {

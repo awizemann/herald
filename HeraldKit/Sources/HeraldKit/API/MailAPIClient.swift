@@ -15,6 +15,21 @@ public nonisolated protocol BearerTokenProvider: Sendable {
     /// refreshing again would redeem an already-rotated grant and sign the
     /// account out.
     func refreshAccessToken(failedToken: String) async throws -> String
+    /// Reports that `token` — handed out by ``refreshAccessToken(failedToken:)``
+    /// for a retry — was STILL rejected with a refreshable 401.
+    ///
+    /// A token the provider just minted or re-served being refused means the
+    /// grant itself is dead (pre-1.4.2 HQBase mints tokens for a web session
+    /// that no longer exists; an explicit web sign-out revokes them). Without
+    /// this report every later request refreshes again, each spending the
+    /// rotating refresh token for another doomed token. Never throws: it is a
+    /// notification, and the caller is already failing with `.unauthorized`.
+    func sessionRejected(token: String) async
+}
+
+nonisolated extension BearerTokenProvider {
+    /// No-op for providers with no grant to latch (test fakes, fixed tokens).
+    public func sessionRejected(token: String) async {}
 }
 
 /// Binary payload plus the MIME type the caller needs to render or save it.

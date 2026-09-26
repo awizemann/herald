@@ -65,6 +65,11 @@ nonisolated final class FakeServer: @unchecked Sendable {
 
     /// Registers the sequence of responses for a route (last one repeats).
     func route(_ method: String, _ path: String, _ responses: FakeResponse...) {
+        route(method, path, responses: responses)
+    }
+
+    /// Array form, for helpers that forward a variadic list.
+    func route(_ method: String, _ path: String, responses: [FakeResponse]) {
         lock.withLock {
             routes[Key(method: method.uppercased(), path: path)] = responses
             hits[Key(method: method.uppercased(), path: path)] = 0

@@ -31,12 +31,13 @@ import Testing
         )
     }
 
-    /// One way the token endpoint can refuse a refresh, and whether it means the
-    /// CLIENT is dead (the registration must be forgotten).
+    /// One way the token endpoint can refuse a refresh, and whether the
+    /// registration must be forgotten: the CLIENT is dead, or (P9a C) the
+    /// scope-bound registration is what the server refused.
     struct Refusal: Sendable, CustomTestStringConvertible {
         let name: String
         let response: FakeResponse
-        let rejectsClient: Bool
+        let forgetsRegistration: Bool
         var testDescription: String { name }
     }
 
@@ -45,34 +46,27 @@ import Testing
         Refusal(
             name: "400 invalid_client",
             response: .json(400, #"{"error":"invalid_client","error_description":"missing client"}"#),
-            rejectsClient: true
+            forgetsRegistration: true
         ),
         Refusal(
             name: "401 invalid_client",
             response: .json(401, #"{"error":"invalid_client"}"#),
-            rejectsClient: true
+            forgetsRegistration: true
         ),
         Refusal(
             name: "400 unauthorized_client",
             response: .json(400, #"{"error":"unauthorized_client"}"#),
-            rejectsClient: true
-        ),
-        // A gateway's 401: no OAuth body. Dead session, but the registration
-        // is NOT the server's to condemn here.
-        Refusal(
-            name: "bare 401",
-            response: FakeResponse(status: 401, headers: ["Content-Type": "text/html"], body: Data("<html>401</html>".utf8)),
-            rejectsClient: false
+            forgetsRegistration: true
         ),
         Refusal(
             name: "400 invalid_scope",
             response: .json(400, #"{"error":"invalid_scope"}"#),
-            rejectsClient: false
+            forgetsRegistration: true
         ),
         Refusal(
             name: "400 invalid_target",
             response: .json(400, #"{"error":"invalid_target"}"#),
-            rejectsClient: false
+            forgetsRegistration: true
         ),
     ]
 
@@ -115,9 +109,8 @@ import Testing
 
     /// Fails on the pre-fix code: the first call surfaces a `.transport`-ish
     /// error (not `.unauthorized`), nothing is announced, and every later call
-    /// POSTs the token endpoint again. Also fails if a client refusal leaves the
-    /// registration in place, if a non-client refusal (a gateway 401) discards
-    /// it, or if another origin's registration is touched.
+    /// POSTs the token endpoint again. Also fails if a refusal leaves the
+    /// registration in place, or if another origin's registration is touched.
     @Test("a terminal refresh refusal is one announcement, then no token-endpoint requests", arguments: refusals)
     func terminalRefusalLatches(_ refusal: Refusal) async throws {
         let h = try await Self.harness(token: refusal.response)
@@ -141,7 +134,7 @@ import Testing
         // clear could delete a grant another process just wrote.
         #expect(try h.store.tokens(for: Self.accountID)?.refreshToken == "refresh-0")
         let registration = try h.store.clientID(for: Self.origin)
-        #expect(registration == (refusal.rejectsClient ? nil : "cid"))
+        #expect(registration == (refusal.forgetsRegistration ? nil : "cid"))
         #expect(try h.store.clientID(for: Self.otherOrigin) == "cid", "another origin's registration was touched")
     }
 
@@ -223,6 +216,33 @@ import Testing
         #expect(await refresher.callCount == 1)
         #expect(await recorder.count == 1)
         #expect(try store.clientID(for: Self.origin) == nil)
+    }
+
+    /// P9a B: a bodiless 401 from the token endpoint is a gateway, not a verdict
+    /// on the grant. It used to be terminal — one proxy blip latched the grant
+    /// and raised the banner and a consent window until relaunch. Now it is
+    /// retried once like a 5xx, then surfaces as a plain (transport) failure:
+    /// never latched, announced, cleared or forgotten, and the next request
+    /// refreshes normally.
+    @Test("a bare 401 from the token endpoint is retried, never latched or announced")
+    func bare401IsNotTerminal() async throws {
+        let bare401 = FakeResponse(status: 401, headers: ["Content-Type": "text/html"], body: Data("<html>401</html>".utf8))
+        let h = try await Self.harness(
+            token: bare401, bare401,
+            .json(200, AuthFixtures.tokenJSON(access: "access-1", refresh: "refresh-1"))
+        )
+
+        await #expect(throws: OAuthError.server(error: "http_401", description: nil)) {
+            _ = try await h.provider.refreshAccessToken(failedToken: "access-0")
+        }
+        #expect(h.server.requests(path: AuthFixtures.tokenPath).count == 2, "a bare 401 was not retried once")
+        #expect(await h.recorder.count == 0, "a gateway 401 was announced as a dead session")
+        #expect(try h.store.tokens(for: Self.accountID)?.refreshToken == "refresh-0")
+        #expect(try h.store.clientID(for: Self.origin) == "cid")
+
+        // Not latched: the next attempt spends the grant and succeeds.
+        #expect(try await h.provider.refreshAccessToken(failedToken: "access-0") == "access-1")
+        #expect(await h.recorder.count == 0)
     }
 
     /// Unchanged: transport trouble and 5xx are still retried once (after the
@@ -375,16 +395,21 @@ import Testing
     /// The classification itself.
     @Test("isTerminalRefreshRefusal and isRejectedClient cover exactly the intended codes")
     func classification() {
-        let terminal = ["invalid_client", "unauthorized_client", "http_401", "invalid_scope", "invalid_target"]
+        let terminal = ["invalid_client", "unauthorized_client", "invalid_scope", "invalid_target"]
         for code in terminal {
             #expect(OAuthError.server(error: code, description: nil).isTerminalRefreshRefusal, "\(code)")
         }
-        for code in ["invalid_grant", "server_error", "temporarily_unavailable", "http_503", "http_400", "invalid_request", "http_403"] {
+        for code in ["invalid_grant", "server_error", "temporarily_unavailable", "http_503", "http_400", "invalid_request", "http_403", "http_401"] {
             #expect(!OAuthError.server(error: code, description: nil).isTerminalRefreshRefusal, "\(code)")
         }
         #expect(OAuthError.server(error: "invalid_client", description: nil).isRejectedClient)
         #expect(OAuthError.server(error: "unauthorized_client", description: nil).isRejectedClient)
         #expect(!OAuthError.server(error: "http_401", description: nil).isRejectedClient)
+        // P9a B: a bodiless token-endpoint 401 is retried like a 5xx.
+        #expect(OAuthError.server(error: "http_401", description: nil).isRetryable)
+        #expect(OAuthError.server(error: "invalid_scope", description: nil).isScopeRefusal)
+        #expect(OAuthError.server(error: "invalid_target", description: nil).isScopeRefusal)
+        #expect(!OAuthError.server(error: "invalid_client", description: nil).isScopeRefusal)
         #expect(!OAuthError.transport(.init(URLError(.timedOut))).isTerminalRefreshRefusal)
     }
 }

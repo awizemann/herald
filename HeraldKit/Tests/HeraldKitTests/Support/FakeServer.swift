@@ -62,6 +62,20 @@ nonisolated final class FakeServer: @unchecked Sendable {
     private var routes: [Key: [FakeResponse]] = [:]
     private var hits: [Key: Int] = [:]
     private var recorded: [RecordedRequest] = []
+    private var gates: [Key: FakeGate] = [:]
+
+    /// Holds every request to a route until the returned gate is opened — the
+    /// deterministic way to act while a request is on the wire. The request is
+    /// recorded (and its response chosen) only once the gate opens.
+    func gate(_ method: String, _ path: String) -> FakeGate {
+        let gate = FakeGate()
+        lock.withLock { gates[Key(method: method.uppercased(), path: path)] = gate }
+        return gate
+    }
+
+    fileprivate func gate(for request: RecordedRequest) -> FakeGate? {
+        lock.withLock { gates[Key(method: request.method, path: request.path)] }
+    }
 
     /// Registers the sequence of responses for a route (last one repeats).
     func route(_ method: String, _ path: String, _ responses: FakeResponse...) {
@@ -148,8 +162,18 @@ nonisolated final class FakeServerProtocol: URLProtocol, @unchecked Sendable {
             headers: request.allHTTPHeaderFields ?? [:],
             body: Self.bodyData(of: request)
         )
-        let response = server.respond(to: recorded)
+        if let gate = server.gate(for: recorded) {
+            nonisolated(unsafe) let unsafeSelf = self
+            Task.detached {
+                await gate.pass()
+                unsafeSelf.finish(server.respond(to: recorded), url: url)
+            }
+            return
+        }
+        finish(server.respond(to: recorded), url: url)
+    }
 
+    private func finish(_ response: FakeResponse, url: URL) {
         let httpResponse = HTTPURLResponse(
             url: url,
             statusCode: response.status,
@@ -183,5 +207,54 @@ nonisolated final class FakeServerProtocol: URLProtocol, @unchecked Sendable {
             data.append(contentsOf: buffer[0..<read])
         }
         return data
+    }
+}
+
+/// A held route (``FakeServer/gate(_:_:)``): requests wait in ``pass()`` until
+/// ``open()``; ``arrived()`` returns once one is waiting.
+nonisolated final class FakeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var arrivals = 0
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Suspends until at least one request is held at the gate.
+    func arrived() async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if arrivals > 0 { return true }
+                arrivalWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    /// Lets every held (and future) request through.
+    func open() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isOpen = true
+            defer { openWaiters.removeAll() }
+            return openWaiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    fileprivate func pass() async {
+        let arrived = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            arrivals += 1
+            defer { arrivalWaiters.removeAll() }
+            return arrivalWaiters
+        }
+        for waiter in arrived { waiter.resume() }
+        await withCheckedContinuation { continuation in
+            let open = lock.withLock { () -> Bool in
+                if isOpen { return true }
+                openWaiters.append(continuation)
+                return false
+            }
+            if open { continuation.resume() }
+        }
     }
 }

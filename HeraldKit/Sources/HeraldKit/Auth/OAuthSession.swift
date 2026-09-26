@@ -8,6 +8,22 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// (and so tests can gate a refresh without a URL protocol).
 public nonisolated protocol TokenRefreshing: Sendable {
     func refresh(refreshToken: String) async throws -> OAuthTokens
+    /// Refreshes as `clientID` — the client the grant was minted for, resolved
+    /// by ``AccountTokenProvider`` from the account record at refresh time —
+    /// rather than whatever client this refresher was built with. `nil`: the
+    /// refresher's own. A registration can change under a live provider (a
+    /// re-auth that re-registered, here or in another process), and a grant
+    /// refreshed with a client it was not issued to is refused.
+    ///
+    /// Defaults to ``refresh(refreshToken:)`` for refreshers with no client of
+    /// their own to choose (test fakes).
+    func refresh(refreshToken: String, clientID: String?) async throws -> OAuthTokens
+}
+
+nonisolated extension TokenRefreshing {
+    public func refresh(refreshToken: String, clientID: String?) async throws -> OAuthTokens {
+        try await refresh(refreshToken: refreshToken)
+    }
 }
 
 /// Drives the OAuth 2.1 authorization-code + PKCE flow against one origin.
@@ -118,6 +134,12 @@ public nonisolated struct OAuthSession: Sendable, TokenRefreshing {
             ("code_verifier", pkce.verifier),
             ("resource", configuration.resource),
         ])
+    }
+
+    public func refresh(refreshToken: String, clientID: String?) async throws -> OAuthTokens {
+        guard let clientID, !clientID.isEmpty, clientID != self.clientID else { return try await refresh(refreshToken: refreshToken) }
+        return try await OAuthSession(configuration: configuration, clientID: clientID, redirectURI: redirectURI, session: session)
+            .refresh(refreshToken: refreshToken)
     }
 
     public func refresh(refreshToken: String) async throws -> OAuthTokens {

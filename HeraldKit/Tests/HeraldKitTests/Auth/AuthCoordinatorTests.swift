@@ -116,9 +116,11 @@ import Testing
         #expect(server.requests(path: AuthFixtures.protectedResourcePath).count == 1)
     }
 
-    /// Fails if sign-out leaves tokens behind, or if it also wipes the registration
-    /// (which would force a pointless re-register when the user signs back in).
-    @Test("signOut drops the account and its tokens but keeps the client registration")
+    /// Fails if sign-out leaves tokens behind. The registration goes too when it
+    /// was the origin's last account (P9a F — see `SignOutRegistrationTests`):
+    /// a server that forgot the client meanwhile would otherwise send every Sign
+    /// In to its error page.
+    @Test("signOut drops the account, its tokens and the last account's registration")
     func signOutClearsTokensNotRegistration() async throws {
         let server = AuthFixtures.fullServer()
         let store = RecordingAccountStore()
@@ -133,7 +135,7 @@ import Testing
 
         #expect(try store.accounts().isEmpty)
         #expect(try store.tokens(for: account.id) == nil)
-        #expect(try store.clientID(for: AuthFixtures.origin) == "cid_registered")
+        #expect(try store.clientID(for: AuthFixtures.origin) == nil)
         // This server advertises no revocation_endpoint: skip it, do not fail.
         #expect(server.requests(path: AuthFixtures.revokePath).isEmpty)
     }

@@ -124,7 +124,7 @@ public final class AuthCoordinator {
         }
 
         let configuration = try await configuration(for: origin, step: step)
-        let clientID = try await clientID(for: origin, configuration: configuration, step: step)
+        let (clientID, registeredNow) = try await clientID(for: origin, configuration: configuration, step: step)
         // BEFORE the browser: an account list the store will refuse to write
         // (`AccountStoreError.indexUnreadable`) must stop the sign-in here, not
         // after consent has minted a grant that then has nowhere to go. Covers
@@ -144,6 +144,15 @@ public final class AuthCoordinator {
             step(.exchanging)
             tokens = try await oauth.exchange(code: code, pkce: request.pkce)
         } catch let error as OAuthError where error.isRejectedClient {
+            // `unauthorized_client` for a client THIS attempt just registered is
+            // not a lost registration: the server knows the client and refuses
+            // it this grant by policy. Forgetting it would only mint another
+            // registration that is refused the same way, and "no longer
+            // recognizes Herald" would be untrue — surface the server's answer.
+            if registeredNow, case .server("unauthorized_client", _) = error {
+                logger.warning("the server refused the client it just registered (unauthorized_client); registration kept")
+                throw error
+            }
             // The server no longer knows (or no longer trusts) this `client_id`
             // — reinstalled, or its client table reset. Forget the registration
             // so the NEXT sign-in registers anew (audit W3), and say so in words
@@ -215,11 +224,24 @@ public final class AuthCoordinator {
     /// the tokens first would leave a live refresh token on the server that
     /// nothing can ever revoke. A failure is logged and removal proceeds anyway —
     /// the user asked to sign out.
+    ///
+    /// Order matters (audit P9a H): the origin's sign-out generation is bumped,
+    /// its discovery evicted and any background discovery cancelled BEFORE the
+    /// revoke round trip. Afterwards, a provider still alive could rotate the
+    /// grant while the revoke was on the wire — revoke kills R1, R2 stays live on
+    /// the server and is deleted locally, unrevocable. After the revoke the store
+    /// is re-read once, and a refresh token that changed meanwhile (a refresh
+    /// already past its endpoint resolution) is revoked too.
+    ///
+    /// When no remaining account uses the origin, its registration
+    /// (`client.<origin>`) and persisted discovery go too (P9a F): a server that
+    /// forgot the client while nobody was signed in would otherwise send every
+    /// Sign In to its error page, with no way out inside Herald. Both are kept
+    /// while another account on the origin remains.
     public func signOut(_ account: Account) async throws {
         // BEFORE revoking: an account list the store refuses to rewrite would
         // leave the account in it with a grant the server no longer honours.
         try await offMain { [store] in _ = try store.accounts() }
-        await revokeRefreshToken(for: account)
         let accountID = account.id
         let origin = Account.normalize(account.origin)
         // Keyed by the ORIGIN, exactly as `configuration(for:)` writes it. Keying
@@ -230,49 +252,93 @@ public final class AuthCoordinator {
         // and a background discovery still in flight is disowned so its result
         // cannot put either back.
         let key = cacheKey(origin)
+        // The revoke's endpoint, taken before the eviction so it neither waits
+        // on the network nor (through `configuration(for:)`) re-caches it.
+        let cached = configurations[key]
         signOutGenerations[key, default: 0] += 1
         configurations[key] = nil
         discoveries.removeValue(forKey: key)?.cancel()
+
+        await revokeRefreshTokens(for: account, origin: origin, cached: cached)
+
         try await offMain { [store] in
+            // Read before the removal: whether anyone else still uses the origin.
+            let othersOnOrigin = try store.accounts().contains {
+                $0.id != accountID && Account.normalize($0.origin).absoluteString == key
+            }
             // Evicted even when the removal throws: it is only a cache.
             defer {
-                do {
-                    try store.setOAuthConfiguration(nil, for: origin)
-                } catch {
-                    logger.warning("could not evict persisted discovery for \(origin.absoluteString, privacy: .public)")
+                if !othersOnOrigin {
+                    do {
+                        try store.setOAuthConfiguration(nil, for: origin)
+                    } catch {
+                        logger.warning("could not evict persisted discovery for \(origin.absoluteString, privacy: .public)")
+                    }
                 }
             }
             try store.remove(accountID)
+            guard !othersOnOrigin else { return }
+            // Compare-and-delete against what is stored now, so a registration
+            // written after this read (another process signing in) survives —
+            // and one written in between is harmless: its sign-in's account
+            // record carries its client id, and refreshes use the record's.
+            do {
+                if let registered = try store.clientID(for: origin) {
+                    try store.forgetClientID(registered, for: origin)
+                }
+            } catch {
+                logger.warning("could not forget the registration for \(origin.absoluteString, privacy: .public)")
+            }
         }
         logger.info("signed out \(account.origin.absoluteString, privacy: .public)")
     }
 
-    /// RFC 7009. Silently skipped when the server publishes no
-    /// `revocation_endpoint`, or when there is no refresh token to revoke.
-    private func revokeRefreshToken(for account: Account) async {
+    /// RFC 7009, for the stored refresh token — and once more if the store holds
+    /// a different one after that round trip (see ``signOut(_:)``). Silently
+    /// skipped when the server publishes no `revocation_endpoint`, or when there
+    /// is no refresh token to revoke. Never re-caches discovery: `cached` (this
+    /// launch's live copy, captured before the sign-out evicted it), else the
+    /// persisted copy, else a live discovery used for this call only.
+    private func revokeRefreshTokens(for account: Account, origin: URL, cached: OAuthConfiguration?) async {
         let accountID = account.id
-        guard let refreshToken = try? await offMain({ [store] in
-            try store.tokens(for: accountID)?.refreshToken
-        }) else { return }
-        guard let configuration = try? await configuration(for: account.origin),
-              let endpoint = configuration.server.revocationEndpoint
-        else { return }
-        do {
-            let response = try await OAuthHTTP.postForm(
-                endpoint,
-                fields: [
-                    ("token", refreshToken),
-                    ("token_type_hint", "refresh_token"),
-                    ("client_id", account.clientID),
-                ],
-                using: session
-            )
-            guard (200..<300).contains(response.status) else {
-                logger.warning("revocation returned HTTP \(response.status); signing out locally anyway")
-                return
+        var revoked: Set<String> = []
+        var endpoint: URL?
+        for _ in 0..<2 {
+            // The record's CURRENT client id: the grant was minted for it, and
+            // `account` may be a value from before a re-registration.
+            let read = try? await offMain { [store] () -> (token: String, clientID: String?)? in
+                guard let token = try store.tokens(for: accountID)?.refreshToken else { return nil }
+                return (token, try? store.account(id: accountID)?.clientID)
             }
-        } catch {
-            logger.warning("revocation request failed; signing out locally anyway")
+            guard let current = read ?? nil, !revoked.contains(current.token) else { return }
+            let refreshToken = current.token
+            let recordClientID = current.clientID
+            if endpoint == nil {
+                var configuration = cached
+                if configuration == nil { configuration = await persistedConfiguration(for: origin) }
+                if configuration == nil { configuration = try? await discovery.configuration(for: origin) }
+                guard let found = configuration?.server.revocationEndpoint else { return }
+                endpoint = found
+            }
+            guard let endpoint else { return }
+            revoked.insert(refreshToken)
+            let clientID = recordClientID.flatMap { $0.isEmpty ? nil : $0 } ?? account.clientID
+            do {
+                let response = try await OAuthHTTP.postForm(
+                    endpoint,
+                    fields: [
+                        ("token", refreshToken),
+                        ("token_type_hint", "refresh_token"),
+                        ("client_id", clientID),
+                    ],
+                    using: session
+                )
+                if !(200..<300).contains(response.status) {
+                    logger.warning("revocation returned HTTP \(response.status); signing out locally anyway")
+                }
+            } catch {
+                logger.warning("revocation request failed; signing out locally anyway")
+            }
         }
     }
 
@@ -303,11 +369,24 @@ public final class AuthCoordinator {
             refresher: DiscoveringRefresher(clientID: account.clientID, session: session) { [self, fallback] in
                 try await self.refreshConfiguration(for: origin, fallback: fallback, generation: generation)
             },
-            // What the provider forgets when the token endpoint refuses THIS
-            // client (audit W3) — the same id the refresher sends.
             origin: origin,
-            clientID: account.clientID
+            // A FALLBACK only: the provider reads the account record's client
+            // id at refresh time (P9a A) — a re-registration can change it
+            // under this provider — and sends, and forgets on a refusal, that.
+            clientID: account.clientID,
+            discoveryInvalidated: { [weak self] in await self?.evictDiscovery(origin) }
         )
+    }
+
+    /// Drops this launch's discovery for `origin` and disowns any background
+    /// discovery, so the next sign-in rediscovers (a scope refusal — see
+    /// ``AccountTokenProvider``). The persisted copy is the provider's to evict.
+    /// Deliberately NOT a sign-out: the generation stays, so other providers on
+    /// the origin keep refreshing against a fresh discovery.
+    func evictDiscovery(_ origin: URL) {
+        let key = cacheKey(origin)
+        configurations[key] = nil
+        discoveries.removeValue(forKey: key)?.cancel()
     }
 
     /// The endpoints a refresh uses. See ``tokenProvider(for:)``.
@@ -416,14 +495,17 @@ public final class AuthCoordinator {
 
     /// Registration happens at most once per origin; the id is read back from the
     /// Keychain on every later sign-in.
+    ///
+    /// - Returns: the id, and whether THIS call registered it — a refusal of a
+    ///   client minted moments ago is a policy answer, not a lost registration.
     private func clientID(
         for origin: URL,
         configuration: OAuthConfiguration,
         step: (AuthStep) -> Void = { _ in }
-    ) async throws -> String {
+    ) async throws -> (id: String, registeredNow: Bool) {
         step(.checkingRegistration)
         let existing = try await offMain { [store] in try store.clientID(for: origin) }
-        if let existing, !existing.isEmpty { return existing }
+        if let existing, !existing.isEmpty { return (existing, false) }
         guard let endpoint = configuration.server.registrationEndpoint else {
             logger.error("\(origin.absoluteString, privacy: .public) has no registration_endpoint")
             throw OAuthError.registrationUnsupported
@@ -435,7 +517,7 @@ public final class AuthCoordinator {
             scopes: configuration.scopes
         )
         try await offMain { [store] in try store.setClientID(clientID, for: origin) }
-        return clientID
+        return (clientID, true)
     }
 }
 
@@ -448,8 +530,14 @@ nonisolated struct DiscoveringRefresher: TokenRefreshing {
     let resolve: @Sendable () async throws -> OAuthConfiguration
 
     func refresh(refreshToken: String) async throws -> OAuthTokens {
+        try await refresh(refreshToken: refreshToken, clientID: nil)
+    }
+
+    /// `clientID`: the account record's, resolved by the provider at refresh
+    /// time; `nil` falls back to the one this refresher was built with.
+    func refresh(refreshToken: String, clientID: String?) async throws -> OAuthTokens {
         let configuration = try await resolve()
-        return try await OAuthSession(configuration: configuration, clientID: clientID, session: session)
+        return try await OAuthSession(configuration: configuration, clientID: clientID ?? self.clientID, session: session)
             .refresh(refreshToken: refreshToken)
     }
 }

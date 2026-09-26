@@ -33,7 +33,8 @@ public nonisolated protocol AccountStore: Sendable {
     /// tokens. A corrupt (non-JSON) index is backed up first, then replaced.
     func add(_ account: Account) throws
     /// Removes the account, its tokens, and nothing else — the client registration
-    /// survives so re-adding the same origin does not re-register. Throws
+    /// is not this call's to judge (``AuthCoordinator/signOut(_:)`` forgets it
+    /// when no account on the origin remains). Throws
     /// ``AccountStoreError/indexUnreadable`` (writing nothing) like ``add(_:)``.
     func remove(_ accountID: Account.ID) throws
 
@@ -270,17 +271,26 @@ public nonisolated final class KeychainAccountStore: AccountStore {
 
     // MARK: Registration
 
+    /// Under the lock, like ``setClientID(_:for:)`` and
+    /// ``forgetClientID(_:for:)``: inside this process a read never lands in
+    /// the middle of a compare-and-delete.
     public func clientID(for origin: URL) throws -> String? {
-        try secrets.string(for: Self.clientKey(origin))
+        try lock.withLock { try secrets.string(for: Self.clientKey(origin)) }
     }
 
+    /// Under the lock, so a registration written by this process can never be
+    /// lost between ``forgetClientID(_:for:)``'s compare and its delete.
     public func setClientID(_ clientID: String, for origin: URL) throws {
-        try secrets.setString(clientID, for: Self.clientKey(origin))
+        try lock.withLock { try secrets.setString(clientID, for: Self.clientKey(origin)) }
     }
 
-    /// Serialized with this process's other index work by the lock; across
-    /// processes the read-then-delete is not atomic, and the loser of that
-    /// race is at worst one extra registration on the next sign-in.
+    /// Serialized with this process's registration reads and writes
+    /// (``clientID(for:)``, ``setClientID(_:for:)``) and its index work by the
+    /// lock, so a registration written here while the compare-and-delete runs
+    /// always survives it. Across processes the read-then-delete is not atomic,
+    /// and the loser of that race is at worst one extra registration on the
+    /// next sign-in (refreshes send the ACCOUNT RECORD's client id, so a lost
+    /// `client.<origin>` never breaks a signed-in account).
     @discardableResult
     public func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
         try lock.withLock {

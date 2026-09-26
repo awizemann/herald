@@ -80,22 +80,32 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     /// whose Retry repeats the doomed request (audit W3).
     ///
     /// - ``isRejectedClient`` (the registration is dead).
-    /// - `http_401`: the token endpoint refused to authenticate the request at
-    ///   all. For a public client RFC 6749 §5.2 reserves 401 for client
-    ///   authentication failure; a gateway in front of the server (an expired
-    ///   access proxy) answers the same way and is equally only fixed by a trip
-    ///   through the browser. The latch is in memory, so a transient one costs
-    ///   a banner, never the stored grant.
-    /// - `invalid_scope` / `invalid_target`: the grant can no longer be
-    ///   exchanged for the scopes or the audience (`resource`) Herald asks for —
-    ///   a fresh consent against the current discovery can.
+    /// - ``isScopeRefusal``: the grant can no longer be exchanged for the scopes
+    ///   or the audience (`resource`) Herald asks for — a fresh consent against a
+    ///   FRESH discovery and registration can.
     ///
     /// NOT `invalid_grant`: that one has its own, stricter path (the grant is
     /// cleared from the store) — see ``isInvalidGrant``.
+    ///
+    /// NOT `http_401` either (P9a, superseding W3's first cut): a 401 with no
+    /// readable OAuth body never reached the server's grant logic — HQBase
+    /// always answers with the JSON body, so a bare 401 is a proxy or gateway
+    /// speaking. Latching on it turned one gateway blip into a banner and a
+    /// consent window until relaunch; it is ``isRetryable`` instead, the same
+    /// rule P6 applies on the API side (a 401 is a session verdict only when the
+    /// server says so).
     public var isTerminalRefreshRefusal: Bool {
+        isRejectedClient || isScopeRefusal
+    }
+
+    /// `invalid_scope` / `invalid_target`: the registration and discovery the
+    /// grant was minted under ask for scopes or an audience the server no longer
+    /// grants. Re-consenting with the SAME cached discovery and scope-bound
+    /// registration can never succeed, so both are discarded before the death
+    /// is announced (see ``AccountTokenProvider``).
+    public var isScopeRefusal: Bool {
         guard case .server(let error, _) = self else { return false }
-        if isRejectedClient { return true }
-        return error == "http_401" || error == "invalid_scope" || error == "invalid_target"
+        return error == "invalid_scope" || error == "invalid_target"
     }
 
     /// Worth exactly one more attempt: the network or the server failed us, so the
@@ -106,7 +116,10 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
         case .transport:
             true
         case .server(let error, _):
+            // `http_401`: a bodiless 401 from the token endpoint is a gateway, not
+            // a verdict on the grant — see ``isTerminalRefreshRefusal``.
             error == "server_error" || error == "temporarily_unavailable" || error.hasPrefix("http_5")
+                || error == "http_401"
         default:
             false
         }

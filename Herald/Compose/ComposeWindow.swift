@@ -48,7 +48,12 @@ private struct ComposeWindowRoot: View {
             // Idempotent: this task re-runs whenever SwiftUI rebuilds the scene
             // root, and it must find the SAME composer, with whatever the user
             // has typed into it, rather than build a second one.
-            model = environment.makeComposeViewModel(id: requestID)
+            //
+            // Never swaps a live composer for `nil`: a composer whose account
+            // was signed out has no session any more, but its window still owns
+            // the text the user is about to copy out of it.
+            let resolved = environment.makeComposeViewModel(id: requestID)
+            if resolved != nil || model?.isClosed != false { model = resolved }
         }
         .onDisappear {
             guard let requestID, let model else { return }
@@ -167,7 +172,7 @@ struct ComposeView: View {
             // than the verb: a dimmed Send with no explanation is announced as
             // "Send, dimmed" and leaves the user guessing whether the message
             // went. The shortcut is deliberately NOT here — see `sendShortcut`.
-            .help(ComposeViewModel.sendHelp(model.sendHold))
+            .help(model.sendHelp)
             .accessibilityHint(model.sendHoldReason ?? "")
 
             Button { Task { await model.addAttachments() } } label: {
@@ -350,14 +355,41 @@ struct ComposeView: View {
 
     private func errorBar(_ message: String) -> some View {
         HStack(spacing: MailTheme.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MailTheme.failure)
-            Text(message).font(.callout)
+            // The message is ONE element; the Sign In button is its own, so
+            // VoiceOver can reach and press it (a `.combine` over both would
+            // fold the button into the sentence).
+            HStack(spacing: MailTheme.Spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MailTheme.failure)
+                Text(message).font(.callout)
+            }
+            .accessibilityElement(children: .combine)
             Spacer()
+            signInControl
         }
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
         .background(.bar)
-        .accessibilityElement(children: .combine)
+    }
+
+    /// A dead session's way back in, for the account THIS message belongs to.
+    /// After it succeeds the bar clears and the user presses Send again —
+    /// nothing is resent automatically.
+    @ViewBuilder private var signInControl: some View {
+        switch model.signInAffordance {
+        case .none:
+            EmptyView()
+        case .available:
+            Button("Sign In") { Task { await model.signIn() } }
+                .help("Sign in to this message’s account again")
+                .accessibilityHint("Opens the sign-in window. Your message stays here; press Send again afterwards.")
+        case .inProgress:
+            HStack(spacing: MailTheme.Spacing.xs) {
+                ProgressView().controlSize(.small).accessibilityHidden(true)
+                Text("Signing in…").font(.callout).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Signing in to this message’s account")
+        }
     }
 
     /// ⌘W has to route through the view-model so unsaved work gets a sheet

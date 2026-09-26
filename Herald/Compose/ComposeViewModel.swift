@@ -56,10 +56,67 @@ final class ComposeViewModel {
     let quotedPreview: String?
     private(set) var status: Status = .idle {
         didSet {
-            guard status != oldValue, let message = status.message else { return }
+            guard status != oldValue else { return }
+            // Any change of status retires the "sign in" classification of the
+            // failure it replaces; ``fail(_:)`` re-raises it for a new one.
+            requiresSignIn = false
+            guard let message = status.message else { return }
             announce(message)
         }
     }
+
+    // MARK: Dead session (2026-09-26 incident, plan P4)
+
+    /// Whether the failure on the error bar is a dead session that only a fresh
+    /// sign-in can fix — a send or autosave that came back 401 / refresh
+    /// refused. Classified HERE, with the same rule the sync loop uses
+    /// (``MailViewModel/requiresReauthentication(_:)``), so the view only asks
+    /// "is there a Sign In button?".
+    ///
+    /// While it is set the failure is STICKY: typing neither clears it nor
+    /// schedules an autosave. Every autosave would 401 against the same dead
+    /// grant, re-raise the bar and re-announce it per debounce — and the text is
+    /// safe in the window anyway. It clears when the account comes back
+    /// (``accountSignedIn(outbox:)``) or when a send succeeds.
+    private(set) var requiresSignIn = false
+
+    /// What the error bar offers besides the message. Pure and static so the
+    /// rule is assertable without a rendered window — `SyncStatusLabel`'s
+    /// pattern.
+    enum SignInAffordance: Equatable {
+        case none
+        /// A Sign In button.
+        case available
+        /// A sign-in for this account is already running (the banner's, the
+        /// sidebar's, Herald's own automatic one, or this window's): the button
+        /// becomes progress. A second click would only be refused by the policy.
+        case inProgress
+    }
+
+    nonisolated static func signInAffordance(requiresSignIn: Bool, isSigningIn: Bool) -> SignInAffordance {
+        guard requiresSignIn else { return .none }
+        return isSigningIn ? .inProgress : .available
+    }
+
+    var signInAffordance: SignInAffordance {
+        Self.signInAffordance(requiresSignIn: requiresSignIn, isSigningIn: isSigningIn)
+    }
+
+    /// Whether a re-auth round trip is running for THIS composer's account —
+    /// read through the environment, so it tracks the one policy every entry
+    /// point shares.
+    var isSigningIn: Bool { isReauthenticating() }
+
+    /// Set once this composer's account has been signed out (or replaced by a
+    /// different user on re-auth). Its outbox belongs to a graph that is gone,
+    /// so nothing is saved or sent from here any more — the window keeps the
+    /// text so the user can copy it, and says why Send is unavailable. Never
+    /// cleared: a later sign-in of the same origin is a NEW account graph this
+    /// window was never bound to.
+    private(set) var isAccountSignedOut = false
+
+    nonisolated static let accountSignedOutReason =
+        "This message’s account was signed out, so it can’t be sent. Copy anything you want to keep."
 
     /// Addresses that failed ``EmailAddress/isValid(_:)``, per field.
     private(set) var invalidAddresses: [Field: [String]] = [:]
@@ -103,13 +160,19 @@ final class ComposeViewModel {
     private(set) var sendHold: SendHold?
     /// Whether Send is refused right now. The button reads this and so does
     /// ``send()`` — ⌘⇧D must not do what the disabled button will not.
-    var isSendBlocked: Bool { sendHold != nil }
+    var isSendBlocked: Bool { sendHold != nil || isAccountSignedOut }
 
     /// Why Send is unavailable, or `nil` when it is not. The Send control drives
     /// BOTH its tooltip and its accessibility hint off this: a `.disabled` button
     /// whose only explanation is an error bar at the other end of the window
     /// announces "dimmed" and nothing else.
-    var sendHoldReason: String? { Self.sendHoldReason(sendHold) }
+    var sendHoldReason: String? {
+        isAccountSignedOut ? Self.accountSignedOutReason : Self.sendHoldReason(sendHold)
+    }
+
+    /// The Send control's tooltip for THIS window — ``sendHelp(_:)`` plus the
+    /// signed-out case, so tooltip and hint still say the same sentence.
+    var sendHelp: String { sendHoldReason ?? Self.sendHelp(nil) }
 
     /// Static and payload-free so the sentence the tooltip shows and the sentence
     /// VoiceOver speaks are provably the same one, assertable without a rendered
@@ -130,7 +193,18 @@ final class ComposeViewModel {
     /// Drives the ⌘W confirmation sheet.
     var confirmsClose = false
 
-    private let outbox: any Outboxing
+    /// The account's CURRENT outbox. A `var` because re-authentication builds
+    /// a new account graph: ``accountSignedIn(outbox:)`` moves a live composer
+    /// onto it rather than leaving it talking to the superseded graph's client.
+    /// Each operation reads it once, up front, so a call already in flight
+    /// finishes on the outbox it started on.
+    private var outbox: any Outboxing
+    /// Bumped by every ``accountSignedIn(outbox:)``; see ``fail(_:binding:)``.
+    @ObservationIgnored private var outboxBinding = 0
+    /// Runs the re-auth round trip for this composer's OWN account (never the
+    /// selected one — see `AppEnvironment.makeComposeViewModel`).
+    @ObservationIgnored private let reauthenticate: @MainActor () async -> Void
+    @ObservationIgnored private let isReauthenticating: @MainActor () -> Bool
     private let autosaveDelay: Duration
     /// The draft as opened: what "the user has typed something" is measured against.
     private let initialDraft: ComposeDraft
@@ -149,7 +223,9 @@ final class ComposeViewModel {
         outbox: any Outboxing,
         autosaveDelay: Duration = .seconds(2),
         record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in },
-        draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in }
+        draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in },
+        reauthenticate: @escaping @MainActor () async -> Void = {},
+        isReauthenticating: @escaping @MainActor () -> Bool = { false }
     ) {
         let draft = context.makeDraft()
         self.draft = draft
@@ -159,6 +235,8 @@ final class ComposeViewModel {
         self.record = record
         self.autosaveDelay = autosaveDelay
         self.draftCache = draftCache
+        self.reauthenticate = reauthenticate
+        self.isReauthenticating = isReauthenticating
         self.toText = draft.to.joined(separator: ", ")
         self.ccText = draft.cc.joined(separator: ", ")
         self.bccText = draft.bcc.joined(separator: ", ")
@@ -360,7 +438,7 @@ final class ComposeViewModel {
     ///
     /// Safe to call again — the view re-runs it if the From address arrives late.
     func loadSignatures() async {
-        guard !draft.fromAddress.isEmpty else { return }
+        guard !draft.fromAddress.isEmpty, !isAccountSignedOut else { return }
         do {
             signatureCandidates = try await outbox.signatures(from: draft.fromAddress)
             signaturesLoaded = true
@@ -398,8 +476,79 @@ final class ComposeViewModel {
         // only. `.recovering` means a copy is already out, and no amount of
         // typing makes a second one right.
         if sendHold == .storageNotReady { sendHold = nil }
+        // A dead session (or a signed-out account) is not something typing can
+        // fix: the bar — and its Sign In button — stays, and no autosave is
+        // queued to fail against it again.
+        guard !requiresSignIn, !isAccountSignedOut else { return }
         if status.message != nil { status = .idle }
         scheduleAutosave()
+    }
+
+    /// Reports a failure on the error bar, classifying whether it is one only a
+    /// fresh sign-in fixes. The one place a server error becomes `.failed`.
+    ///
+    /// - Parameter binding: ``outboxBinding`` when the failed call STARTED. A
+    ///   dead-session answer from an outbox the composer has since been moved
+    ///   off (a send already in flight when the re-auth landed) says nothing
+    ///   about the new grant: it is shown, but offers no Sign In — the user
+    ///   just presses Send again.
+    private func fail(_ error: any Error, binding: Int) {
+        status = .failed(error.localizedDescription)
+        // After the assignment: `status`'s didSet resets the flag on a change.
+        requiresSignIn = !isAccountSignedOut
+            && binding == outboxBinding
+            && MailViewModel.requiresReauthentication(error)
+    }
+
+    // MARK: - Sign in again
+
+    /// The error bar's Sign In: re-runs consent for this composer's account.
+    /// A no-op while one is already running — the policy would refuse a second
+    /// window anyway, and the button is progress by then.
+    func signIn() async {
+        guard requiresSignIn, !isSigningIn else { return }
+        announce("Signing in. Your message stays in this window.")
+        await reauthenticate()
+    }
+
+    /// The account this composer belongs to was signed in again and has a new
+    /// graph: move onto its outbox and pick up where the dead session left off.
+    ///
+    /// Rebinding rather than closing (what install used to do) because the
+    /// window keeps its view-model regardless: a closed session orphaned a
+    /// composer still bound to the SUPERSEDED graph's API client, which only
+    /// worked because that client's provider happens to re-read the Keychain —
+    /// and a scene rebuild then found no session and replaced the half-written
+    /// message with "no longer available".
+    ///
+    /// Nothing about the draft changes: its text, its server draft and its
+    /// ``ComposeDraft/sendAttemptKey`` all live on the draft, not the outbox,
+    /// so a Send after a 401 (which the server never accepted) retries under
+    /// the same identity. The user presses Send again; nothing is resent here.
+    func accountSignedIn(outbox: any Outboxing) {
+        self.outbox = outbox
+        outboxBinding += 1
+        guard !isClosed, !isAccountSignedOut else { return }
+        if requiresSignIn {
+            status = .idle
+            announce("Signed in again. Press Send to send your message.")
+        }
+        // Resume autosave for whatever was typed while it was paused. Not while
+        // a save or send is in flight on the old outbox: that one finishes, and
+        // a second save racing a first-time create through a DIFFERENT outbox
+        // would bypass the per-outbox create dedupe and orphan a server draft.
+        if draft.isDirty, status != .saving, status != .sending { scheduleAutosave() }
+    }
+
+    /// The account this composer belongs to was signed out (or re-auth came back
+    /// as a different user). Stops every timer and upload, and blocks Send for
+    /// good with a reason: the window never sends or saves through an account
+    /// that is gone. The text stays for the user to copy.
+    func accountSignedOut() {
+        stop()
+        isAccountSignedOut = true
+        guard !isClosed else { return }
+        status = .failed(Self.accountSignedOutReason)
     }
 
     /// Debounced: every edit cancels the pending save, so a burst of typing
@@ -420,7 +569,7 @@ final class ComposeViewModel {
     /// Persists the draft if there is anything to persist. Never throws: an
     /// autosave failure is surfaced inline and the text stays in the window.
     func saveNow() async {
-        guard !isClosed, draft.isDirty, !hasInvalidAddresses else { return }
+        guard !isClosed, !isAccountSignedOut, draft.isDirty, !hasInvalidAddresses else { return }
         guard !draft.to.isEmpty || !draft.subject.isEmpty || !draft.body.isEmpty else { return }
         status = .saving
         // The snapshot that goes to the server; the response is MERGED into
@@ -429,6 +578,7 @@ final class ComposeViewModel {
         // and a server that normalises anything (trims a subject, rewrites the
         // body) left the draft dirty again — an autosave loop.
         let sent = draft
+        let binding = outboxBinding
         do {
             let saved = try await outbox.saveDraft(sent)
             draft.adoptServerState(from: saved, sent: sent)
@@ -439,7 +589,7 @@ final class ComposeViewModel {
             if status == .saving { status = .idle }
         } catch {
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
-            status = .failed(error.localizedDescription)
+            fail(error, binding: binding)
         }
     }
 
@@ -507,6 +657,7 @@ final class ComposeViewModel {
         // knowable — and the Drafts folder has to drop the row now rather than
         // show a draft that no longer exists until the next poll.
         let serverDraftID = draft.serverDraft?.id
+        let binding = outboxBinding
         do {
             let receipt = try await outbox.send(draft)
             // ONLY the send identity is taken from the receipt: it carries the
@@ -532,7 +683,7 @@ final class ComposeViewModel {
             // — and the kind is all that is kept.
             record(.sendFailed(kind: UsageOutboxErrorKind(error)))
             if case .sendOnHold(let hold) = error { sendHold = hold }
-            status = .failed(error.localizedDescription)
+            fail(error, binding: binding)
             return false
         }
     }
@@ -543,6 +694,9 @@ final class ComposeViewModel {
         isClosed = true
         record(.composeDiscarded)
         let serverDraftID = draft.serverDraft?.id
+        // A signed-out account's server draft is not ours to delete any more;
+        // closing the window is all "Delete" can mean here.
+        guard !isAccountSignedOut else { return }
         do {
             try await outbox.discard(draft)
         } catch {
@@ -629,6 +783,13 @@ final class ComposeViewModel {
         // ONE filter for every entry point (panel, drop, paste): a directory
         // reaches the outbox as an unreadable file, and a promise-backed or
         // remote URL as nothing at all.
+        // Nothing goes to a server whose account is gone — not even a file.
+        guard !isAccountSignedOut else {
+            for url in staged { AttachmentScratchpad.discard(url) }
+            status = .failed(Self.accountSignedOutReason)
+            announce(Self.accountSignedOutReason)
+            return
+        }
         let files = urls.filter(Self.isAttachableFile)
         if files.isEmpty {
             if !urls.isEmpty { status = .failed("Herald can attach files, not folders.") }
@@ -700,6 +861,7 @@ final class ComposeViewModel {
 
         status = .saving
         let sent = draft
+        let binding = outboxBinding
         do {
             let saved = try await outbox.attach(url, to: sent)
             // Adopted even when this upload was CANCELLED: the bytes reached the
@@ -715,7 +877,7 @@ final class ComposeViewModel {
         } catch {
             logger.warning("Attachment failed: \(error.logCode, privacy: .public)")
             guard !Task.isCancelled else { return }
-            status = .failed(error.localizedDescription)
+            fail(error, binding: binding)
         }
     }
 
@@ -785,14 +947,16 @@ final class ComposeViewModel {
     }
 
     func removeAttachment(_ attachment: DraftAttachment) async {
+        guard !isAccountSignedOut else { return }
         let sent = draft
+        let binding = outboxBinding
         do {
             let saved = try await outbox.removeAttachment(attachment.id, from: sent)
             draft.adoptServerState(from: saved, sent: sent)
             publishDraftState()
         } catch {
             logger.warning("Removing an attachment failed: \(error.logCode, privacy: .public)")
-            status = .failed(error.localizedDescription)
+            fail(error, binding: binding)
         }
     }
 }

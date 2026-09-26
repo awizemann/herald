@@ -14,6 +14,7 @@ actor FakeOutbox: Outboxing {
     private(set) var lastSent: ComposeDraft?
     private(set) var lastSaved: ComposeDraft?
     private var sendError: OutboxError?
+    private var saveError: OutboxError?
     /// Stands in for a server that normalises what it is given.
     private var normalize: (@Sendable (ComposeDraft) -> ComposeDraft)?
 
@@ -23,6 +24,19 @@ actor FakeOutbox: Outboxing {
     private(set) var signatureRequests: [String] = []
 
     func setSendError(_ error: OutboxError?) { sendError = error }
+    func setSaveError(_ error: OutboxError?) { saveError = error }
+
+    /// Parks every `send` until ``releaseSends()`` — a send still in flight
+    /// while something else happens to the composer.
+    private var holdsSends = false
+    private var parkedSends: [CheckedContinuation<Void, Never>] = []
+    var parkedSendCount: Int { parkedSends.count }
+    func holdSends() { holdsSends = true }
+    func releaseSends() {
+        holdsSends = false
+        for parked in parkedSends { parked.resume() }
+        parkedSends = []
+    }
 
     func setSignatures(_ candidates: SignatureCandidates?) { signatures = candidates }
 
@@ -40,6 +54,7 @@ actor FakeOutbox: Outboxing {
     func saveDraft(_ draft: ComposeDraft) async throws(OutboxError) -> ComposeDraft {
         saveCount += 1
         lastSaved = draft
+        if let saveError { throw saveError }
         return normalize?(draft) ?? draft
     }
 
@@ -59,6 +74,7 @@ actor FakeOutbox: Outboxing {
     func send(_ draft: ComposeDraft) async throws(OutboxError) -> SendReceipt {
         sendCount += 1
         lastSent = draft
+        if holdsSends { await withCheckedContinuation { parkedSends.append($0) } }
         if let sendError { throw sendError }
         // The real service rotates the key on success; the fake has to as well,
         // or the view-model test could not tell adoption from doing nothing.

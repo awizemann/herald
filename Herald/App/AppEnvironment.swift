@@ -633,6 +633,12 @@ final class AppEnvironment {
         // Published synchronously, so no second install can slip in and be
         // forgotten.
         let superseded = graphs.updateValue(graph, forKey: account.id)
+        // A re-auth: this account's open composers move onto the new graph NOW,
+        // before any suspension — so they can never be pointed at a graph a
+        // second, overlapping install has already replaced. Rebinding (not
+        // closing) keeps the half-written message and its send key; see
+        // ``rebindComposeSessions(accountID:to:)``.
+        if superseded != nil { rebindComposeSessions(accountID: account.id, to: graph.outbox) }
         // The Settings pane holds the SUPERSEDED graph's service; a re-auth must
         // not leave it talking to a client whose tokens are gone.
         forgetSignatureSettings(accountID: account.id)
@@ -653,11 +659,9 @@ final class AppEnvironment {
         await tokenProvider?.setSessionRejectedHandler { [weak self] accountID in
             await self?.reportSessionExpired(accountID: accountID)
         }
-        if let superseded {
-            // Its composers point at an OutboxService that is about to go away.
-            closeComposeSessions(accountID: account.id)
-            await superseded.stop()
-        }
+        // Its composers were already rebound above; stopping the old graph no
+        // longer strands them.
+        if let superseded { await superseded.stop() }
         guard isCurrent(graph) else { return await graph.stop() }
         await viewModel.start()
         // Seed the cadence from the app's CURRENT activation; the notifications

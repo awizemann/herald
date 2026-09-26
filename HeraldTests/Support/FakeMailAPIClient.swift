@@ -309,8 +309,48 @@ actor FakeMailAPIClient: MailAPIClient {
         fetchedDraftIDs.append(id)
         throw MailAPIError.notFound
     }
-    func createDraft(_ input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
-    func updateDraft(id: String, with input: DraftInput) async throws -> Draft { throw MailAPIError.notFound }
+    // MARK: Compose server (opt-in)
+    //
+    // Off by default, so every suite that never meant to compose still sees the
+    // old 404s. On, drafts and `POST /send` work in memory and are recorded —
+    // what a compose-survival test needs to tell WHICH account graph's client a
+    // composer is really talking to.
+
+    private var composeEnabled = false
+    /// When set, every draft and send route fails with it — a dead session is
+    /// `.unauthorized`.
+    private var composeError: MailAPIError?
+    private(set) var createdDrafts: [DraftInput] = []
+    private(set) var updatedDrafts: [DraftInput] = []
+    private(set) var sentInputs: [SendInput] = []
+    /// Every compose-route call, failed ones included.
+    private(set) var composeRequestCount = 0
+
+    func enableCompose() { composeEnabled = true }
+    func setComposeError(_ error: MailAPIError?) { composeError = error }
+
+    private func composeGate() throws {
+        guard composeEnabled else { throw MailAPIError.notFound }
+        composeRequestCount += 1
+        if let composeError { throw composeError }
+    }
+
+    func createDraft(_ input: DraftInput) async throws -> Draft {
+        try composeGate()
+        createdDrafts.append(input)
+        return Draft(
+            id: "draft-\(createdDrafts.count)", version: 1, updatedAt: MailFixtures.epoch,
+            attachments: [], content: input
+        )
+    }
+    func updateDraft(id: String, with input: DraftInput) async throws -> Draft {
+        try composeGate()
+        updatedDrafts.append(input)
+        return Draft(
+            id: id, version: (input.version ?? 1) + 1, updatedAt: MailFixtures.epoch,
+            attachments: [], content: input
+        )
+    }
     func deleteDraft(id: String) async throws {
         deletedDraftIDs.append(id)
         if let draftDeleteError { throw draftDeleteError }
@@ -334,7 +374,11 @@ actor FakeMailAPIClient: MailAPIClient {
         throw MailAPIError.notFound
     }
     func deleteSignature(id: String) async throws { throw MailAPIError.notFound }
-    func send(_ input: SendInput) async throws -> MessageSummary { throw MailAPIError.notFound }
+    func send(_ input: SendInput) async throws -> MessageSummary {
+        try composeGate()
+        sentInputs.append(input)
+        return MailFixtures.message(id: "sent-\(sentInputs.count)", subject: input.subject)
+    }
     func reply(_ input: ReplyInput) async throws -> MessageSummary { throw MailAPIError.notFound }
     func forward(_ input: ForwardInput) async throws -> MessageSummary { throw MailAPIError.notFound }
 }

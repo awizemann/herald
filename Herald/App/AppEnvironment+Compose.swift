@@ -43,8 +43,15 @@ extension AppEnvironment {
             // would otherwise file the draft in the wrong account's folder.
             // Looked up fresh each time, because a composer can outlive its graph
             // (sign-out with a window open), and the event then belongs to nobody.
+            // After a re-auth that is the NEW graph's view-model.
             guard let mail = self?.graphs[accountID]?.mail else { return }
             Task { await mail.applyDraftCacheEvent(event) }
+        }, reauthenticate: { [weak self] in
+            // The composer's OWN account, never the selected one: a composer
+            // from A whose send 401'd must not sign the user into B.
+            await self?.reauthenticate(accountID: accountID)
+        }, isReauthenticating: { [weak self] in
+            self?.isReauthenticating(accountID: accountID) ?? false
         })
         session.model = model
         composeSessions[id] = session
@@ -67,11 +74,28 @@ extension AppEnvironment {
 
     /// Signing an account out takes its compose windows' view-models with it —
     /// their `OutboxService` is gone, so leaving them alive leaves autosave tasks
-    /// running against a server the app no longer has a token for.
+    /// running against a server the app no longer has a token for. The windows
+    /// themselves keep their (now send-blocked) composer and its text; see
+    /// ``ComposeViewModel/accountSignedOut()``.
     func closeComposeSessions(accountID: Account.ID) {
         for (id, session) in composeSessions where session.accountID == accountID {
-            session.model?.stop()
+            session.model?.accountSignedOut()
             composeSessions[id] = nil
+        }
+    }
+
+    /// Re-authentication installed a NEW graph for this account: its open
+    /// composers move onto that graph's outbox and keep their sessions, so the
+    /// window still resolves to the same composer — with every word in it —
+    /// and a dead-session error clears for the user to press Send again.
+    ///
+    /// Per account: another account's composers are bound to their own graph
+    /// and are never touched. A session whose window has not built its
+    /// view-model yet needs nothing — ``makeComposeViewModel(id:)`` reads the
+    /// current graph's outbox when it does.
+    func rebindComposeSessions(accountID: Account.ID, to outbox: any Outboxing) {
+        for session in composeSessions.values where session.accountID == accountID {
+            session.model?.accountSignedIn(outbox: outbox)
         }
     }
 

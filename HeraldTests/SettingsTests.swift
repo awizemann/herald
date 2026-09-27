@@ -294,6 +294,41 @@ import Testing
         #expect(environment.graphs[a.id] != nil, "A superseded prompt must not act")
         #expect(environment.graphs[b.id] != nil)
     }
+
+    // MARK: - Domain preferences write path
+
+    /// The one write path for per-domain preferences must (a) invalidate every
+    /// reader, (b) drop a hidden domain from the Settings sidebar, and (c)
+    /// narrow what "All domains" lists in the account's view-model. Fails if a
+    /// hide only lands in `UserDefaults` and nothing on screen follows it.
+    @Test func updatingDomainPreferencesRepaintsReadersAndNarrowsAllDomains() async throws {
+        let host = "a.example.com"
+        let (environment, accounts) = try await Self.environment(
+            [host],
+            mailboxes: [host: [
+                Self.mailbox("mb_acme", "sales@acme.co", domainID: "dom_acme"),
+                Self.mailbox("mb_nw", "team@northwind.io", domainID: "dom_nw"),
+            ]]
+        )
+        let id = accounts[0].id
+        let mail = try #require(environment.graphs[id]?.mail)
+        #expect(environment.settingsDomains(accountID: id).map(\.id) == ["dom_acme", "dom_nw"])
+        #expect(mail.mailboxIDs(for: .allDomains) == nil, "Nothing excluded yet: the fast path")
+
+        let invalidated = Mutex(false)
+        withObservationTracking {
+            _ = environment.settingsDomains(accountID: id)
+        } onChange: {
+            invalidated.withLock { $0 = true }
+        }
+        await environment.updateDomainPreferences(accountID: id) { defaults in
+            DomainPreferences.setHidden(true, accountID: id, domainID: "dom_nw", in: defaults)
+        }
+
+        #expect(invalidated.withLock { $0 }, "A reader of the domain list must be told it changed")
+        #expect(environment.settingsDomains(accountID: id).map(\.id) == ["dom_acme"])
+        #expect(mail.mailboxIDs(for: .allDomains) == ["mb_acme"])
+    }
 }
 
 private extension Account {

@@ -436,7 +436,8 @@ final class MailViewModel {
     }
 
     /// Re-reads everything a per-domain preference feeds — the All domains
-    /// listing, every unread count and the Dock badge. The one call a
+    /// listing and its drafts, every unread count and the Dock badge. Reached
+    /// through `AppEnvironment.updateDomainPreferences`, the one call a
     /// Settings/sidebar control makes after writing `DomainPreferences`
     /// (include in All domains, count in badge, hide/restore); notifications
     /// need nothing, they read the preferences per pass. What happens to a
@@ -444,6 +445,7 @@ final class MailViewModel {
     /// (R9), not this reload's.
     func domainPreferencesDidChange() async {
         await reloadConversations()
+        await reloadDrafts()
     }
 
     /// Whether a message's mailbox is inside a resolved scope set.

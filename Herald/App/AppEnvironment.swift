@@ -129,6 +129,11 @@ final class AppEnvironment {
     /// which is what makes a tint read through `UserDefaults` observable: every
     /// avatar drawn from it repaints the moment Settings › Account changes it.
     var accountTintRevision = 0
+    /// Bumped by every per-domain preference write made through
+    /// ``updateDomainPreferences(accountID:_:)``. ``domainPreferencesObserved()``
+    /// reads it, so a sidebar or Settings row drawn from `DomainPreferences`
+    /// repaints the moment a domain is hidden, restored or toggled.
+    var domainPreferencesRevision = 0
     /// The account Settings › Account's "Sign Out…" asked about. Captured when
     /// the dialog opens and never cleared by the answer, so the dialog's title
     /// cannot re-read an emptied value while it animates out, and a Confirm

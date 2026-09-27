@@ -52,7 +52,7 @@ extension AppEnvironment {
         SettingsDomainItem.visible(
             mailboxes: graphs[accountID]?.mail.mailboxes ?? [],
             accountID: accountID,
-            defaults: defaults
+            defaults: domainPreferencesObserved()
         )
     }
 
@@ -98,6 +98,30 @@ extension AppEnvironment {
             defaults.removeObject(forKey: key)
         }
         accountTintRevision &+= 1
+    }
+
+    // MARK: - Domain preferences
+
+    /// The ONE write path for Herald-only per-domain preferences
+    /// (`DomainPreferences`: monogram, includeInAll, countInBadge, notify,
+    /// hidden). `write` receives the defaults the preferences live in; after it
+    /// runs, every observer repaints (``domainPreferencesRevision``), and the
+    /// account's view-model reloads its list, counts and badge — an exclusion
+    /// or a hide changes what "All domains" lists. Views never write
+    /// `DomainPreferences` directly.
+    func updateDomainPreferences(accountID: Account.ID, _ write: (UserDefaults) -> Void) async {
+        write(defaults)
+        domainPreferencesRevision &+= 1
+        await graphs[accountID]?.mail.domainPreferencesDidChange()
+        applyDockBadge()
+    }
+
+    /// Call from any view body (or computed read) that draws from
+    /// `DomainPreferences`, so it re-renders after
+    /// ``updateDomainPreferences(accountID:_:)``. Returns the defaults to read.
+    func domainPreferencesObserved() -> UserDefaults {
+        _ = domainPreferencesRevision
+        return defaults
     }
 
     // MARK: - Sign out (Settings › Account)

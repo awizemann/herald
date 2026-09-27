@@ -7,7 +7,7 @@ source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-09-20
+updated: 2026-09-27
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -70,3 +70,10 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 
 ## Update (2026-09-20 — v0.5.1 shipped)
 - [done] v0.5.1 released (build 11): ⌘N fixed (`CommandGroup(replacing: .newItem)` — the system New Window owned ⌘N and won; New Window dropped because Herald has one shared MailViewModel), Compose button in the toolbar action stack with Archive/Trash and Refresh on its own beside Search (owner's layout call), Reply/Reply All/Forward leading the row context menu acting on the clicked row. Closes Herald #10 #11; #7 #9 closed the same day as fixed in 0.4.0/0.4.1 #release
+
+
+
+## Update (2026-09-27 — release identity gate, U6a/L3, commit 2000b47)
+- [fact] After export, release.sh runs `scripts/verify-release-identity.sh "$APP"` (also runs in --dry-run; runnable by hand on any Herald.app). It fails unless `CFBundleIdentifier` == `com.wizemann.herald`, `CFBundleURLTypes` is exactly ONE entry with name and ONLY scheme `com.wizemann.herald` (the OAuth callback every shipped copy's registered client depends on), and `strings` over EVERY file in `Contents/MacOS` contains none of `HeraldUITest`, `uitest.`, `UITestHarness`, `FakeHQBase`, `com.wizemann.herald.debug`, `com.wizemann.herald.dev`. All of Contents/MacOS because a Debug build keeps its code in `Herald.debug.dylib` beside a stub #release #uitest
+- [fact] The Sparkle entitlement check now pins the exact name `>com.wizemann.herald-spks<` (a Debug-id build would carry `com.wizemann.herald.debug-spks`) #sparkle
+- [fact] Verified 2026-09-27: a local Release build passes the gate; the Debug build fails on the bundle id; a Debug binary with a forged release Info.plist fails on `HeraldUITest` #verified

@@ -5,10 +5,10 @@ permalink: hqbase-mac/operations/standards-audit-2026-08-18
 tags: [audit, standards]
 source_paths: [Herald/Design/MailTheme.swift, Herald/Views/ConversationListView.swift, HeraldKit/Sources/HeraldKit/Sync/MailStore.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/Sync/MailStoreContainer.swift]
 source_paths_inferred: false
-source_sha: 4bd3bd4711d71c167135f7abec683bff2693f91a
+source_sha: a82a8d7cce5a32c719d4a94f4f07bc68fc504033
 created: 2026-08-18
 updated: 2026-08-18
-reviewed: 2026-09-19
+reviewed: 2026-09-20
 reviewed_by: audit:claude-code (background)
 ---
 

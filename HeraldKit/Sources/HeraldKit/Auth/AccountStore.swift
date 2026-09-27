@@ -63,6 +63,13 @@ public nonisolated protocol AccountStore: Sendable {
     func oauthConfiguration(for origin: URL) throws -> OAuthConfiguration?
     /// `nil` forgets it.
     func setOAuthConfiguration(_ configuration: OAuthConfiguration?, for origin: URL) throws
+
+    /// Whether the stored index is DAMAGED — bytes that are not JSON at all —
+    /// which ``accounts()`` answers as "no accounts". Lets the launch say why
+    /// the accounts are gone instead of opening onboarding without a word.
+    /// Reads only; the next write still sets the bytes aside (see
+    /// ``accounts()``).
+    func accountIndexIsDamaged() throws -> Bool
 }
 
 nonisolated extension AccountStore {
@@ -75,6 +82,9 @@ nonisolated extension AccountStore {
     /// Keychain store overrides it.
     public func oauthConfiguration(for origin: URL) throws -> OAuthConfiguration? { nil }
     public func setOAuthConfiguration(_ configuration: OAuthConfiguration?, for origin: URL) throws {}
+
+    /// Default: nothing to be damaged. The Keychain store overrides it.
+    public func accountIndexIsDamaged() throws -> Bool { false }
 }
 
 /// Failures of the account index itself (per-item Keychain failures stay
@@ -139,6 +149,13 @@ public nonisolated final class KeychainAccountStore: AccountStore {
             case .entries(let entries):
                 return entries.compactMap(\.account)
             }
+        }
+    }
+
+    public func accountIndexIsDamaged() throws -> Bool {
+        try lock.withLock {
+            if case .corrupt = try loadIndex() { return true }
+            return false
         }
     }
 

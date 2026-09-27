@@ -106,6 +106,12 @@ public final class AuthCoordinator {
         try await offMain { [store] in try store.accounts() }
     }
 
+    /// Whether the stored account list is damaged (not JSON) — which
+    /// ``loadAccounts()`` answers as "no accounts". `false` when it cannot tell.
+    public func accountIndexIsDamaged() async -> Bool {
+        (try? await offMain { [store] in try store.accountIndexIsDamaged() }) ?? false
+    }
+
     /// discovery → registration (reused when this origin already has a `client_id`)
     /// → PKCE → web authorization → code exchange → persist.
     ///

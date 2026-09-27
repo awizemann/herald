@@ -53,7 +53,9 @@ public nonisolated struct SessionDeath: Sendable {
 
     /// Whether this death is still about the grant the store holds now: false
     /// once the store holds a DIFFERENT grant (a re-auth landed — here, in
-    /// another graph, or in another process). An empty store is still dead.
+    /// another graph, or in another process). An empty store is still dead,
+    /// and so is a grant the reporting provider rotated the dead one into by
+    /// its own refresh (the same session, one rotation on — P9b).
     public func isCurrent() async -> Bool {
         await provider.isStillDead(grant: grant)
     }
@@ -84,7 +86,22 @@ public actor AccountTokenProvider: BearerTokenProvider {
     public nonisolated let refreshLeeway: TimeInterval
 
     /// Shared by every caller that arrives while a refresh is in flight.
-    private var refreshTask: Task<OAuthTokens, any Error>?
+    private var refreshTask: Task<RefreshResult, any Error>?
+
+    /// What a refresh produced, and whether THIS provider minted it (spent the
+    /// refresh token at the token endpoint) rather than adopting a grant that
+    /// was already in the store.
+    private typealias RefreshResult = (tokens: OAuthTokens, mintedHere: Bool)
+
+    /// Grants this provider rotated by itself: old grant key → the key it was
+    /// rotated to. What lets ``SessionDeath/isCurrent()`` tell this process's
+    /// own refresh (the SAME dead session, one rotation on) from another
+    /// process signing in again: HQBase rotates the refresh token on every
+    /// use, so "the store holds a different grant" alone is also true after a
+    /// refresh that fixed nothing (a bare 401 is never latched and keeps
+    /// refreshing). Bounded to the most recent ``maxLineage`` rotations.
+    private var rotations: [(from: String, to: String)] = []
+    private static let maxLineage = 32
 
     /// One retry, only for transport/5xx — and only after re-reading the store.
     private static let maxRefreshAttempts = 2
@@ -278,6 +295,26 @@ public actor AccountTokenProvider: BearerTokenProvider {
         await handler(SessionDeath(accountID: accountID, grant: grant, provider: self))
     }
 
+    /// A ``SessionDeath`` for whatever grant the store holds RIGHT NOW, for a
+    /// death this provider did not detect itself — a bare 401 the sync loop or
+    /// the socket escalated without the `invalid_token` challenge that latches.
+    /// Nothing is latched or announced: it only lets the app ask later, through
+    /// ``SessionDeath/isCurrent()``, whether the store has since moved on to a
+    /// different grant (another process signed in again).
+    ///
+    /// `nil` when the store cannot be read: a marker recorded as "no grant"
+    /// would make any grant read later look like a recovery.
+    public func deathOfStoredGrant() -> SessionDeath? {
+        let stored: OAuthTokens?
+        do {
+            stored = try store.tokens(for: accountID)
+        } catch {
+            logger.error("token store unreadable for \(self.accountID, privacy: .public); no grant marker")
+            return nil
+        }
+        return SessionDeath(accountID: accountID, grant: stored.map(Self.grantKey), provider: self)
+    }
+
     /// Backs ``SessionDeath/isCurrent()``: whether the death of `grant` (`nil`:
     /// the empty store) is still about what the store holds.
     ///
@@ -294,7 +331,24 @@ public actor AccountTokenProvider: BearerTokenProvider {
             return true
         }
         guard let stored else { return true }
-        return Self.grantKey(stored) == grant
+        let storedKey = Self.grantKey(stored)
+        // The dead grant itself, or one THIS provider rotated it into: its own
+        // refresh is not a recovery (see ``rotations``).
+        var key = grant
+        for _ in 0...Self.maxLineage {
+            guard let current = key else { return false }
+            if current == storedKey { return true }
+            key = rotations.last { $0.from == current }?.to
+        }
+        return false
+    }
+
+    /// Records a rotation this provider minted, for ``isStillDead(grant:)``.
+    private func recordRotation(from old: OAuthTokens, to new: OAuthTokens) {
+        let from = Self.grantKey(old), to = Self.grantKey(new)
+        guard from != to else { return }
+        rotations.append((from, to))
+        if rotations.count > Self.maxLineage { rotations.removeFirst(rotations.count - Self.maxLineage) }
     }
 
     /// Forgets the announced death once the store holds a DIFFERENT grant (a
@@ -334,7 +388,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
     private func refreshTokens(replacing stale: OAuthTokens?) async throws -> OAuthTokens {
         if let refreshTask {
             do {
-                return try await refreshTask.value
+                return try await refreshTask.value.tokens
             } catch is TerminalRefusal {
                 // A joiner: the caller that started the refresh latches and
                 // announces; this one just gets the public error.
@@ -350,14 +404,16 @@ public actor AccountTokenProvider: BearerTokenProvider {
             throw OAuthError.missingRefreshToken
         }
 
-        let task = Task<OAuthTokens, any Error> { [self] in
+        let task = Task<RefreshResult, any Error> { [self] in
             try await performRefresh(replacing: stale)
         }
         refreshTask = task
 
         defer { refreshTask = nil }
         do {
-            return try await task.value
+            let result = try await task.value
+            if result.mintedHere { recordRotation(from: stale, to: result.tokens) }
+            return result.tokens
         } catch OAuthError.reauthenticationRequired {
             // `performRefresh` throws this for an `invalid_grant` that was NOT
             // the echo of somebody else's rotation — the refresh token it spent
@@ -403,7 +459,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// The refresh body. `nonisolated` so it runs inside the shared `Task` without
     /// re-entering the actor on every step — everything it touches is an immutable
     /// `Sendable` `let`, and the store is its own synchronization point.
-    private nonisolated func performRefresh(replacing stale: OAuthTokens) async throws -> OAuthTokens {
+    private nonisolated func performRefresh(replacing stale: OAuthTokens) async throws -> RefreshResult {
         let sending = stale
         var transportFailures = 0
         var supersededRetries = 0
@@ -415,7 +471,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
             // the refresh rather than be retried into spending the grant blind.
             if let rotated = try rotatedTokens(past: sending) {
                 logger.warning("adopting externally rotated tokens for \(self.accountID, privacy: .public); refresh skipped")
-                return rotated
+                return (rotated, false)
             }
             guard let refreshToken = sending.refreshToken else {
                 logger.warning("no refresh token for account \(self.accountID, privacy: .public)")
@@ -439,9 +495,9 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // we just minted. The failure is still logged by `currentTokens`.
                 if let newer = try? rotatedTokens(past: fresh) {
                     logger.warning("newer tokens landed for \(self.accountID, privacy: .public); adopting them over ours")
-                    return newer
+                    return (newer, false)
                 }
-                return fresh
+                return (fresh, true)
             } catch OAuthError.unknownAccount {
                 // The origin was signed out since this provider was built (the
                 // coordinator's sign-out generation refused to resolve its
@@ -468,7 +524,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // acting on a guess strands the other process too.
                 if let rotated = try tokens(replacing: refreshToken) {
                     logger.warning("refresh refusal for \(self.accountID, privacy: .public) was about a superseded grant; adopting the stored tokens")
-                    return rotated
+                    return (rotated, false)
                 }
                 // Same grant, but was it sent as the account's CURRENT client? A
                 // re-registration landed while we were in flight (or between our

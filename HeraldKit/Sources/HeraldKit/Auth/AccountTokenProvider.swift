@@ -500,7 +500,23 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // have written a NEW grant; an unconditional write would land
                 // after it and put the old, possibly dead, family back — the
                 // account re-latching the moment the user signed in.
-                guard try store.setTokens(fresh, for: accountID, ifRefreshTokenIs: refreshToken) else {
+                //
+                // Its OWN do/catch (audit F1): the token endpoint has already
+                // answered 200, so `refreshToken` is SPENT — HQBase rotated it.
+                // A store error here must never reach the generic catch below,
+                // which would call it transport and loop back to spend that
+                // token again: a replay of a rotated token invalidates the whole
+                // family (logout). Serve `fresh` for this request without
+                // persisting it, like ``adoptingStoredTokens(overDiscarded:)``'s
+                // unreadable-store case, and let the next call re-read the store.
+                let persisted: Bool
+                do {
+                    persisted = try store.setTokens(fresh, for: accountID, ifRefreshTokenIs: refreshToken)
+                } catch {
+                    logger.error("could not persist refreshed tokens for \(self.accountID, privacy: .public); using them once without persisting")
+                    return (fresh, false)
+                }
+                guard persisted else {
                     return adoptingStoredTokens(overDiscarded: fresh)
                 }
                 // Ours landed. Now the other order: a process that rotated OUR

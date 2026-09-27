@@ -111,6 +111,28 @@ import Testing
         #expect(try keychain.store.tokens(for: Self.accountID) == signedIn)
     }
 
+    /// Audit F1: a Keychain error on the compare-and-set AFTER the token
+    /// endpoint answered 200. The refresh token is spent (rotated server-side);
+    /// the store error must not be treated as transport and looped back into a
+    /// second refresh with that token — a replay kills the family. Fails if the
+    /// write error reaches the retry loop: `RotatingRefresher` sees a second
+    /// request (the rotated `old-refresh`, answered `invalid_grant`) and the
+    /// caller is told to re-authenticate instead of getting `access-1`.
+    @Test("a store error after a successful refresh never spends the token again")
+    func aStoreErrorAfterA200DoesNotRespend() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(Self.grant("old", expiresIn: -10), for: Self.accountID)
+        let store = FailingWriteStore(keychain.store, failingCompareAndSets: 1)
+        let refresher = RotatingRefresher()
+        let provider = AccountTokenProvider(accountID: Self.accountID, store: store, refresher: refresher)
+
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(refresher.sentTokens == ["old-refresh"], "the spent refresh token was sent again")
+        #expect(store.failedCompareAndSets == 1, "the write failure was not staged")
+        // Not persisted: the store still holds the grant it held before.
+        #expect(try keychain.store.tokens(for: Self.accountID)?.refreshToken == "old-refresh")
+    }
+
     /// The Keychain store's compare-and-set is atomic with its plain writes: a
     /// sign-in's write issued between the compare's read and its write waits
     /// for the lock and lands AFTER it. Fails if `setTokens` bypasses the lock
@@ -197,4 +219,43 @@ private nonisolated final class ParkingSecretStore: SecretStore, @unchecked Send
 
     func set(_ data: Data, for key: String) throws { try base.set(data, for: key) }
     func removeValue(for key: String) throws { try base.removeValue(for: key) }
+}
+
+/// Passes everything through to `base`, except that the first
+/// `failingCompareAndSets` compare-and-set writes throw WITHOUT writing — a
+/// Keychain write failure (`errSecInteractionNotAllowed`, a locked keychain).
+private nonisolated final class FailingWriteStore: AccountStore, @unchecked Sendable {
+    struct WriteFailure: Error {}
+
+    private let base: any AccountStore
+    private let lock = NSLock()
+    private var remaining: Int
+    private var failed = 0
+
+    init(_ base: any AccountStore, failingCompareAndSets: Int) {
+        self.base = base
+        self.remaining = failingCompareAndSets
+    }
+
+    var failedCompareAndSets: Int { lock.withLock { failed } }
+
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        let shouldFail = lock.withLock { () -> Bool in
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            failed += 1
+            return true
+        }
+        if shouldFail { throw WriteFailure() }
+        return try base.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
+    }
+
+    func tokens(for accountID: Account.ID) throws -> OAuthTokens? { try base.tokens(for: accountID) }
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws { try base.setTokens(tokens, for: accountID) }
+    func accounts() throws -> [Account] { try base.accounts() }
+    func add(_ account: Account) throws { try base.add(account) }
+    func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
+    func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
+    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }

@@ -10,6 +10,12 @@ first, then cut the release.
 
 ## [Unreleased]
 
+### Fixed
+- **A Keychain write failure right after a token refresh no longer signs the account out.** If
+  saving the refreshed tokens failed, Herald treated it like a network error and refreshed again
+  with the token it had just used up, which HQBase answers by ending the whole session. The
+  refreshed token is now used for that request and the refresh is never repeated.
+
 ## [0.5.1] - 2026-09-20
 
 ### Fixed

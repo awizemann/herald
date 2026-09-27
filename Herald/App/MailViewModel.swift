@@ -123,7 +123,11 @@ final class MailViewModel {
     private let markReadDelay: Duration
     /// Where per-mailbox colour overrides and the alert switches live. Injected
     /// so a test drives a throwaway suite instead of the user's real preferences.
-    private let defaults: UserDefaults
+    /// Internal, like ``store``/``actions``, so a view can resolve a
+    /// Herald-only preference (the reading pane's domain badge reads
+    /// `DomainPreferences`/`AccountTintAssignment` through it) without this
+    /// type growing new stored state of its own — see ``DomainBadgeResolver``.
+    let defaults: UserDefaults
     /// Posts new-mail banners for this account. `nil` in tests that are not about
     /// notifications, and in any build where the user turned them off.
     private let notifier: NewMailNotifier?

@@ -150,37 +150,45 @@ struct MailWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        // One ACTION stack — Compose, Archive, Trash — and Refresh on its own
-        // beside the search field (owner's layout call, 2026-09-20). Compose sits
-        // with the triage buttons rather than in the leading `.navigation` slot
-        // over the list, so every button that does something to mail is in one
-        // place and the two "housekeeping" controls (Refresh, Search) sit apart.
+        // Redesign R6 (handoff §3.1 "Reading pane" toolbar): reply, reply all,
+        // forward | archive, trash, labels | refresh, then the primary New
+        // button trailing. This replaces the reading pane's own header row of
+        // buttons (Reply, the label menu, triage) — they all moved here, one
+        // unified toolbar for every action that touches the selected message —
+        // and reorders Compose from leading to trailing as the accent-filled
+        // primary action. Every button keeps its existing action, disabled rule
+        // and (where it had one) accessibility id; only order/grouping/styling
+        // changed.
         //
-        // No keyboard shortcut on Compose: ⌘N belongs to the File menu's
-        // "New Message", and two owners of one shortcut is the bug #10 fixed.
+        // No keyboard shortcuts on any of these: Reply/Reply All/Forward and
+        // Archive/Trash already live on the Message menu (`MailCommands`), and
+        // a second owner of the same key on the toolbar is exactly the ⌘N bug
+        // (#10) `CommandGroup(replacing: .newItem)` fixed. Labels has never had
+        // one. Mail's muscle-memory `e` lives on the conversation list, scoped
+        // to that list's focus — a toolbar shortcut was window-global and typing
+        // "e" into the search field archived a thread.
         ToolbarItemGroup {
-            Button { model.requestCompose(.new) } label: {
-                Image(systemName: "square.and.pencil")
-                    .iconButtonStyle("New Message")
-            }
-            .accessibilityIdentifier(AccessibilityID.Toolbar.compose)
-
-            // No keyboard shortcuts on these: Mail's muscle-memory `e` lives on
-            // the conversation list, where it is scoped to that list's focus. As
-            // a toolbar shortcut it was window-global and typing "e" into the
-            // search field archived a thread.
-            TriageButtons(model: model)
+            ReplyForwardButtons(model: model)
         }
 
-        // Its own item, so it renders as a separate group between the action
-        // stack and the search field. No shortcut here: ⌘⇧K belongs to the File
-        // menu's "Get New Mail".
+        ToolbarItemGroup {
+            TriageButtons(model: model)
+            MessageLabelMenu(model: model)
+        }
+
+        // Its own item, so it renders as a separate group before the primary
+        // action. No shortcut here: ⌘⇧K belongs to the File menu's
+        // "Get New Mail".
         ToolbarItem {
             Button { Task { await model.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
                     .iconButtonStyle("Refresh")
             }
             .accessibilityIdentifier(AccessibilityID.Toolbar.refresh)
+        }
+
+        ToolbarItem {
+            NewMessageButton { model.requestCompose(.new) }
         }
     }
 
@@ -385,5 +393,31 @@ struct BannerView<Actions: View>: View {
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifiers?.container ?? "")
+    }
+}
+
+/// The toolbar's primary action (handoff §3.1 — "reply … | archive, trash,
+/// labels … | refresh, then primary New"): accent fill, `onAccent` text, the
+/// one button in the toolbar that isn't a plain icon. Keeps Compose's existing
+/// accessibility id — only its position (now trailing) and styling changed.
+private struct NewMessageButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: MailTheme.Spacing.xs) {
+                Image(systemName: "square.and.pencil")
+                Text("New")
+            }
+            .textStyle(MailTheme.Typography.bodyMedium)
+            .foregroundStyle(MailTheme.Color.onAccent)
+            .padding(.horizontal, MailTheme.Spacing.md)
+            .frame(height: MailTheme.hitTarget)
+            .background(MailTheme.Color.accent, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+        }
+        .buttonStyle(.plain)
+        .help("New Message")
+        .accessibilityLabel("New Message")
+        .accessibilityIdentifier(AccessibilityID.Toolbar.compose)
     }
 }

@@ -8,62 +8,155 @@ import SwiftUI
 /// The in-pane list of every message in the thread is gone — picking a message
 /// is the middle column's job now (see `ThreadMessageListView`), and keeping a
 /// second copy here both duplicated the control and stole ~160pt from the body.
+///
+/// Redesign R6: the old two-header layout (a thread-subject bar carrying the
+/// reply/label/triage buttons, then a second header for the message itself) is
+/// one merged header now — "Message N of M", the subject, then the sender
+/// block — and every one of those buttons moved to the window toolbar
+/// (`RootView.toolbar`), in the design's order. This view stays a pure
+/// presenter of `MailViewModel`'s existing thread/selection state; it adds no
+/// state of its own.
 struct ReadingPaneView: View {
     @Bindable var model: MailViewModel
 
     var body: some View {
         Group {
             if model.selectedThreadID == nil {
-                ContentUnavailableView("No Message Selected", systemImage: "envelope.open")
+                ReadingPaneEmptyState()
             } else {
                 content
             }
         }
         .frame(minWidth: 360)
+        .background(MailTheme.Color.surface)
     }
 
     private var content: some View {
         VStack(spacing: 0) {
-            // Only the subject goes in: the header used to take the whole
-            // view-model and so re-rendered on every unrelated change to it.
-            ThreadHeader(model: model, subject: model.selectedConversation?.latest.subject ?? "")
-            // One header for the message being read, then the body. Siblings,
-            // never `.id()`-reset: the web view is reused and only reloads when
-            // its rendered body changes.
-            if let message = model.selectedMessage {
-                Divider()
-                SelectedMessageHeader(message: message, labels: model.selectedMessageLabels)
-            }
-            Divider()
+            // The subject is available as soon as a thread is selected (it
+            // comes off the conversation row); the sender block below it needs
+            // the individual MESSAGE, which loads a moment later. Showing the
+            // subject alone during that gap — rather than nothing at all — is
+            // the same reasoning the pre-redesign code split ThreadHeader from
+            // SelectedMessageHeader for. Siblings, never `.id()`-reset: the web
+            // view is reused and only reloads when its rendered body changes.
+            SelectedMessageHeader(
+                message: model.selectedMessage,
+                subject: model.selectedConversation?.latest.subject ?? "",
+                position: ReadingPaneMessagePosition.resolve(
+                    threadMessages: model.threadMessages,
+                    selectedMessageID: model.selectedMessageID,
+                    isShowingThread: model.isShowingThread
+                ),
+                labels: model.selectedMessageLabels,
+                mailboxAddress: model.selectedMessage.map {
+                    ReadingPaneMailboxAddress.resolve(
+                        for: $0, mailboxes: model.mailboxes, accountID: model.accountID, in: model.defaults
+                    )
+                }
+            )
+            Rectangle()
+                .fill(MailTheme.Color.lineSoft)
+                .frame(height: 1)
+                .padding(.horizontal, Self.horizontalPadding)
+                .padding(.top, MailTheme.Spacing.xl)
             MessageBodySection(model: model)
         }
     }
+
+    /// The handoff's reading-pane edge inset (§3.1 "padding 32 44") — 44 is off
+    /// the 4pt spacing grid (the scale tops out at `xxxl` 32), so this stays a
+    /// named literal here rather than forcing a token that doesn't exist.
+    fileprivate static let horizontalPadding: CGFloat = 44
 }
 
-private struct ThreadHeader: View {
-    @Bindable var model: MailViewModel
-    let subject: String
-
+/// "Nothing selected" — the handoff's empty state (§3.1; icon map "Empty:
+/// nothing selected / no results" → `envelope.open`).
+private struct ReadingPaneEmptyState: View {
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(subject.isEmpty ? "(No subject)" : subject)
-                .font(.title3.weight(.semibold))
-                .lineLimit(2)
-            Spacer()
-            Button { model.requestCompose(.reply) } label: {
-                Image(systemName: "arrowshape.turn.up.left")
-                    .iconButtonStyle("Reply")
-            }
-            .buttonStyle(.plain)
-            MessageLabelMenu(model: model)
-            // Same rule as the toolbar's, from the same place: in the Trash this
-            // header used to offer an Archive that the server ignored and a
-            // Move to Trash that did nothing (issue #8).
-            TriageButtons(model: model)
-                .buttonStyle(.plain)
+        VStack(spacing: MailTheme.Spacing.sm) {
+            Image(systemName: "envelope.open")
+                .font(MailTheme.Typography.largeGlyph)
+                .foregroundStyle(MailTheme.Color.ink3)
+            Text("Nothing selected")
+                .textStyle(MailTheme.Typography.threadTitle)
+                .foregroundStyle(MailTheme.Color.ink)
         }
-        .padding(.horizontal, MailTheme.Spacing.lg)
-        .padding(.vertical, MailTheme.Spacing.md)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Nothing selected")
+    }
+}
+
+/// Pure derivation of the reading pane's "Message N of M" line (handoff §3.1
+/// "Thread view" — "The reading pane shows 'Message N of M' (N counts
+/// oldest-first)"). Read-only over `MailViewModel`'s existing thread state
+/// (`threadMessages` is already newest-first — see `MailViewModel.loadThread`),
+/// so this never duplicates or reorders it.
+///
+/// `nil` whenever the pane is not showing a drilled-in thread at all — a
+/// single-message conversation never enters `isShowingThread`, and the design
+/// only shows the counter "when the message is part of a drilled-in thread".
+nonisolated enum ReadingPaneMessagePosition {
+    static func resolve(
+        threadMessages: [MessageSummary],
+        selectedMessageID: String?,
+        isShowingThread: Bool
+    ) -> (position: Int, total: Int)? {
+        guard isShowingThread, let selectedMessageID,
+              let newestFirstIndex = threadMessages.firstIndex(where: { $0.id == selectedMessageID })
+        else { return nil }
+        let total = threadMessages.count
+        // `threadMessages` is newest-first (index 0 = newest = "M of M"), so the
+        // oldest-first position is the count minus the newest-first index.
+        return (position: total - newestFirstIndex, total: total)
+    }
+
+    static func label(_ value: (position: Int, total: Int)?) -> String? {
+        guard let value else { return nil }
+        return "Message \(value.position) of \(value.total)"
+    }
+}
+
+/// Pure derivation of the reading pane's sender-block address chip: which
+/// mailbox a message belongs to, with the domain badge that goes on it
+/// (handoff §3.1 — "a 'To [badge] address' chip", "'From' for Drafts and
+/// Sent"). Distinct from `message.to` (the recipient list): the chip names the
+/// MAILBOX the message lives in, the same fact a conversation row's
+/// `MailboxChip` shows in the all-mailboxes scope, not who else was copied.
+nonisolated enum ReadingPaneMailboxAddress {
+    struct Info: Equatable {
+        let word: String
+        let address: String
+        let badge: DomainBadgeResolver.Info?
+    }
+
+    /// Drafts and Sent show "From" (it's the sending mailbox); everything else
+    /// shows "To" (the receiving one). Pure and static so the rule is
+    /// assertable without a rendered header.
+    static func word(for folder: MailFolder) -> String {
+        folder == .sent || folder == .drafts ? "From" : "To"
+    }
+
+    static func resolve(
+        for message: MessageSummary,
+        mailboxes: [Mailbox],
+        accountID: String,
+        in defaults: UserDefaults
+    ) -> Info {
+        let word = word(for: message.folder)
+        // `mailboxID` is nil only for a catch-all message sync hasn't assigned
+        // to a mailbox yet (see `MessageSummary.mailboxID`'s doc comment) — rare,
+        // but it must still read as something rather than crash the lookup.
+        guard let mailboxID = message.mailboxID,
+              let mailbox = mailboxes.first(where: { $0.id == mailboxID })
+        else {
+            return Info(word: word, address: "No mailbox", badge: nil)
+        }
+        let badge = DomainBadgeResolver.resolve(
+            mailboxID: mailboxID, mailboxes: mailboxes, accountID: accountID, in: defaults
+        )
+        return Info(word: word, address: mailbox.address, badge: badge)
     }
 }
 
@@ -74,7 +167,10 @@ private struct ThreadHeader: View {
 /// so the control beside them has to change the same thing they show. The server
 /// keeps both — `PUT /messages/{id}/labels/{labelId}` and its conversation
 /// sibling, which fans the change out over every accessible message of the thread.
-private struct MessageLabelMenu: View {
+///
+/// Internal (not `private`): the window toolbar now hosts this menu too
+/// (`RootView.toolbar`, handoff order "…archive, trash, labels…").
+struct MessageLabelMenu: View {
     @Bindable var model: MailViewModel
 
     var body: some View {
@@ -106,51 +202,132 @@ private struct MessageLabelMenu: View {
     }
 }
 
-/// Who the message being read is from and to. Static: picking WHICH message is
-/// the middle column's job, so this is a header, not a control.
+/// Who the message being read is from and to, the subject and — inside a
+/// drilled-in thread — "Message N of M". Static: picking WHICH message is the
+/// middle column's job, so this is a header, not a control (every action that
+/// used to live here now lives in the window toolbar).
+///
+/// `message` is `nil` for the moment between picking a thread and its message
+/// loading (`MailViewModel.loadThread` is async): the subject still draws from
+/// the conversation row, so the pane shows something immediately rather than
+/// going blank, and the sender block — which needs the individual message —
+/// fades in a beat later.
 private struct SelectedMessageHeader: View {
-    let message: MessageSummary
+    let message: MessageSummary?
+    let subject: String
+    let position: (position: Int, total: Int)?
     /// The labels on THIS message — not on its thread. The two differ: a
     /// conversation carries the union across its messages, and the reading pane
     /// is showing exactly one of them.
     var labels: [MailLabel] = []
+    let mailboxAddress: ReadingPaneMailboxAddress.Info?
 
     /// Hoisted: building a `Date.FormatStyle` per render is pure waste.
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
+    /// The 36pt neutral initials avatar (handoff §3.1). Unlike a thread row's
+    /// own-message avatar (R5), this one is never account-tinted — it draws
+    /// whoever sent THIS message, not "was this me".
+    private func initials(for message: MessageSummary) -> String {
+        let letters = message.fromAddress
+            .split(separator: "@").first
+            .map(String.init) ?? message.fromAddress
+        return String(letters.prefix(2)).uppercased()
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
-            // Unread is a dot AND the bold weight below: never colour alone.
-            Circle()
-                .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
-                .padding(.top, MailTheme.Spacing.xs)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                Text(message.fromAddress)
-                    .font(.subheadline)
-                    .fontWeight(message.isUnread ? .bold : .semibold)
-                Text("To: \(message.to.joined(separator: ", "))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                // Every label, not the list's first three: there is room here and
-                // this is where the reader asks "what is this filed under".
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xl) {
+            if let position {
+                Text(ReadingPaneMessagePosition.label(position) ?? "")
+                    .textStyle(MailTheme.Typography.meta)
+                    .foregroundStyle(MailTheme.Color.ink3)
+                    .accessibilityHidden(true)
+            }
+            Text(subject.isEmpty ? "(No subject)" : subject)
+                .textStyle(MailTheme.Typography.title)
+                .foregroundStyle(MailTheme.Color.ink)
+                .lineLimit(2)
+            if let message, let mailboxAddress {
+                HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
+                    // Unread is a dot on the sender's name AND the bold weight
+                    // below: never colour alone.
+                    ZStack {
+                        Circle().fill(MailTheme.Color.lineSoft)
+                        Text(initials(for: message))
+                            .textStyle(MailTheme.Typography.headline)
+                            .foregroundStyle(MailTheme.Color.ink2)
+                    }
+                    .frame(width: 36, height: 36)
+                    .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                        HStack(spacing: MailTheme.Spacing.xs) {
+                            Circle()
+                                .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
+                                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+                                .accessibilityHidden(true)
+                            Text(message.fromAddress)
+                                .textStyle(MailTheme.Typography.headline)
+                                .foregroundStyle(MailTheme.Color.ink)
+                        }
+                        AddressChip(info: mailboxAddress)
+                    }
+                    Spacer()
+                    Text(message.displayDate, format: Self.dateFormat)
+                        .textStyle(MailTheme.Typography.meta)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                }
+                // Every label, not the list's first three: there is room here
+                // and this is where the reader asks "what is this filed under".
                 LabelChipRow(labels: labels, limit: labels.count)
             }
-            Spacer()
-            Text(message.displayDate, format: Self.dateFormat)
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, MailTheme.Spacing.lg)
-        .padding(.vertical, MailTheme.Spacing.sm)
+        .padding(.horizontal, ReadingPaneView.horizontalPadding)
+        .padding(.top, MailTheme.Spacing.xxxl)
         .accessibilityElement(children: .combine)
         .accessibilityValue(
-            [message.isUnread ? "Unread" : nil, LabelChipRow.accessibilityPhrase(for: labels)]
-                .compactMap { $0 }
-                .joined(separator: ", ")
+            [
+                ReadingPaneMessagePosition.label(position),
+                message?.isUnread == true ? "Unread" : nil,
+                mailboxAddress.map { "\($0.word) \($0.address)" },
+                LabelChipRow.accessibilityPhrase(for: labels),
+            ]
+            .compactMap { $0 }
+            .joined(separator: ", ")
         )
+    }
+}
+
+/// The "To [badge] address" / "From [badge] address" chip (handoff §3.1).
+private struct AddressChip: View {
+    let info: ReadingPaneMailboxAddress.Info
+
+    var body: some View {
+        HStack(spacing: MailTheme.Spacing.xs) {
+            Text(info.word)
+                .textStyle(MailTheme.Typography.snippet)
+                .foregroundStyle(MailTheme.Color.ink2)
+            HStack(spacing: MailTheme.Spacing.xs) {
+                if let badge = info.badge, let tint = MailTheme.accountTint(named: badge.tintName) {
+                    DomainBadge(monogram: badge.monogram, tint: tint, size: .row)
+                }
+                Text(info.address)
+                    .textStyle(MailTheme.Typography.snippet)
+                    .foregroundStyle(MailTheme.Color.ink)
+                    .lineLimit(1)
+            }
+            .padding(.leading, info.badge == nil ? MailTheme.Spacing.sm : MailTheme.Spacing.xxs)
+            .padding(.trailing, MailTheme.Spacing.sm)
+            .padding(.vertical, MailTheme.Spacing.xxs)
+            .background(chipTint.opacity(MailTheme.Wash.chipFill), in: Capsule())
+            .overlay(Capsule().strokeBorder(chipTint.opacity(MailTheme.Wash.chipBorder)))
+        }
+        // The chip is decorative next to the header's own combined
+        // accessibility value (`SelectedMessageHeader.accessibilityValue`).
+        .accessibilityHidden(true)
+    }
+
+    private var chipTint: Color {
+        info.badge.flatMap { MailTheme.accountTint(named: $0.tintName) }?.solid ?? MailTheme.Color.line
     }
 }
 

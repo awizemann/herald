@@ -44,3 +44,35 @@ struct TriageButtons: View {
         }
     }
 }
+
+/// Reply / Reply All / Forward, in the window toolbar (redesign R6, handoff
+/// §3.1 order: "reply, reply all, forward | archive, trash, labels | refresh").
+///
+/// No shortcuts here: ⌘R / ⇧⌘R / ⇧⌘F already live on the Message menu
+/// (`MailCommands`), and a second owner of the same key on the toolbar is
+/// exactly the ⌘N bug (#10) that `CommandGroup(replacing: .newItem)` fixed.
+/// Disabled by the same rule as the Message menu's `hasMessage` — a message,
+/// not just a thread, must be selected (matches `MailCommands.hasMessage`).
+struct ReplyForwardButtons: View {
+    let model: MailViewModel
+
+    var body: some View {
+        Button { model.requestCompose(.reply) } label: {
+            Image(systemName: "arrowshape.turn.up.left")
+                .iconButtonStyle("Reply")
+        }
+        .disabled(model.selectedMessageID == nil)
+
+        Button { model.requestCompose(.replyAll) } label: {
+            Image(systemName: "arrowshape.turn.up.left.2")
+                .iconButtonStyle("Reply All")
+        }
+        .disabled(model.selectedMessageID == nil)
+
+        Button { model.requestCompose(.forward) } label: {
+            Image(systemName: "arrowshape.turn.up.right")
+                .iconButtonStyle("Forward")
+        }
+        .disabled(model.selectedMessageID == nil)
+    }
+}

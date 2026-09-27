@@ -256,6 +256,9 @@ nonisolated final class GatedAccountStore: AccountStore, @unchecked Sendable {
     func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
         try backing.setTokens(tokens, for: accountID)
     }
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        try backing.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
+    }
     func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try backing.forgetClientID(clientID, for: origin) }
 }

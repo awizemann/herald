@@ -267,6 +267,52 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
         observer?()
     }
 
+    // MARK: - Held refresh responses
+
+    private struct HeldRefreshes {
+        var armed = false
+        var parked: [@Sendable () -> Void] = []
+    }
+
+    /// Separate from ``state``: a parked delivery runs client code, never
+    /// under the server's lock.
+    private let holds = OSAllocatedUnfairLock(initialState: HeldRefreshes())
+
+    /// From now until ``releaseRefreshResponses()``, every `refresh_token` grant
+    /// is ANSWERED at once — the rotation happens on the server — but its
+    /// response reaches the client only on release: a refresh held in flight,
+    /// so a test can land a sign-in while it is at the token endpoint.
+    func holdRefreshResponses() {
+        holds.withLock { $0.armed = true }
+    }
+
+    /// Refresh responses parked by ``holdRefreshResponses()`` and not yet released.
+    var heldRefreshResponses: Int { holds.withLock { $0.parked.count } }
+
+    /// Delivers every parked refresh response and stops holding new ones.
+    func releaseRefreshResponses() {
+        let parked = holds.withLock { holds -> [@Sendable () -> Void] in
+            holds.armed = false
+            defer { holds.parked = [] }
+            return holds.parked
+        }
+        for delivery in parked { delivery() }
+    }
+
+    /// Answers `request` through `deliver`: at once, or — for a refresh while
+    /// held — on ``releaseRefreshResponses()``.
+    func respond(to request: FakeHTTPRequest, deliver: @escaping @Sendable (FakeHTTPResponse) -> Void) {
+        let response = respond(to: request)
+        let isRefresh = request.method == "POST" && request.path == "/api/auth/oauth2/token"
+            && Self.form(request.body)["grant_type"] == "refresh_token"
+        let parked = isRefresh && holds.withLock { holds -> Bool in
+            guard holds.armed else { return false }
+            holds.parked.append { deliver(response) }
+            return true
+        }
+        if !parked { deliver(response) }
+    }
+
     // MARK: - HTTP
 
     func respond(to request: FakeHTTPRequest) -> FakeHTTPResponse {

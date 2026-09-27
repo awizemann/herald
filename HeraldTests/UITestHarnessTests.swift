@@ -354,24 +354,62 @@ import Testing
     }
 
     /// Recovery path: after any death, a fresh sign-in mints a LIVE grant.
-    @Test func aFreshSignInRecoversFromADeadSession() async throws {
+    /// No wait for the dead state first: the sign-in may land while the dead
+    /// session's refresh is still in flight (the refresh's late write used to
+    /// overwrite the new grant — see `raceARefreshAgainstTheSignIn`).
+    @Test(.timeLimit(.minutes(1)))
+    func aFreshSignInRecoversFromADeadSession() async throws {
         let (harness, suite) = UITestHarnessWiringTests.harness(.oneAccount, server: .deadSession140)
         let environment = harness.environment
         await environment.start()
         let account = try #require(environment.accounts.first)
-        // Wait for the death to be REPORTED (latched, so no refresh is left in
-        // flight) before signing in: a refresh still in flight when the new
-        // grant is written can overwrite it (AccountTokenProvider writes its
-        // rotation unconditionally) — a separate, known race, not under test here.
-        try await wait("the dead session to be reported", timeout: .seconds(10)) {
-            environment.mail?.status == .needsReauth
-        }
         await environment.reauthenticate(accountID: account.id)
         let mail = try #require(environment.mail)
         try await wait("the re-installed account to sync", timeout: .seconds(10)) {
             mail.allConversations.count == 5
         }
+        #expect(mail.status != .needsReauth)
         #expect(harness.network.all[0].counters.codeExchanges == 1)
+        await UITestHarnessWiringTests.cleanUp(harness, suite: suite)
+    }
+
+    /// The U1 repro, held deterministic: the launch's sync is refreshing the
+    /// dead 1.4.0 grant (the server has rotated it; the response is held) when
+    /// the user signs in again. The sign-in writes its live grant, then the
+    /// re-install stops the old graph — which waits for that refresh — so the
+    /// refresh's write lands AFTER the sign-in's. Fails if the refresh
+    /// persists unconditionally: the store goes back to the dead family and
+    /// the new graph re-latches (no sync, or a second consent).
+    @Test(.timeLimit(.minutes(1)))
+    func aSignInDuringAnInFlightDeadRefreshStaysHealthy() async throws {
+        let (harness, suite) = UITestHarnessWiringTests.harness(.oneAccount, server: .deadSession140)
+        let environment = harness.environment
+        let server = harness.network.all[0]
+        server.holdRefreshResponses()
+        await environment.start()
+        let account = try #require(environment.accounts.first)
+        let deadRefreshToken = try #require(try harness.accountStore.tokens(for: account.id)?.refreshToken)
+        try await wait("the dead session's refresh to be in flight", timeout: .seconds(10)) {
+            server.heldRefreshResponses == 1
+        }
+
+        let reauth = Task { await environment.reauthenticate(accountID: account.id) }
+        try await wait("the sign-in to write its grant", timeout: .seconds(10)) {
+            let stored = try? harness.accountStore.tokens(for: account.id)
+            return stored?.refreshToken != deadRefreshToken && server.counters.codeExchanges == 1
+        }
+        let signedIn = try #require(try harness.accountStore.tokens(for: account.id))
+        server.releaseRefreshResponses()
+        await reauth.value
+
+        let mail = try #require(environment.mail)
+        try await wait("the re-installed account to sync", timeout: .seconds(10)) {
+            mail.allConversations.count == 5
+        }
+        #expect(try harness.accountStore.tokens(for: account.id) == signedIn, "the in-flight refresh overwrote the new grant")
+        #expect(mail.status != .needsReauth)
+        #expect(server.counters.codeExchanges == 1)
+        #expect(server.counters.refreshes == 1, "the new grant was refreshed: it had been replaced by dead tokens")
         await UITestHarnessWiringTests.cleanUp(harness, suite: suite)
     }
 

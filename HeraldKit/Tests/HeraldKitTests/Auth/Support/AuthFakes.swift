@@ -198,6 +198,15 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
         }
     }
 
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        lock.withLock {
+            guard let stored = tokenStore[accountID], stored.refreshToken == expected else { return false }
+            writes += 1
+            tokenStore[accountID] = tokens
+            return true
+        }
+    }
+
     func clientID(for origin: URL) throws -> String? {
         lock.withLock { clientIDs[Account.normalize(origin).absoluteString] }
     }
@@ -303,6 +312,12 @@ nonisolated final class StaleReadingStore: AccountStore, @unchecked Sendable {
         try base.setTokens(tokens, for: accountID)
     }
 
+    /// Always the real store: a stale snapshot is what this process READ, never
+    /// what the compare-and-set compares against.
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        try base.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
+    }
+
     func accounts() throws -> [Account] { try base.accounts() }
     func add(_ account: Account) throws { try base.add(account) }
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
@@ -346,6 +361,12 @@ nonisolated final class FailingReadStore: AccountStore, @unchecked Sendable {
 
     func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
         try base.setTokens(tokens, for: accountID)
+    }
+
+    /// Straight to the real store: the injected failures model this process's
+    /// READS, and the compare-and-set's own read is inside the store's lock.
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        try base.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
     }
 
     func accounts() throws -> [Account] { try base.accounts() }

@@ -84,13 +84,39 @@ nonisolated final class FakeHQBaseProtocol: URLProtocol, @unchecked Sendable {
         for item in components?.queryItems ?? [] where query[item.name] == nil {
             query[item.name] = item.value ?? ""
         }
-        let response = server.respond(to: FakeHTTPRequest(
+        // A held refresh (``FakeHQBase/holdRefreshResponses()``) is delivered
+        // later from the releasing thread; URLProtocol wants its client told on
+        // the loading thread, so that delivery hops back onto its run loop.
+        let loadingRunLoop = LoadingRunLoop(CFRunLoopGetCurrent())
+        server.respond(to: FakeHTTPRequest(
             method: request.httpMethod?.uppercased() ?? "GET",
             path: components?.path ?? url.path,
             query: query,
             headers: request.allHTTPHeaderFields ?? [:],
             body: Self.bodyData(of: request)
-        ))
+        )) { [weak self] response in
+            loadingRunLoop.run { [weak self] in self?.deliver(response, for: url) }
+        }
+    }
+
+    /// The loading thread's run loop, carried to the releasing thread.
+    private struct LoadingRunLoop: @unchecked Sendable {
+        let runLoop: CFRunLoop
+        init(_ runLoop: CFRunLoop) { self.runLoop = runLoop }
+        /// Inline when already on the loading thread (every answer but a
+        /// released hold), else scheduled onto its run loop.
+        func run(_ block: @escaping @Sendable () -> Void) {
+            if CFRunLoopGetCurrent() === runLoop { return block() }
+            CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue, block)
+            CFRunLoopWakeUp(runLoop)
+        }
+    }
+
+    private let stopped = OSAllocatedUnfairLock(initialState: false)
+
+    private func deliver(_ response: FakeHTTPResponse, for url: URL) {
+        // A task cancelled while its refresh was held must not hear back.
+        guard !stopped.withLock({ $0 }) else { return }
         guard let http = HTTPURLResponse(
             url: url,
             statusCode: response.status,
@@ -105,7 +131,9 @@ nonisolated final class FakeHQBaseProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        stopped.withLock { $0 = true }
+    }
 
     /// URLSession hands streamed bodies (the OpenAPI transport's JSON uploads)
     /// over `httpBodyStream`; read to EOF.

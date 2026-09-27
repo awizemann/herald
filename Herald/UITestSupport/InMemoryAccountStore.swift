@@ -71,6 +71,15 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         state.withLock { $0.tokens[accountID] = tokens }
     }
 
+    /// Compare-and-set under the one lock, like the Keychain store.
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        state.withLock { state in
+            guard let stored = state.tokens[accountID], stored.refreshToken == expected else { return false }
+            state.tokens[accountID] = tokens
+            return true
+        }
+    }
+
     func clientID(for origin: URL) throws -> String? {
         state.withLock { $0.clientIDs[Account.normalize(origin).absoluteString] }
     }

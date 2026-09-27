@@ -41,6 +41,19 @@ public nonisolated protocol AccountStore: Sendable {
     func tokens(for accountID: Account.ID) throws -> OAuthTokens?
     /// `nil` clears them.
     func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws
+    /// Compare-and-set: writes `tokens` (`nil` clears them) ONLY while the
+    /// stored tokens' refresh token is still `expected` — the one the caller
+    /// just spent (a refresh) or saw refused (`invalid_grant`). Returns whether
+    /// anything was written; an empty store never matches.
+    ///
+    /// What keeps a refresh that was in flight while a sign-in wrote a NEW
+    /// grant (here, in another graph, or in another process) from landing
+    /// after it and overwriting it with the old — possibly dead — family (see
+    /// ``AccountTokenProvider``). Atomic with every other token read and write
+    /// of this conformer; across processes sharing the Keychain it is a
+    /// read-then-write with no network in between, so the window it leaves is
+    /// microseconds, not a token-endpoint round trip.
+    func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool
 
     /// The dynamically registered `client_id` for an origin, if Herald already has one.
     func clientID(for origin: URL) throws -> String?
@@ -115,8 +128,11 @@ nonisolated extension AccountStoreError: LocalizedError {
 /// registrations in the Keychain alongside tokens.
 public nonisolated final class KeychainAccountStore: AccountStore {
     private let secrets: any SecretStore
-    /// Guards the read-modify-write of the account index; individual `SecItem`
-    /// calls are atomic but the index is not.
+    /// Guards every read-modify-write — the account index, the registration's
+    /// compare-and-delete, the tokens' compare-and-set — and the plain reads
+    /// and writes they must be atomic with; individual `SecItem` calls are
+    /// atomic but those sequences are not. Not re-entrant: nothing called
+    /// under it may call back into a method that takes it.
     private let lock = OSAllocatedUnfairLock()
 
     public init(secrets: any SecretStore = KeychainStore()) {
@@ -274,11 +290,34 @@ public nonisolated final class KeychainAccountStore: AccountStore {
 
     // MARK: Tokens
 
+    /// Token reads and writes take the lock too, so inside this process the
+    /// compare-and-set (``setTokens(_:for:ifRefreshTokenIs:)``) is atomic with
+    /// every other write — a sign-in's grant can never land between its
+    /// compare and its write and then be overwritten.
     public func tokens(for accountID: Account.ID) throws -> OAuthTokens? {
-        try secrets.value(OAuthTokens.self, for: Self.tokensKey(accountID))
+        try lock.withLock { try loadTokens(for: accountID) }
     }
 
     public func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
+        try lock.withLock { try storeTokens(tokens, for: accountID) }
+    }
+
+    public func setTokens(_ tokens: OAuthTokens?, for accountID: Account.ID, ifRefreshTokenIs expected: String) throws -> Bool {
+        try lock.withLock {
+            guard let stored = try loadTokens(for: accountID), stored.refreshToken == expected else { return false }
+            try storeTokens(tokens, for: accountID)
+            return true
+        }
+    }
+
+    /// Callers hold ``lock`` (it is not re-entrant: never call the public
+    /// token methods from inside it).
+    private func loadTokens(for accountID: Account.ID) throws -> OAuthTokens? {
+        try secrets.value(OAuthTokens.self, for: Self.tokensKey(accountID))
+    }
+
+    /// Callers hold ``lock``.
+    private func storeTokens(_ tokens: OAuthTokens?, for accountID: Account.ID) throws {
         guard let tokens else {
             try secrets.removeValue(for: Self.tokensKey(accountID))
             return

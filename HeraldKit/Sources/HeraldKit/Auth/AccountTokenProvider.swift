@@ -18,6 +18,16 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// point where one was rejected, re-reads the store first and adopts whatever another
 /// process already rotated in. See ``rotatedTokens(past:)``.
 ///
+/// Reads alone cannot cover the other order — a NEW grant (a sign-in here, in a
+/// newer graph, or in another process) written while this refresh is at the token
+/// endpoint. So every write of a refresh's outcome — the rotated tokens, and the
+/// `invalid_grant` clear — is a compare-and-set against the refresh token it spent
+/// (``AccountStore/setTokens(_:for:ifRefreshTokenIs:)``): if the store moved on, ours
+/// is discarded and the stored grant adopted, never overwritten. Inside one process
+/// that is atomic under the store's lock; across processes it is a read-then-write
+/// with no network in between (the Keychain has no compare-and-swap), so the
+/// residual window is microseconds rather than a token-endpoint round trip.
+///
 /// The same goes for the `client_id` a refresh is sent as: it is read from the
 /// account record at refresh time (``resolvedClientID()``), never captured when
 /// the provider was built. A registration can change under a live provider — a
@@ -484,15 +494,23 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 var fresh = try await refresher.refresh(refreshToken: refreshToken, clientID: clientID)
                 // A server that omits refresh_token on rotation means "keep the old one".
                 if fresh.refreshToken == nil { fresh.refreshToken = refreshToken }
-                // (3) Persist before returning, then confirm the store still holds OUR
-                // tokens: a process that rotated while we were in flight wrote after us
-                // only if its write landed later, and its grant is the live one.
-                try store.setTokens(fresh, for: accountID)
-                // `try?` HERE, and only here: the write above already succeeded,
-                // so `fresh` is a live grant we own. This read is the optional
-                // "did somebody land after us" confirmation — throwing on it
-                // would send the caller back around the loop to spend the token
-                // we just minted. The failure is still logged by `currentTokens`.
+                // (3) Persist before returning — but ONLY over the grant we just
+                // spent (compare-and-set). While we were at the token endpoint a
+                // sign-in (here, in a newer graph, or in another process) may
+                // have written a NEW grant; an unconditional write would land
+                // after it and put the old, possibly dead, family back — the
+                // account re-latching the moment the user signed in.
+                guard try store.setTokens(fresh, for: accountID, ifRefreshTokenIs: refreshToken) else {
+                    return adoptingStoredTokens(overDiscarded: fresh)
+                }
+                // Ours landed. Now the other order: a process that rotated OUR
+                // grant after reading it wrote after us, and its grant is the
+                // live one. `try?` HERE, and only here: the write above already
+                // succeeded, so `fresh` is a live grant we own. This read is the
+                // optional "did somebody land after us" confirmation — throwing
+                // on it would send the caller back around the loop to spend the
+                // token we just minted. The failure is still logged by
+                // `currentTokens`.
                 if let newer = try? rotatedTokens(past: fresh) {
                     logger.warning("newer tokens landed for \(self.accountID, privacy: .public); adopting them over ours")
                     return (newer, false)
@@ -544,9 +562,15 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 }
                 if error.isInvalidGrant {
                     logger.warning("refresh rejected for \(self.accountID, privacy: .public); re-auth required")
-                    // The grant really is dead; drop it so nothing retries with it.
+                    // The grant really is dead; drop it so nothing retries with
+                    // it — compare-and-clear, so a sign-in that wrote a new
+                    // grant since the read above is never deleted by it.
                     do {
-                        try store.setTokens(nil, for: accountID)
+                        if try !store.setTokens(nil, for: accountID, ifRefreshTokenIs: refreshToken),
+                           let rotated = try? tokens(replacing: refreshToken) {
+                            logger.warning("a new grant landed for \(self.accountID, privacy: .public) while its dead one was being cleared; adopting it")
+                            return (rotated, false)
+                        }
                     } catch {
                         // Not fatal — the caller is being sent to re-auth either way —
                         // but a clear that silently failed leaves a dead grant on disk
@@ -583,6 +607,37 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // token it has already rotated is what kills the family.
             }
         }
+    }
+
+    /// What a refresh returns when its compare-and-set found the store no
+    /// longer holding the grant it spent: somebody else's write won.
+    ///
+    /// The stored tokens when there are any — a re-auth's new grant, or
+    /// another process's rotation — adopted exactly like
+    /// ``rotatedTokens(past:)``'s, and NOT minted here, so no rotation is
+    /// recorded: the P9b lineage must never link the old grant to a grant a
+    /// sign-in wrote, or ``isStillDead(grant:)`` would call the re-auth "the
+    /// same dead session".
+    ///
+    /// An empty (the account was signed out, or its dead grant cleared) or
+    /// unreadable store gets `discarded` for this one request, still NOT
+    /// persisted: resurrecting tokens for a removed account, or writing blind
+    /// over what could not be read, is exactly the overwrite this guards
+    /// against. The next request finds the store's own state and handles it
+    /// the usual way (an empty store is a missing-refresh-token death).
+    ///
+    /// `discarded`'s refresh token is simply dropped, not revoked: it belongs
+    /// to the family the winner replaced, it is in no store, and it expires
+    /// on its own. A revocation would be a network call on a race path, and
+    /// RFC 7009 lets a server revoke the whole AUTHORIZATION with it — which
+    /// for a re-auth under the same client could be the grant that just won.
+    private nonisolated func adoptingStoredTokens(overDiscarded discarded: OAuthTokens) -> RefreshResult {
+        if let stored = try? currentTokens() {
+            logger.warning("a new grant landed for \(self.accountID, privacy: .public) while its refresh was in flight; discarding ours and adopting it")
+            return (stored, false)
+        }
+        logger.warning("token store for \(self.accountID, privacy: .public) empty or unreadable after a refresh; using the refreshed token once without persisting it")
+        return (discarded, false)
     }
 
     /// The `client_id` a refresh is sent as: the account record's, read NOW

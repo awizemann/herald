@@ -241,11 +241,13 @@ import Testing
     }
 
     /// The constants are load-bearing: `installIdSalt` re-identifies every install if
-    /// it changes, and `appId` must equal the real bundle id or the backend 400s the
-    /// batch (schema §0 field enforcement).
+    /// it changes, and `appId` must equal the RELEASE bundle id or the backend 400s the
+    /// batch (schema §0 field enforcement). This host is the Debug build, which has its
+    /// own bundle id (U6a) and never reports (no write key); the shipped id is verified
+    /// by scripts/release.sh.
     @Test func identityConstantsAreTheOnesTheBackendExpects() {
         #expect(UsageAnalytics.appId == "com.wizemann.herald")
-        #expect(UsageAnalytics.appId == Bundle.main.bundleIdentifier)
+        #expect(Bundle.main.bundleIdentifier == UsageAnalytics.appId + ".debug")
         #expect(UsageAnalytics.projectId == "herald")
         #expect(UsageAnalytics.installIdSalt == "herald-mac-2026")
         #expect(UsageAnalytics.endpointString == "https://api.swiftstats.co")

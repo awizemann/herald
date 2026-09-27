@@ -12,7 +12,10 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// mail attachments are the last bytes that should silently pile up in `/tmp`.
 enum AttachmentScratchpad {
     /// `<temp>/com.wizemann.herald/Attachments`. Inside the sandbox container, so
-    /// no entitlement is involved and nothing else can read it.
+    /// no entitlement is involved and nothing else can read it. The container is
+    /// per bundle id, and Debug builds have their own (`com.wizemann.herald.debug`,
+    /// U6a), so a dev copy or UI-test run emptying this at launch never touches the
+    /// release app's staged files; the fixed path component is the same in both.
     ///
     /// Symlinks are resolved HERE, on the temp directory that always exists, so
     /// ``contains(_:)`` compares like with like: `/var/folders/…` for a path that

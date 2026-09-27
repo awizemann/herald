@@ -84,12 +84,25 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Herald/Herald.entitlements
         SWIFT_EMIT_LOC_STRINGS: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Debug is a DIFFERENT app to macOS (audit U6a): its own bundle id, so a dev copy
+        # or a UI-test run can never terminate the release app, share its preferences /
+        # window geometry / sandbox container / attachment scratchpad, or take its
+        # notification clicks and OAuth callback scheme. Everything keyed to the id
+        # follows via $(PRODUCT_BUNDLE_IDENTIFIER) (URL scheme below, Sparkle mach-lookup
+        # names in Herald.entitlements); the code side is `#if DEBUG` in HeraldKit's
+        # DynamicClientRegistration.callbackScheme and KeychainStore.defaultService.
+        # Release stays com.wizemann.herald — scripts/release.sh verifies it.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald.debug
     info:
       path: Herald/Info.plist
       properties:
+        # OAuth callback scheme = the bundle id: com.wizemann.herald in Release,
+        # com.wizemann.herald.debug in Debug. Must match DynamicClientRegistration.callbackScheme.
         CFBundleURLTypes:
-          - CFBundleURLName: com.wizemann.herald
-            CFBundleURLSchemes: [com.wizemann.herald]
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes: [$(PRODUCT_BUNDLE_IDENTIFIER)]
         LSMinimumSystemVersion: "15.0"
         # Everything this app writes came off the network (mail attachments), so it
         # must carry the quarantine flag and get the Gatekeeper prompt on open.

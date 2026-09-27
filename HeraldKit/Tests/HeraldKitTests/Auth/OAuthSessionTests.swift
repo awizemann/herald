@@ -26,7 +26,7 @@ import Testing
         #expect(request.url.path == AuthFixtures.authorizePath)
         #expect(query["response_type"] == "code")
         #expect(query["client_id"] == "cid_1")
-        #expect(query["redirect_uri"] == "com.wizemann.herald:/oauth/callback")
+        #expect(query["redirect_uri"] == AuthFixtures.redirectURI)
         #expect(query["state"] == request.state)
         #expect(query["resource"] == AuthFixtures.resource)
         #expect(query["scope"] == "mail:read mail:write mail:send offline_access")
@@ -142,7 +142,7 @@ import Testing
         #expect(fields["code"] == "auth_code_1")
         #expect(fields["code_verifier"] == request.pkce.verifier)
         #expect(fields["client_id"] == "cid_1")
-        #expect(fields["redirect_uri"] == "com.wizemann.herald:/oauth/callback")
+        #expect(fields["redirect_uri"] == AuthFixtures.redirectURI)
         #expect(fields["resource"] == AuthFixtures.resource)
         #expect(fields["client_secret"] == nil)
 

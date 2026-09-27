@@ -9,17 +9,29 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// shipped app gets a `client_id` for a server it has never seen. The id is
 /// persisted per origin in the Keychain and reused forever after.
 public nonisolated struct DynamicClientRegistration: Sendable {
-    /// Herald's custom-scheme redirect. Must match the app's `CFBundleURLTypes`.
+    /// Herald's custom-scheme redirect. Must match the app's `CFBundleURLTypes`,
+    /// which project.yml derives from the bundle id — and Debug builds have their
+    /// OWN bundle id (`com.wizemann.herald.debug`, audit U6a), so a dev copy or a
+    /// UI-test run never claims the release app's callback scheme. Debug builds
+    /// also keep their registrations in their own Keychain namespace
+    /// (``KeychainStore/defaultService``), so each registers its own client with
+    /// its own redirect. Release is `com.wizemann.herald:/oauth/callback`,
+    /// unchanged; scripts/release.sh verifies the shipped scheme.
+    ///
     /// The string is a compile-time constant that always parses; the `precondition`
     /// documents that invariant and traps with a clear message (instead of a bare
     /// `!`) only if the literal is ever edited into something malformed.
     public static let redirectURI: URL = {
-        guard let url = URL(string: "com.wizemann.herald:/oauth/callback") else {
+        guard let url = URL(string: "\(callbackScheme):/oauth/callback") else {
             preconditionFailure("Herald redirect URI literal is not a valid URL")
         }
         return url
     }()
+    #if DEBUG
+    public static let callbackScheme = "com.wizemann.herald.debug"
+    #else
     public static let callbackScheme = "com.wizemann.herald"
+    #endif
     public static let clientName = "Herald"
 
     private let session: URLSession

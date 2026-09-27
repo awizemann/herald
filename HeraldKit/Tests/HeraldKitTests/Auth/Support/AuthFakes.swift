@@ -4,6 +4,15 @@ import HeraldKit
 // MARK: - Server fixtures
 
 nonisolated enum AuthFixtures {
+    /// The redirect URI this build registers and sends — pinned per configuration:
+    /// Debug has its own bundle id and callback scheme (U6a); Release must stay
+    /// byte-for-byte what shipped.
+    #if DEBUG
+    static let redirectURI = "com.wizemann.herald.debug:/oauth/callback"
+    #else
+    static let redirectURI = "com.wizemann.herald:/oauth/callback"
+    #endif
+
     static let origin = URL(string: "https://mail.test.invalid")!
     static let resource = "https://mail.test.invalid/api/v1"
 

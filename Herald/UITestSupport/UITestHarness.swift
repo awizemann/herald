@@ -26,8 +26,9 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 @MainActor
 @Observable
 final class UITestHarness {
-    /// The throwaway defaults suite. Never the app's own domain, which Debug
-    /// and Release share (both are `com.wizemann.herald`).
+    /// The throwaway defaults suite, wiped at launch. Never the app's own
+    /// domain — the dev copy's (`com.wizemann.herald.debug`, its own container
+    /// since U6a; Release never runs the harness).
     nonisolated static let defaultsSuiteName = "com.wizemann.herald.uitest"
 
     /// The harness for THIS process, or `nil` in a normal launch. A malformed

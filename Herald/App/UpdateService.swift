@@ -29,9 +29,15 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 final class UpdateService {
     static let shared = UpdateService(startsUpdater: UpdateService.startsUpdaterInThisProcess)
 
-    /// Whether this process may start Sparkle: never under a test host, and
-    /// never in the Debug-only UI-test mode (`-HeraldUITest`), which must not
-    /// reach the network or write Sparkle's defaults.
+    /// Whether this process may start Sparkle: never under a test host, never
+    /// in a Debug build, and (belt and braces) never in the Debug-only UI-test
+    /// mode (`-HeraldUITest`), which must not reach the network or write
+    /// Sparkle's defaults.
+    ///
+    /// Debug builds are a different app (`com.wizemann.herald.debug`, signed with
+    /// a development certificate): the appcast only ever carries the Developer ID
+    /// release, which is not an update FOR a dev copy. So the dev copy never
+    /// checks; its "Check for Updates…" item stays disabled.
     nonisolated static var startsUpdaterInThisProcess: Bool {
         startsUpdater(
             arguments: ProcessInfo.processInfo.arguments,
@@ -39,8 +45,19 @@ final class UpdateService {
         )
     }
 
-    nonisolated static func startsUpdater(arguments: [String], isRunningUnderTests: Bool) -> Bool {
-        if isRunningUnderTests { return false }
+    /// `true` in a Debug build.
+    #if DEBUG
+    nonisolated static let isDebugBuild = true
+    #else
+    nonisolated static let isDebugBuild = false
+    #endif
+
+    nonisolated static func startsUpdater(
+        arguments: [String],
+        isRunningUnderTests: Bool,
+        isDebugBuild: Bool = UpdateService.isDebugBuild
+    ) -> Bool {
+        if isRunningUnderTests || isDebugBuild { return false }
         #if DEBUG
         if UITestLaunchConfiguration.isRequested(in: arguments) { return false }
         #endif

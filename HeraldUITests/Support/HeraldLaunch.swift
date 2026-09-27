@@ -67,17 +67,31 @@ enum HeraldApp {
             "-HeraldUITest", scenario.rawValue,
             "-HeraldUITestServer", server.rawValue,
             "-HeraldUITestPresenter", presenter.argument,
-            // AppKit state restoration writes into the REAL defaults domain
-            // (Debug and Release share the bundle id) and would reopen windows
-            // from the previous run: off, both of them.
+            // AppKit state restoration writes into the app's own defaults
+            // domain (the Debug id's, never Release's since U6a) and would
+            // reopen windows from the previous run: off, both of them.
             "-ApplePersistenceIgnoreState", "YES",
             "-NSQuitAlwaysKeepsWindows", "NO",
         ]
     }
 
+    /// How long a launch may take to show the harness's `uitest.status` element.
+    static let launchTimeout: TimeInterval = 20
+
+    /// The element only the UI-test harness draws (`UITestStatusLabel`).
+    static let statusIdentifier = "uitest.status"
+
     /// Launches (terminating any previous instance first — `XCUIApplication`
-    /// does that itself), brings the app forward and waits for its first
-    /// window. The caller terminates it (``HeraldUITestCase`` does, in tearDown).
+    /// does that itself), brings the app forward, PROVES it is in test mode,
+    /// and waits for its first window. The caller terminates it
+    /// (``HeraldUITestCase`` does, in tearDown).
+    ///
+    /// The test-mode proof (audit H1): the launched app must draw
+    /// `uitest.status`, which exists only in a Debug build running the
+    /// harness. Anything else — a Release build, a build without the harness,
+    /// an app that ignored `-HeraldUITest` — is on the real Keychain and
+    /// network, so it is terminated at once and the test fails before a single
+    /// step can click, type or send in it.
     @discardableResult
     static func launch(
         scenario: UITestScenario,
@@ -88,6 +102,14 @@ enum HeraldApp {
         app.launchArguments = launchArguments(scenario: scenario, server: server, presenter: presenter)
         app.launch()
         app.activate()
+        guard app.element(id: statusIdentifier).waitForExistence(timeout: launchTimeout) else {
+            app.terminate()
+            XCTFail(
+                "The launched Herald is NOT in UI-test mode (no \(statusIdentifier) within \(Int(launchTimeout)) s) — "
+                    + "terminated before any test step. Run the suite with scripts/ui-tests.sh (Debug only)."
+            )
+            return app
+        }
         XCTAssertTrue(
             app.windows.firstMatch.waitForExistence(timeout: defaultTimeout),
             "Herald launched (\(scenario.rawValue)) but no window appeared"

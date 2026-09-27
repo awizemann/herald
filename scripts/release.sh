@@ -247,10 +247,16 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 # sandboxed installer can't run without the mach-lookup exceptions surviving the re-seal.
 BUILT_PUBKEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null || true)"
 [[ "$BUILT_PUBKEY" == "$SOURCE_PUBKEY" ]] || die "built app SUPublicEDKey ($BUILT_PUBKEY) != project.yml ($SOURCE_PUBKEY)"
-codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o - - | grep -q -- "-spks" \
-  || die "Sparkle mach-lookup entitlement missing from the exported app — sandboxed updates would fail to install"
+codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o - - | grep -q -- ">$BUNDLE_ID-spks<" \
+  || die "Sparkle mach-lookup entitlement $BUNDLE_ID-spks missing from the exported app — sandboxed updates would fail to install"
 codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o - - | grep -q "app-sandbox" \
   || die "app-sandbox entitlement missing — the Release build must be sandboxed"
+
+# The exported app must BE the release app (audit U6a / L3): bundle id and OAuth callback scheme
+# exactly com.wizemann.herald (Debug builds are com.wizemann.herald.debug), and no Debug-only
+# UI-test harness code or Debug identity strings in the executable. Runs in dry-run too.
+log "Verify release identity (bundle id, URL scheme, no harness strings)"
+"$REPO_ROOT/scripts/verify-release-identity.sh" "$APP" || die "the exported app is not a clean release build — see above"
 
 # The analytics write key must have been substituted into the shipped Info.plist. A build that
 # ships the literal $(APP_STATS_WRITE_KEY) — or an empty value — silently disables usage

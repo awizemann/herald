@@ -13,8 +13,16 @@ public nonisolated struct KeychainStore: SecretStore {
     /// cert) and the release app (Developer ID cert) are different signatures to
     /// the Keychain — sharing one item meant a password prompt on every dev launch,
     /// and two processes rotating one refresh token signed each other out.
+    ///
+    /// `.dev`, not the older `.debug` (U6a, 2026-09-27): Debug builds now have their
+    /// own bundle id (`com.wizemann.herald.debug`) and OAuth callback scheme. Items
+    /// under `.debug` were written by the previous dev copy — a different designated
+    /// requirement (the release bundle id), so reading them would prompt — and hold a
+    /// `client_id` registered with the release redirect URI, which the new scheme
+    /// cannot use. A fresh namespace means the dev copy simply signs in again and
+    /// registers its own client; the orphaned `.debug` items are never touched.
     #if DEBUG
-    public static let defaultService = "com.wizemann.herald.debug"
+    public static let defaultService = "com.wizemann.herald.dev"
     #else
     public static let defaultService = "com.wizemann.herald"
     #endif

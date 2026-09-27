@@ -34,7 +34,9 @@ public nonisolated enum MailStoreContainer {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         // Debug builds keep a separate cache, matching their separate Keychain
         // namespace (see KeychainStore.defaultService): a dev copy and the release
-        // app never share a store, so both can run at once.
+        // app never share a store, so both can run at once. Since U6a Debug also has
+        // its own bundle id and therefore its own sandbox container, which already
+        // isolates this path; the suffix is kept as a harmless second guard.
         #if DEBUG
         let folder = "Herald-Debug"
         #else

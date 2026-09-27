@@ -77,8 +77,8 @@ import Testing
     /// exists. Fails if either only checks for a test host.
     @Test func sparkleAndAnalyticsStandDownInTestMode() {
         let args = ["Herald", "-HeraldUITest", "oneAccount"]
-        #expect(UpdateService.startsUpdater(arguments: args, isRunningUnderTests: false) == false)
-        #expect(UpdateService.startsUpdater(arguments: ["Herald"], isRunningUnderTests: false))
+        #expect(UpdateService.startsUpdater(arguments: args, isRunningUnderTests: false, isDebugBuild: false) == false)
+        #expect(UpdateService.startsUpdater(arguments: ["Herald"], isRunningUnderTests: false, isDebugBuild: false))
 
         let validKey = "whk_0123456789abcdef"
         let testMode = UsageAnalytics.makeTracker(environment: [:], arguments: args, writeKey: validKey)

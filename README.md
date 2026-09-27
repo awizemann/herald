@@ -53,6 +53,12 @@ Or from the command line, into isolated DerivedData, and launch a dev copy:
 
 `project.yml` is the source of truth; `Herald.xcodeproj` is a generated artifact.
 
+Debug builds are a separate app to macOS: bundle id `com.wizemann.herald.debug`, with their own
+sandbox container, preferences, OAuth callback scheme and Keychain namespace. A dev copy never
+shares a session with (or quits) the installed release Herald — sign in to it separately; it
+registers its own OAuth client. Release builds are `com.wizemann.herald`, which
+`scripts/release.sh` verifies on every export.
+
 ## Updates
 
 Herald updates itself with [Sparkle 2](https://sparkle-project.org). The app checks its appcast

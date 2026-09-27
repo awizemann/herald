@@ -256,8 +256,26 @@ struct TestControlsPage {
     func resetCounters(file: StaticString = #filePath, line: UInt = #line) {
         choose(id: "uitest.resetCounters", title: "Reset counters", file: file, line: line)
         XCTAssertNotNil(
+            // Only counters nothing else moves on its own: a poll landing right
+            // after the reset may already have bumped `apiSuccesses`.
             waitForStatus { $0.sends == 0 && $0.sendRequests == 0 && $0.refreshes == 0 && $0.signIns == 0 },
             "the counters never reset", file: file, line: line
+        )
+    }
+
+    /// Pauses (`true`) or resumes the app's sync poll. The fake servers hold
+    /// every Mail API read unanswered while paused (writes and the token
+    /// endpoint still work), so no poll can discover anything: whatever
+    /// happens next was caused by the test's own action.
+    func setSyncPollPaused(_ paused: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        if paused {
+            choose(id: "uitest.poll.pause", title: "Sync poll: pause", file: file, line: line)
+        } else {
+            choose(id: "uitest.poll.resume", title: "Sync poll: resume", file: file, line: line)
+        }
+        XCTAssertNotNil(
+            waitForStatus { $0.pollPaused == paused },
+            "the sync poll never switched to paused=\(paused)", file: file, line: line
         )
     }
 }

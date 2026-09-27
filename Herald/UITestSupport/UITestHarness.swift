@@ -73,6 +73,14 @@ final class UITestHarness {
     private(set) var accountStoreRefusesList = false
     /// Whether ``setActivationRefused(_:)`` has taken the mail cache away.
     private(set) var activationRefused = false
+    /// Whether ``setSyncPollPaused(_:)`` is holding the servers' reads.
+    private(set) var syncPollPaused = false
+    /// Reads parked while the poll is paused, across every server.
+    private(set) var heldReads = 0
+    /// Draft saves any composer ATTEMPTED (``AppEnvironment/composeSaveAttempted``)
+    /// since launch or the last reset — including ones a latched grant failed
+    /// fast, which no server counter can see.
+    private(set) var saveAttempts = 0
     /// The mail cache held aside while activation is refused.
     @ObservationIgnored private var parkedMailStore: MailStore?
 
@@ -140,6 +148,7 @@ final class UITestHarness {
         relay.set { [weak self] in
             Task { @MainActor [weak self] in self?.refreshMirrors() }
         }
+        environment.composeSaveAttempted = { [weak self] in self?.saveAttempts += 1 }
         refreshMirrors()
     }
 
@@ -202,9 +211,24 @@ final class UITestHarness {
         refreshMirrors()
     }
 
+    /// Pauses (`true`) or resumes the app's sync poll, from the server side:
+    /// every Mail API read is held unanswered (``FakeHQBase/holdReads()``), so
+    /// a pass can neither finish nor discover anything, while writes (send,
+    /// autosave) and the token endpoint still work. Resuming answers the held
+    /// reads as the server stands then. Nothing in the app is touched.
+    func setSyncPollPaused(_ paused: Bool) {
+        for server in network.all {
+            if paused { server.holdReads() } else { server.releaseReads() }
+        }
+        syncPollPaused = paused
+        logger.notice("UI-test sync poll paused: \(paused, privacy: .public)")
+        refreshMirrors()
+    }
+
     func resetCounters() {
         for server in network.all { server.resetCounters() }
         presenter.resetCounters()
+        saveAttempts = 0
         refreshMirrors()
     }
 
@@ -215,6 +239,7 @@ final class UITestHarness {
         signInAttempts = presenter.attemptCount
         pendingSignIns = presenter.pendingCount
         accountStoreRefusesList = accountStore.refusesAccountList
+        heldReads = network.all.reduce(0) { $0 + $1.heldReads }
     }
 
     /// The status line UI tests read (accessibility value of `uitest.status`).
@@ -239,6 +264,10 @@ final class UITestHarness {
             "revocations=\(counters.revocations)",
             "storeRefusesList=\(accountStoreRefusesList)",
             "activationRefused=\(activationRefused)",
+            "apiSuccesses=\(counters.apiSuccesses)",
+            "pollPaused=\(syncPollPaused)",
+            "heldReads=\(heldReads)",
+            "saveAttempts=\(saveAttempts)",
         ].joined(separator: " ")
     }
 }

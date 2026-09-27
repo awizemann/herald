@@ -20,7 +20,7 @@ final class SignInFailureTests: HeraldUITestCase {
         XCTAssertTrue(compose.waitForSignInOffered(), "no compose Sign In after a Send into a dead session")
 
         // The user's own attempt (whatever the automatic one did first).
-        let attemptsBefore = try XCTUnwrap(controls.waitForStatus()).signIns ?? 0
+        let attemptsBefore = try XCTUnwrap(controls.waitForStatus()?.signIns, "no parseable uitest.status")
         banner.signIn.click()
 
         XCTAssertNotNil(controls.waitForCount("signIns", atLeast: attemptsBefore + 1), "Sign In opened no sign-in window")
@@ -65,7 +65,7 @@ final class SignInFailureTests: HeraldUITestCase {
         XCTAssertTrue(onboarding.signIn.waitUntilEnabled(), "the sheet is stuck signing in after the failure")
         let status = try XCTUnwrap(controls.waitForStatus())
         XCTAssertEqual(status.signIns, 1, "the failure must come after consent (one sign-in window)")
-        XCTAssertGreaterThanOrEqual(status.codeExchanges ?? 0, 1, "consent never completed")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(status.codeExchanges), 1, "consent never completed")
         XCTAssertFalse(sidebar.accountSwitcher.exists, "an account that failed to activate was added anyway")
     }
 

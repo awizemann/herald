@@ -51,6 +51,14 @@ nonisolated struct FakeHQBaseCounters: Sendable, Equatable {
     var unauthorized = 0
     /// `GET /events` upgrades refused (see ``FakeEventChannels``).
     var eventRefusals = 0
+    /// Mail API requests (`/api/v1/…`) answered 2xx: proof the app really
+    /// talked to the server successfully, not merely that nothing 401'd.
+    var apiSuccesses = 0
+    /// Rotated refresh tokens replayed inside the reuse window (answered 200
+    /// with the rotation's own tokens).
+    var refreshReplays = 0
+    /// Rotated refresh tokens replayed AFTER the window: the grant's family died.
+    var familyInvalidations = 0
 
     static func + (lhs: Self, rhs: Self) -> Self {
         Self(
@@ -65,7 +73,10 @@ nonisolated struct FakeHQBaseCounters: Sendable, Equatable {
             draftUpdates: lhs.draftUpdates + rhs.draftUpdates,
             draftDeletes: lhs.draftDeletes + rhs.draftDeletes,
             unauthorized: lhs.unauthorized + rhs.unauthorized,
-            eventRefusals: lhs.eventRefusals + rhs.eventRefusals
+            eventRefusals: lhs.eventRefusals + rhs.eventRefusals,
+            apiSuccesses: lhs.apiSuccesses + rhs.apiSuccesses,
+            refreshReplays: lhs.refreshReplays + rhs.refreshReplays,
+            familyInvalidations: lhs.familyInvalidations + rhs.familyInvalidations
         )
     }
 }
@@ -106,12 +117,20 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
     let mailboxID: String
 
     private let state: OSAllocatedUnfairLock<ServerState>
+    /// The server's clock (the refresh-token reuse window). Injected by unit tests.
+    private let now: @Sendable () -> Date
 
-    init(origin: URL, mailboxAddress: String) {
+    /// HQBase's `refreshTokenReuseInterval` (worker/auth/auth.ts, 30 s since
+    /// 1.3.4): how long a ROTATED refresh token may be replayed and get the
+    /// rotation's own answer back. After it, a replay invalidates the family.
+    static let refreshTokenReuseInterval: TimeInterval = 30
+
+    init(origin: URL, mailboxAddress: String, now: @escaping @Sendable () -> Date = Date.init) {
         self.origin = Account.normalize(origin)
         self.host = origin.host ?? "uitest.invalid"
         self.mailboxAddress = mailboxAddress
         self.mailboxID = "mbx_\(host.split(separator: ".").first ?? "uitest")"
+        self.now = now
         self.state = OSAllocatedUnfairLock(initialState: ServerState())
     }
 
@@ -299,9 +318,65 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
         for delivery in parked { delivery() }
     }
 
+    // MARK: - Held reads (the sync poll's pause)
+
+    private struct HeldReads {
+        var armed = false
+        var parked: [@Sendable () -> Void] = []
+    }
+
+    /// Separate from ``state`` for the same reason as ``holds``.
+    private let reads = OSAllocatedUnfairLock(initialState: HeldReads())
+
+    /// From now until ``releaseReads()``, every Mail API `GET` (`/api/v1/…`) is
+    /// left UNANSWERED — the server does not even see it yet, so it counts
+    /// nothing and decides nothing. That pauses the app's sync poll (every
+    /// pass starts with reads) without touching the app, while writes — a
+    /// send, an autosave — and the token endpoint go on as normal. What a UI
+    /// test uses to prove a dead session was found by ITS action, not by a
+    /// poll that happened to run first.
+    func holdReads() {
+        reads.withLock { $0.armed = true }
+        notifyObserver()
+    }
+
+    var readsHeld: Bool { reads.withLock { $0.armed } }
+
+    /// Reads parked by ``holdReads()`` and not yet released.
+    var heldReads: Int { reads.withLock { $0.parked.count } }
+
+    /// Answers every parked read — as the server stands NOW — and stops
+    /// holding new ones. A parked request whose task has since gone away
+    /// (cancelled, timed out) is answered into nothing.
+    func releaseReads() {
+        let parked = reads.withLock { reads -> [@Sendable () -> Void] in
+            reads.armed = false
+            defer { reads.parked = [] }
+            return reads.parked
+        }
+        for answer in parked { answer() }
+        notifyObserver()
+    }
+
+    private func notifyObserver() {
+        state.withLock { $0.observer }?()
+    }
+
     /// Answers `request` through `deliver`: at once, or — for a refresh while
-    /// held — on ``releaseRefreshResponses()``.
+    /// held — on ``releaseRefreshResponses()``, or — for a Mail API read while
+    /// reads are held — on ``releaseReads()``.
     func respond(to request: FakeHTTPRequest, deliver: @escaping @Sendable (FakeHTTPResponse) -> Void) {
+        if request.method == "GET", request.path.hasPrefix("/api/v1/") {
+            let parkedRead = reads.withLock { reads -> Bool in
+                guard reads.armed else { return false }
+                reads.parked.append { [self] in deliver(respond(to: request)) }
+                return true
+            }
+            if parkedRead {
+                notifyObserver()
+                return
+            }
+        }
         let response = respond(to: request)
         let isRefresh = request.method == "POST" && request.path == "/api/auth/oauth2/token"
             && Self.form(request.body)["grant_type"] == "refresh_token"
@@ -374,7 +449,9 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
             state.counters.sendRequests += 1
         }
         if let refusal = authenticate(request, state: &state) { return refusal }
-        return mailAPI(request, state: &state)
+        let response = mailAPI(request, state: &state)
+        if (200..<300).contains(response.status) { state.counters.apiSuccesses += 1 }
+        return response
     }
 
     // MARK: OAuth
@@ -428,7 +505,10 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
             return Self.tokenResponse(tokens)
         case "refresh_token":
             state.counters.refreshes += 1
-            let grantID = form["refresh_token"].flatMap { state.refreshIndex[$0] }
+            let presented = form["refresh_token"]
+            // A rotated token still names its grant: that is how a replay is
+            // recognised (and how its family is found to invalidate).
+            let grantID = presented.flatMap { state.refreshIndex[$0] ?? state.rotated[$0]?.grantID }
             if let grantID, state.grants[grantID]?.condition == .proxy401 {
                 return FakeHTTPResponse(
                     status: 401,
@@ -441,18 +521,46 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
                 return Self.oauthError(400, "invalid_client", "missing client")
             }
             guard let grantID, var grant = state.grants[grantID], grant.clientID == clientID,
-                  grant.condition != .revoked, grant.condition != .revokedByClient
+                  grant.condition != .revoked, grant.condition != .revokedByClient, !grant.familyRevoked
             else {
                 return Self.oauthError(400, "invalid_grant", "invalid refresh token")
             }
-            // Rotation: the old refresh token stops working, and a dead 1.4.0
-            // session rotates just as happily as a live one.
-            if let old = form["refresh_token"] { state.refreshIndex[old] = nil }
+            // A token this grant has already ROTATED past (Contract #rotation,
+            // #invalid-grant): inside `refreshTokenReuseInterval` of its
+            // rotation it gets that rotation's answer again — better-auth's
+            // `rotationReplayResponse`, no new token minted; after it, the
+            // whole family is invalidated (every refresh token of the grant
+            // answers `invalid_grant` from then on, and no server state brings
+            // it back). Access tokens already issued are left alone: the
+            // contract records only the refresh side.
+            if let presented, let rotation = state.rotated[presented] {
+                guard now().timeIntervalSince(rotation.at) <= Self.refreshTokenReuseInterval else {
+                    grant.familyRevoked = true
+                    state.grants[grantID] = grant
+                    state.counters.familyInvalidations += 1
+                    return Self.oauthError(400, "invalid_grant", "invalid refresh token")
+                }
+                state.counters.refreshReplays += 1
+                return Self.tokenResponse(rotation.issued)
+            }
+            // Rotation: the old refresh token stops working (bar the replay
+            // window above), and a dead 1.4.0 session rotates just as happily
+            // as a live one.
             let tokens = state.mintTokens(scope: grant.scope, host: host)
+            if let old = presented {
+                state.refreshIndex[old] = nil
+                state.rotated[old] = RotatedRefresh(grantID: grantID, at: now(), issued: tokens)
+            }
             grant.refreshToken = tokens.refreshToken ?? ""
             state.grants[grantID] = grant
             state.refreshIndex[grant.refreshToken] = grantID
             state.accessIndex[tokens.accessToken] = grantID
+            // Audience binding (Contract #constraint "AUDIENCE-BOUND"): a token
+            // is for the resource the TOKEN request named. Without
+            // `resource=<origin>/api/v1` (or with another one) the refresh
+            // still answers 200, but the token it mints is rejected by the
+            // Mail API with 401 INVALID_OAUTH_TOKEN.
+            if form["resource"] != resource { state.foreignAudience.insert(tokens.accessToken) }
             return Self.tokenResponse(tokens)
         default:
             return Self.oauthError(400, "unsupported_grant_type", nil)
@@ -466,14 +574,17 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
             return String(header.dropFirst("Bearer ".count))
         }
         if let bearer, let id = state.accessIndex[bearer], let grant = state.grants[id],
-           grant.condition == .live, state.clients[grant.clientID] == true {
+           grant.condition == .live, state.clients[grant.clientID] == true,
+           !state.foreignAudience.contains(bearer) {
             return nil
         }
         state.counters.unauthorized += 1
-        return .error(
+        // The BARE body HQBase sends here (Contract, 2026-09-26 update: every
+        // rejection is `401 {"error":"INVALID_OAUTH_TOKEN"}`) — a string, not
+        // the Mail API's `{"error":{"code","message"}}` envelope.
+        return .json(
             401,
-            code: "INVALID_OAUTH_TOKEN",
-            message: "Invalid OAuth access token",
+            ["error": "INVALID_OAUTH_TOKEN"],
             headers: [
                 "WWW-Authenticate":
                     #"Bearer resource_metadata="\#(origin.absoluteString)/.well-known/oauth-protected-resource/api/v1", scope="mail:read", error="invalid_token""#,
@@ -883,6 +994,17 @@ private nonisolated struct Grant: Sendable {
     let scope: String
     var refreshToken: String
     var condition: GrantCondition
+    /// A rotated refresh token was replayed after the reuse window: every
+    /// refresh token of this grant is dead for good (no server state revives it).
+    var familyRevoked = false
+}
+
+/// A refresh token the server has rotated past, kept for the reuse window.
+private nonisolated struct RotatedRefresh: Sendable {
+    let grantID: Int
+    let at: Date
+    /// What the rotation answered — replayed verbatim inside the window.
+    let issued: OAuthTokens
 }
 
 private nonisolated struct CodeRecord: Sendable {
@@ -965,6 +1087,10 @@ private nonisolated struct ServerState {
     var grants: [Int: Grant] = [:]
     var accessIndex: [String: Int] = [:]
     var refreshIndex: [String: Int] = [:]
+    /// Rotated refresh tokens → their rotation (replay window, family lookup).
+    var rotated: [String: RotatedRefresh] = [:]
+    /// Access tokens minted for a resource other than `<origin>/api/v1`.
+    var foreignAudience: Set<String> = []
     var codes: [String: CodeRecord] = [:]
     var messages: [MessageRecord] = []
     var drafts: [String: DraftRecord] = [:]

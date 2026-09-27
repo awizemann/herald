@@ -211,9 +211,56 @@ import Testing
             "server", "presenter", "sends", "sendRequests", "tokenRequests", "refreshes", "codeExchanges",
             "registrations", "signIns", "pendingSignIns", "draftCreates", "draftUpdates", "draftDeletes",
             "unauthorized", "revocations", "storeRefusesList", "activationRefused",
+            "apiSuccesses", "pollPaused", "heldReads", "saveAttempts",
         ])
         #expect(harness.status.hasPrefix("server=invalidGrant presenter=hangUntilCancelled sends=0 "))
-        #expect(harness.status.hasSuffix(" activationRefused=false"))
+        #expect(harness.status.hasSuffix(" activationRefused=false apiSuccesses=0 pollPaused=false heldReads=0 saveAttempts=0"))
+    }
+
+    /// `uitest.poll.pause|resume`: while paused, a Mail API read is held
+    /// UNANSWERED and unseen (no counter moves), while a write still goes
+    /// through; resuming answers it. Fails if the pause leaks into writes (a
+    /// Send could never reach the dead session) or answers reads at once (the
+    /// poll could still discover the death).
+    @Test(.timeLimit(.minutes(1)))
+    func pausingTheSyncPollHoldsReadsOnly() async throws {
+        let (harness, suite) = Self.harness(.oneAccount)
+        defer { ScratchDefaults.discard(suite) }
+        let account = try #require(try harness.accountStore.accounts().first)
+        let provider = try await harness.environment.auth.tokenProvider(for: account)
+        let api = HQBaseAPIClient(origin: account.origin, tokens: provider, session: harness.session, includeLabels: true)
+        let server = harness.network.all[0]
+
+        harness.setSyncPollPaused(true)
+        #expect(harness.status.contains(" pollPaused=true "))
+        let read = Task { try await api.listMailboxes() }
+        try await wait("the read to be held", timeout: .seconds(10)) { server.heldReads == 1 }
+        #expect(server.counters.apiSuccesses == 0, "a held read was already answered")
+        #expect(server.counters.unauthorized == 0)
+
+        let draft = try await api.createDraft(DraftInput(from: server.mailboxAddress, subject: "while paused"))
+        #expect(!draft.id.isEmpty)
+        #expect(server.counters.apiSuccesses == 1, "a write was held with the reads")
+
+        harness.setSyncPollPaused(false)
+        let mailboxes = try await read.value
+        #expect(mailboxes.count == 1)
+        #expect(server.counters.apiSuccesses == 2)
+        #expect(server.heldReads == 0)
+        #expect(harness.status.contains(" pollPaused=false heldReads=0 "))
+    }
+
+    /// `saveAttempts=`: counts what the environment's compose hook reports,
+    /// and resets with the other counters.
+    @Test func saveAttemptsFollowTheComposeHook() throws {
+        let (harness, suite) = Self.harness(.oneAccount)
+        defer { ScratchDefaults.discard(suite) }
+        let hook = try #require(harness.environment.composeSaveAttempted)
+        hook()
+        hook()
+        #expect(harness.status.hasSuffix(" saveAttempts=2"))
+        harness.resetCounters()
+        #expect(harness.status.hasSuffix(" saveAttempts=0"))
     }
 
     /// U4 scenario 6 signs in to the SECOND origin from `oneAccount`. Fails if
@@ -246,7 +293,7 @@ import Testing
         let cache = try #require(environment.store)
 
         harness.setActivationRefused(true)
-        #expect(harness.status.hasSuffix(" activationRefused=true"))
+        #expect(harness.status.contains(" activationRefused=true "))
         environment.presentsAddAccount = true
         await environment.signIn(originText: UITestOrigins.secondary.absoluteString)
 
@@ -259,7 +306,7 @@ import Testing
 
         harness.setActivationRefused(false)
         #expect(environment.store === cache)
-        #expect(harness.status.hasSuffix(" activationRefused=false"))
+        #expect(harness.status.contains(" activationRefused=false "))
         await Self.cleanUp(harness, suite: suite)
     }
 }
@@ -459,6 +506,111 @@ import Testing
         #expect(server.counters.codeExchanges == 1)
         #expect(server.counters.refreshes == 1, "the new grant was refreshed: it had been replaced by dead tokens")
         await UITestHarnessWiringTests.cleanUp(harness, suite: suite)
+    }
+
+    // MARK: Fidelity (U6b / audit F6) — raw wire, one server, a movable clock
+
+    private nonisolated final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current = Date(timeIntervalSince1970: 1_800_000_000)
+        var now: Date { lock.withLock { current } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { current += seconds } }
+    }
+
+    private static func fidelityServer(clock: Clock) -> (FakeHQBase, OAuthTokens, String) {
+        let server = FakeHQBase(origin: UITestOrigins.primary, mailboxAddress: "me@hqbase.uitest.invalid", now: { clock.now })
+        let clientID = "fidelity-client"
+        return (server, server.seedGrant(clientID: clientID), clientID)
+    }
+
+    private static func refresh(
+        _ server: FakeHQBase, _ refreshToken: String, clientID: String, resource: String? = Account.resource(for: UITestOrigins.primary)
+    ) -> (status: Int, body: [String: Any]) {
+        var form = "grant_type=refresh_token&refresh_token=\(refreshToken)&client_id=\(clientID)"
+        if let resource {
+            form += "&resource=\(resource.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? resource)"
+        }
+        let response = server.respond(to: FakeHTTPRequest(
+            method: "POST", path: "/api/auth/oauth2/token", query: [:], headers: [:], body: Data(form.utf8)
+        ))
+        return (response.status, FakeHQBase.jsonObject(response.body) ?? [:])
+    }
+
+    private static func mailboxes(_ server: FakeHQBase, _ accessToken: String) -> FakeHTTPResponse {
+        server.respond(to: FakeHTTPRequest(
+            method: "GET", path: "/api/v1/mailboxes", query: [:], headers: ["Authorization": "Bearer \(accessToken)"], body: Data()
+        ))
+    }
+
+    /// Contract: tokens are AUDIENCE-BOUND to the resource the token request
+    /// named. Fails if a refresh without `resource` (or with another one)
+    /// mints a token the Mail API accepts — Herald dropping the parameter
+    /// would then pass every UI test and fail on the real server.
+    @Test func aRefreshWithoutTheResourceMintsATokenTheMailAPIRejects() throws {
+        let clock = Clock()
+        let (server, seeded, clientID) = Self.fidelityServer(clock: clock)
+
+        let bare = Self.refresh(server, try #require(seeded.refreshToken), clientID: clientID, resource: nil)
+        #expect(bare.status == 200)
+        let unbound = try #require(bare.body["access_token"] as? String)
+        #expect(Self.mailboxes(server, unbound).status == 401)
+
+        let wrong = Self.refresh(server, try #require(bare.body["refresh_token"] as? String), clientID: clientID,
+                                 resource: "https://hqbase.uitest.invalid/mcp")
+        #expect(wrong.status == 200)
+        #expect(Self.mailboxes(server, try #require(wrong.body["access_token"] as? String)).status == 401)
+
+        let bound = Self.refresh(server, try #require(wrong.body["refresh_token"] as? String), clientID: clientID)
+        #expect(bound.status == 200)
+        #expect(Self.mailboxes(server, try #require(bound.body["access_token"] as? String)).status == 200)
+    }
+
+    /// Contract #rotation / #invalid-grant: a rotated refresh token replayed
+    /// inside `refreshTokenReuseInterval` gets the rotation's own answer (no
+    /// new token); after it, the whole family is invalidated — the replayed
+    /// token AND the grant's current one answer `invalid_grant`, and no server
+    /// state revives it. Fails if the fake answers every replay with
+    /// `invalid_grant` (Herald's two-process arbitration would be tested
+    /// against a stricter server than production) or never invalidates.
+    @Test func aRotatedRefreshTokenGetsTheReplayWindowThenKillsTheFamily() throws {
+        let clock = Clock()
+        let (server, seeded, clientID) = Self.fidelityServer(clock: clock)
+        let original = try #require(seeded.refreshToken)
+
+        let rotation = Self.refresh(server, original, clientID: clientID)
+        #expect(rotation.status == 200)
+        let current = try #require(rotation.body["refresh_token"] as? String)
+        #expect(current != original)
+
+        clock.advance(FakeHQBase.refreshTokenReuseInterval - 1)
+        let replay = Self.refresh(server, original, clientID: clientID)
+        #expect(replay.status == 200)
+        #expect(replay.body["access_token"] as? String == rotation.body["access_token"] as? String, "a replay minted a new token")
+        #expect(replay.body["refresh_token"] as? String == current)
+        #expect(server.counters.refreshReplays == 1)
+
+        clock.advance(2)
+        let late = Self.refresh(server, original, clientID: clientID)
+        #expect(late.status == 400)
+        #expect(late.body["error"] as? String == "invalid_grant")
+        #expect(server.counters.familyInvalidations == 1)
+        #expect(Self.refresh(server, current, clientID: clientID).body["error"] as? String == "invalid_grant",
+                "the family's live refresh token survived the invalidation")
+        server.setState(.healthy)
+        #expect(Self.refresh(server, current, clientID: clientID).status == 400, "healthy revived an invalidated family")
+    }
+
+    /// Contract (2026-09-26): HQBase's rejection body is the BARE
+    /// `{"error":"INVALID_OAUTH_TOKEN"}`, not the Mail API envelope, with the
+    /// `invalid_token` challenge. Fails if the fake sends the envelope — a
+    /// client that needed `error.code` would pass here and break live.
+    @Test func aRejectedTokenGetsTheBare401Body() throws {
+        let clock = Clock()
+        let (server, _, _) = Self.fidelityServer(clock: clock)
+        let response = Self.mailboxes(server, "not-a-token")
+        #expect(response.status == 401)
+        #expect(FakeHQBase.jsonObject(response.body)?["error"] as? String == "INVALID_OAUTH_TOKEN")
+        #expect(response.headers["WWW-Authenticate"]?.contains(#"error="invalid_token""#) == true)
     }
 
     /// Send idempotency, drafts and signatures through the real client.

@@ -89,19 +89,28 @@ struct SidebarPage {
     }
 
     /// Switches the window to the account whose picker row contains `text`.
+    /// Searched inside the switcher's OWN popup only: an app-wide CONTAINS
+    /// search could match a menu-bar item (or another window's) first.
     func switchAccount(to text: String, file: StaticString = #filePath, line: UInt = #line) {
         accountSwitcher.waitAndClick(file: file, line: line)
-        let item = app.menuItems.matching(NSPredicate(format: "title CONTAINS %@", text)).firstMatch
+        let item = accountSwitcher.descendants(matching: .menuItem)
+            .matching(NSPredicate(format: "title CONTAINS %@", text)).firstMatch
         item.waitAndClick(file: file, line: line)
     }
 
-    /// A SwiftUI `Menu`/`Picker` item: by identifier when SwiftUI carried it
-    /// over to the NSMenuItem, else by title. (On macOS 26/27 SwiftUI does NOT
-    /// carry `.accessibilityIdentifier` to menu items — they all report
-    /// `menuAction:` — so the title is what matches in practice.)
+    /// An item of the account options popup: by identifier when SwiftUI
+    /// carried it over to the NSMenuItem, else by title. (On macOS 26/27
+    /// SwiftUI does NOT carry `.accessibilityIdentifier` to menu items — they
+    /// all report `menuAction:` — so the title is what matches in practice.)
+    ///
+    /// Scoped to the popup itself (the open menu is a child of its button in
+    /// the accessibility tree): the menu bar has its own "Add Account…" and
+    /// "Sign Out", and an app-wide query could click those instead — a
+    /// different command, possibly for a different account.
     private func menuItem(id: String, title: String) -> XCUIElement {
-        let byID = app.menuItems.matching(identifier: id).firstMatch
-        return byID.exists ? byID : app.menuItems[title].firstMatch
+        let items = accountOptions.descendants(matching: .menuItem)
+        let byID = items.matching(identifier: id).firstMatch
+        return byID.exists ? byID : items[title].firstMatch
     }
 }
 

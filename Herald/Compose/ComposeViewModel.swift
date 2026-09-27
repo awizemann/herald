@@ -237,6 +237,12 @@ final class ComposeViewModel {
     @ObservationIgnored private let record: @MainActor @Sendable (UsageEvent) -> Void
     /// Exposed so tests can await the debounce instead of sleeping on a wall clock.
     @ObservationIgnored private(set) var autosaveTask: Task<Void, Never>?
+    /// Told each time a save is about to go to the outbox (``saveNow()`` past
+    /// its guards) — whatever the outcome, and before the token provider can
+    /// fail it fast. A seam like ``record``: the Debug UI-test harness counts
+    /// these (`saveAttempts=`), because a save refused by a latched grant never
+    /// reaches the server and so shows up in no server counter. Default no-op.
+    @ObservationIgnored private let saveAttempted: @MainActor () -> Void
 
     init(
         context: ComposeContext,
@@ -246,7 +252,8 @@ final class ComposeViewModel {
         draftCache: @escaping @MainActor @Sendable (DraftCacheEvent) -> Void = { _ in },
         reauthenticate: @escaping @MainActor () async -> Void = {},
         isReauthenticating: @escaping @MainActor () -> Bool = { false },
-        reauthError: @escaping @MainActor () -> String? = { nil }
+        reauthError: @escaping @MainActor () -> String? = { nil },
+        saveAttempted: @escaping @MainActor () -> Void = {}
     ) {
         let draft = context.makeDraft()
         self.draft = draft
@@ -259,6 +266,7 @@ final class ComposeViewModel {
         self.reauthenticate = reauthenticate
         self.isReauthenticating = isReauthenticating
         self.reauthError = reauthError
+        self.saveAttempted = saveAttempted
         self.toText = draft.to.joined(separator: ", ")
         self.ccText = draft.cc.joined(separator: ", ")
         self.bccText = draft.bcc.joined(separator: ", ")
@@ -695,6 +703,7 @@ final class ComposeViewModel {
         // and a send in progress consumes the draft — a PATCH racing it would
         // only 404 onto the error bar.
         guard !Task.isCancelled, status != .sending, isSaveWorthwhile else { return }
+        saveAttempted()
         status = .saving
         // The snapshot that goes to the server; the response is MERGED into
         // whatever the user has typed since, never assigned over it. Assigning

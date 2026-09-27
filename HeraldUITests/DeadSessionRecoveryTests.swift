@@ -20,11 +20,23 @@ final class DeadSessionRecoveryTests: HeraldUITestCase {
     /// no Sign In (P4); a refresh storm on the dead grant (P1 latch — the
     /// incident did six in 65 s); typing that clears the sticky error or
     /// restarts autosave into the dead session.
+    ///
+    /// The sync poll is PAUSED (the fake holds every read) from before the
+    /// session dies until the end, so nothing but this Send can meet the dead
+    /// session: the banner can only come from P2's routing of the Send's own
+    /// 401, never from a poll that happened to run first (it used to, about
+    /// one run in ten, and the test passed without exercising P2 at all).
     func testSendIntoADeadSessionRaisesTheBannerAndComposeSignInAtOnce() throws {
         launch(.oneAccount, presenter: .userCancel)
         let compose = openFilledComposer()
+        controls.setSyncPollPaused(true)
         controls.resetCounters()
         killSession()
+
+        // Nothing has met the dead session yet.
+        let beforeSend = try XCTUnwrap(controls.waitForStatus(), "no parseable uitest.status")
+        XCTAssertEqual(beforeSend.unauthorized, 0, "something met the dead session before Send: \(beforeSend)")
+        XCTAssertFalse(banner.container.exists, "the re-auth banner was already up before Send")
 
         compose.clickSend()
 
@@ -35,29 +47,35 @@ final class DeadSessionRecoveryTests: HeraldUITestCase {
         XCTAssertTrue(compose.waitForSignInOffered(), "the compose error bar offers no Sign In")
         XCTAssertTrue(banner.waitForSignInOffered(), "the banner offers no Sign In after the automatic attempt ended")
 
-        // The dead session was met — by this Send's POST (401), or by the
-        // 15 s sync poll just before it, in which case the grant is already
-        // latched and the Send fails fast WITHOUT a request (the P1 latch; no
-        // request is the better outcome). Either way nothing may be accepted.
+        // The Send met the dead session: its POST (401), one refresh (200),
+        // the middleware's one retry with the new token (401) — then the
+        // grant is latched. Two send REQUESTS, one Send.
         let afterSend = try XCTUnwrap(
-            controls.waitForStatus { ($0.unauthorized ?? 0) >= 1 },
-            "the dead session was never contacted: \(controls.currentStatus()?.description ?? "no status")"
+            controls.waitForStatus { ($0.sendRequests ?? .min) >= 2 },
+            "the Send never reached the server twice (first try + post-refresh retry): "
+                + (controls.currentStatus()?.description ?? "no status")
         )
+        XCTAssertEqual(afterSend.sendRequests, 2, "one Send, first try + one retry: \(afterSend)")
         XCTAssertEqual(afterSend.sends, 0, "a send was accepted by a dead session: \(afterSend)")
+        XCTAssertEqual(afterSend.unauthorized, 2, "only the Send's two requests may have met the session: \(afterSend)")
         XCTAssertTrue(
-            Wait.holds(for: Self.prompt) { (controls.currentStatus()?.refreshes ?? 0) <= 2 },
-            "refresh storm on a dead grant: \(controls.currentStatus()?.description ?? "no status")"
+            Wait.holds(for: Self.prompt) { controls.currentStatus()?.refreshes == 1 },
+            "not exactly one refresh (a storm on the dead grant, or none): \(controls.currentStatus()?.description ?? "no status")"
         )
 
-        // Typing must neither clear the error nor autosave into the dead grant.
-        let beforeTyping = try XCTUnwrap(controls.waitForStatus())
+        // Typing must neither clear the error nor restart autosave. Asserted on
+        // ATTEMPTED saves: under the latch a restarted autosave fails fast in
+        // the token provider and never reaches the server, so no server
+        // counter could see it.
+        let beforeTyping = try XCTUnwrap(controls.waitForStatus(), "no parseable uitest.status")
         compose.body.clickAndType(" More text after the failure.")
         XCTAssertTrue(
             // Longer than the 2 s autosave debounce.
             Wait.holds(for: 4) { compose.errorMessage.exists && compose.errorSignIn.exists },
             "typing cleared the dead-session error"
         )
-        let afterTyping = try XCTUnwrap(controls.waitForStatus())
+        let afterTyping = try XCTUnwrap(controls.waitForStatus(), "no parseable uitest.status")
+        XCTAssertEqual(afterTyping.saveAttempts, beforeTyping.saveAttempts, "typing restarted autosave under a dead session")
         XCTAssertEqual(afterTyping.draftUpdates, beforeTyping.draftUpdates, "typing autosaved into a dead session")
         XCTAssertEqual(afterTyping.draftCreates, beforeTyping.draftCreates, "typing autosaved into a dead session")
         XCTAssertEqual(afterTyping.unauthorized, beforeTyping.unauthorized, "typing caused more 401s")
@@ -95,12 +113,18 @@ final class DeadSessionRecoveryTests: HeraldUITestCase {
             "the banner came back: the stale attempt undid the sign-in"
         )
 
-        // Healthy for real: a refresh goes through on the new grant.
+        // Healthy for real: a refresh goes through on the new grant — the
+        // server ANSWERED it, not merely "nothing 401'd" (which a refresh
+        // that never left the app would satisfy too).
         controls.resetCounters()
         refreshMail()
+        XCTAssertNotNil(
+            controls.waitForCount("apiSuccesses", atLeast: 1, timeout: Self.prompt),
+            "the refresh never reached the server after re-auth: \(controls.currentStatus()?.description ?? "no status")"
+        )
         XCTAssertTrue(
-            Wait.holds(for: 3) { (controls.currentStatus()?.unauthorized ?? 0) == 0 && !banner.container.exists },
-            "the refreshed account is still rejected"
+            Wait.holds(for: 3) { controls.currentStatus()?.unauthorized == 0 && !banner.container.exists },
+            "the refreshed account is still rejected: \(controls.currentStatus()?.description ?? "no status")"
         )
         XCTAssertTrue(mailList.waitForRow(subject: SmokeTests.seededSubjects[0]), "the inbox is gone after re-auth")
     }

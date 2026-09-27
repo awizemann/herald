@@ -297,6 +297,11 @@ final class AppEnvironment {
     /// `false` only under the UI-test harness, which must not touch the system
     /// notification centre at all.
     let routesNotificationClicks: Bool
+    /// Told whenever any composer is about to save its draft (see
+    /// `ComposeViewModel`'s `saveAttempted`). `nil` in the shipping app; the
+    /// Debug UI-test harness sets it to count attempts a latched grant fails
+    /// fast before they reach the server.
+    @ObservationIgnored var composeSaveAttempted: (@MainActor () -> Void)?
 
     init(
         auth: AuthCoordinator = AuthCoordinator(),

@@ -86,6 +86,34 @@ actor FakeOutbox: Outboxing {
 
 @MainActor
 @Suite struct ComposeViewModelTests {
+    /// The `saveAttempted` seam (the UI-test harness's `saveAttempts=`): told
+    /// once per save that goes to the outbox — a failing one too, since a
+    /// latched grant fails a save before any server sees it — and never for a
+    /// save with nothing to persist. Fails if the hook sits after the outbox
+    /// call (the failure is missed) or before the guards (no-ops counted).
+    @Test func everySaveThatReachesTheOutboxIsReportedAsAttempted() async {
+        let outbox = FakeOutbox()
+        var attempts = 0
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600),
+            saveAttempted: { attempts += 1 }
+        )
+        await model.saveNow()
+        #expect(attempts == 0, "an empty draft is not a save attempt")
+
+        model.subject = "Lunch"
+        await model.saveNow()
+        #expect(attempts == 1)
+        #expect(await outbox.saveCount == 1)
+
+        await outbox.setSaveError(.api(.unauthorized))
+        model.subject = "Lunch?"
+        await model.saveNow()
+        #expect(attempts == 2, "a failed save must still count as attempted")
+    }
+
     /// Fails if autosave runs per keystroke (2 saves) or never fires (0).
     @Test func autosaveDebouncesBurstsIntoOneSave() async {
         let outbox = FakeOutbox()

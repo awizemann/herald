@@ -9,11 +9,15 @@ struct UITestStatus: Equatable, CustomStringConvertible, Sendable {
     let raw: String
     let fields: [String: String]
 
-    /// The keys every harness since U1 reports.
+    /// The keys the harness reports (the app and this bundle always build
+    /// together, so a key missing here is a broken harness — the status then
+    /// never parses and every wait on it FAILS rather than reading a default).
     static let requiredKeys = [
         "server", "presenter", "sends", "sendRequests", "tokenRequests", "refreshes",
         "codeExchanges", "registrations", "signIns", "pendingSignIns", "draftCreates",
         "draftUpdates", "draftDeletes", "unauthorized", "revocations", "storeRefusesList",
+        // U6b.
+        "apiSuccesses", "pollPaused", "heldReads", "saveAttempts",
     ]
 
     /// `nil` unless every token is `key=value` and every ``requiredKeys`` key
@@ -53,6 +57,14 @@ struct UITestStatus: Equatable, CustomStringConvertible, Sendable {
     var draftDeletes: Int? { count("draftDeletes") }
     var unauthorized: Int? { count("unauthorized") }
     var revocations: Int? { count("revocations") }
+    /// Mail API requests the fake answered 2xx (U6b).
+    var apiSuccesses: Int? { count("apiSuccesses") }
+    /// Whether `uitest.poll.pause` is holding the servers' reads (U6b).
+    var pollPaused: Bool? { fields["pollPaused"].flatMap(Bool.init) }
+    var heldReads: Int? { count("heldReads") }
+    /// Draft saves any composer attempted, including ones a latched grant
+    /// failed fast before they reached the server (U6b).
+    var saveAttempts: Int? { count("saveAttempts") }
 
     var description: String { raw }
 }

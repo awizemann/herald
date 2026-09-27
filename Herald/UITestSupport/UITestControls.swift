@@ -18,6 +18,12 @@ struct UITestCommands: Commands {
                         .accessibilityIdentifier("uitest.server.\(state.rawValue)")
                 }
             }
+            Section("Sync poll") {
+                Button("Sync poll: pause") { harness.setSyncPollPaused(true) }
+                    .accessibilityIdentifier("uitest.poll.pause")
+                Button("Sync poll: resume") { harness.setSyncPollPaused(false) }
+                    .accessibilityIdentifier("uitest.poll.resume")
+            }
             Section("Sign-in window") {
                 presenterButton(.succeed)
                 presenterButton(.hangUntilCancelled)

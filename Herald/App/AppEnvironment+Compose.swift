@@ -54,6 +54,8 @@ extension AppEnvironment {
             self?.isReauthenticating(accountID: accountID) ?? false
         }, reauthError: { [weak self] in
             self?.reauthError(accountID: accountID)
+        }, saveAttempted: { [weak self] in
+            self?.composeSaveAttempted?()
         })
         session.model = model
         composeSessions[id] = session

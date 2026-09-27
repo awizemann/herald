@@ -18,12 +18,36 @@
 - [ ] A5 (follow-up): WKURLSchemeHandler for inline images + streamed attachment downloads (id: t-c909a320) (added: 2026-09-04) (priority: low)
 - [ ] Localization: replace string-built UI/a11y sentences with LocalizedStringKey args (signatures, compose quoted, list a11y) (id: t-be4fbea9) (added: 2026-09-19) (priority: low)
 - [ ] Upstream ask: expose caller user id (or accept scope.type=user without id) so a first personal signature can be created via /api/v1 (id: t-63c94c58) (added: 2026-09-19) (priority: low)
+- [ ] Multi-account inputs from 2026-09-26 session-recovery audit (id: t-09312c4d) (added: 2026-09-26)
+- [ ] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
 
 ## Doing
 
 
 ## Done
 
+- [x] UI tests: final audits (plan, memory, fresh-eyes, test-mode blast radius) (id: t-2ae42cb2) (added: 2026-09-26)
+- [x] UI tests U6b: make scenarios discriminate (poll pause, autosave quiet, no vacuous asserts, scoped menus, fake fidelity) + 5x rerun (id: t-8025fb2b) (added: 2026-09-27)
+- [x] UI tests U6a: separate Debug bundle id, refresh Keychain-failure fix, launch/release guards (id: t-a3485ec1) (added: 2026-09-27) (priority: high)
+- [x] UI tests U5: stabilise (5x runs) and trim the manual checklist (id: t-c59c902d) (added: 2026-09-26)
+- [x] UI tests U4: failure, guard and accessibility scenarios (id: t-389507a2) (added: 2026-09-26)
+- [x] UI tests U3: dead-session and recovery scenarios (id: t-1ac55e3e) (added: 2026-09-26) (priority: high)
+- [x] UI tests U2: UI-test target, accessibility identifiers, page objects, smoke test (id: t-738288af) (added: 2026-09-26) (priority: high)
+- [x] Fix refresh race: a refresh finishing after re-auth overwrites the new grant (id: t-efda332b) (added: 2026-09-26) (priority: high)
+- [x] UI tests U1: Debug-only test launch mode with fake HQBase + scripted sign-in (id: t-efe25d19) (added: 2026-09-26) (priority: high)
+- [x] Session recovery: final cleanup (P9a reviewer lows) + consolidate recoverability memory note (id: t-330f991a) (added: 2026-09-26)
+- [x] Session recovery P9b: app fixes from round-2 audit (id: t-102e6125) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P9a: HeraldKit auth fixes from round-2 audit (id: t-14a65a18) (added: 2026-09-26) (priority: high)
+- [x] Session recovery round 2: audits of P6–P8 (fresh-eyes + whole surface) (id: t-8d9c31c9) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P7: dead client registration + visible re-auth failure reasons (id: t-6b58e25e) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P8: account-store safety + offline launch (id: t-f5676dfd) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P6: harden latch, late consent, handler wiring, composer saves (id: t-ec625ced) (added: 2026-09-26) (priority: high)
+- [x] Session recovery: final audits (plan, memory, fresh-eyes, whole touched surface) (id: t-3a6829c1) (added: 2026-09-26)
+- [x] Session recovery P5: full test run + live verification on local 1.4.2 (id: t-6e2a2233) (added: 2026-09-26)
+- [x] Session recovery P4: Sign In from compose error bar; composer survives re-auth (id: t-c0da7e71) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P3: Cancel on automatic re-auth banner + clickable sidebar Sign in again (id: t-095efdb4) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P2: route every dead-session signal to MailViewModel's one transition (id: t-0ae43f58) (added: 2026-09-26) (priority: high)
+- [x] Session recovery P1: dead-session latch in AccountTokenProvider (id: t-9cc83ef8) (added: 2026-09-26) (priority: high)
 - [x] Herald #11: row context menu mirrors the header actions (Reply, Reply All, Forward, then triage) (id: t-626e197d) (added: 2026-09-19)
 - [x] Herald #10: ⌘N opens a new window instead of Compose; add a visible Compose toolbar button (id: t-e14a1935) (added: 2026-09-19) (priority: high)
 - [x] Dogfood against a real HQBase 1.1.0 server: add account, sync, read, reply (id: t-8a1c0010) (added: 2026-08-15) (priority: high)

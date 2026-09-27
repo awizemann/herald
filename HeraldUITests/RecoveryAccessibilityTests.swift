@@ -42,7 +42,7 @@ final class RecoveryAccessibilityTests: HeraldUITestCase {
         assertLabeled(sidebar.statusSignIn, "sidebar Sign in again (enabled)", equals: "Sign in again")
 
         // The Add Account sheet.
-        assertLabeled(sidebar.accountOptions, "sidebar account options")
+        assertLabeled(sidebar.accountCard, "sidebar account card")
         sidebar.addAccount()
         XCTAssertTrue(onboarding.waitUntilVisible(), "Add Account opened no sheet")
         assertLabeled(onboarding.origin, "onboarding server address", equals: "Server address")

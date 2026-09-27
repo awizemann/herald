@@ -51,7 +51,8 @@ struct SyncFailedBannerPage {
     var retry: XCUIElement { app.element(id: AccessibilityID.SyncFailedBanner.retry) }
 }
 
-/// The sidebar header: account name, status slot, account options, switcher.
+/// The sidebar's account card: account name, status slot, and its popover
+/// (accounts, Add Account…, Settings…).
 @MainActor
 struct SidebarPage {
     let app: XCUIApplication
@@ -61,11 +62,32 @@ struct SidebarPage {
     var status: XCUIElement { app.element(id: AccessibilityID.Sidebar.status) }
     /// "Sign in again" — only for a dead session.
     var statusSignIn: XCUIElement { app.element(id: AccessibilityID.Sidebar.statusSignIn) }
-    var accountOptions: XCUIElement { app.element(id: AccessibilityID.Sidebar.accountOptions) }
-    /// Only with more than one account.
-    var accountSwitcher: XCUIElement { app.element(id: AccessibilityID.Sidebar.accountSwitcher) }
-    var mailboxPicker: XCUIElement { app.element(id: AccessibilityID.Sidebar.mailboxPicker) }
+    /// The account card's button — opens the account popover.
+    var accountCard: XCUIElement { app.element(id: AccessibilityID.Sidebar.accountCard) }
+    /// The popover's Add Account… (only while the popover is open). A popover
+    /// holds real buttons, not NSMenuItems, so the identifier carries over.
+    var addAccountItem: XCUIElement { app.element(id: AccessibilityID.Sidebar.addAccount) }
     var syncFailedBanner: SyncFailedBannerPage { SyncFailedBannerPage(app: app) }
+
+    /// The popover's account rows (only while the popover is open).
+    var accountRows: XCUIElementQuery {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.Sidebar.accountRowPrefix)
+        )
+    }
+
+    /// Whether more than one account is signed in, read WITHOUT opening
+    /// anything (it must also hold while a sheet blocks the window): the app
+    /// menu's sign-out item names the account only when there is more than
+    /// one (`AppEnvironment.signOutMenuTitle`). It replaces the old account
+    /// picker, which existed only with two or more accounts.
+    var hasSeveralAccounts: Bool { signOutMenuItem(prefix: "Sign Out of ").exists }
+
+    /// Waits for ``hasSeveralAccounts``.
+    @discardableResult
+    func waitForSeveralAccounts(timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        Wait.until(timeout: timeout) { hasSeveralAccounts }
+    }
 
     /// Waits for "Sign in again" to be offered AND clickable (no attempt
     /// running).
@@ -74,43 +96,32 @@ struct SidebarPage {
         statusSignIn.waitUntilEnabled(timeout: timeout)
     }
 
-    /// Opens the account options menu and picks Add Account….
+    /// Opens the account popover and picks Add Account….
     func addAccount(file: StaticString = #filePath, line: UInt = #line) {
-        accountOptions.waitAndClick(file: file, line: line)
-        menuItem(id: AccessibilityID.Sidebar.addAccount, title: "Add Account…")
-            .waitAndClick(file: file, line: line)
+        accountCard.waitAndClick(file: file, line: line)
+        addAccountItem.waitAndClick(file: file, line: line)
     }
 
-    /// Opens the account options menu and picks Sign Out (current account).
+    /// Signs the current account out through the app menu's item ("Sign Out"
+    /// or "Sign Out of <account>"): the sidebar has no Sign Out any more, and
+    /// Settings › Account's Sign Out… asks first. Clicked without opening the
+    /// menu ("Herald UI Testing": items are in the tree while closed).
     func signOut(file: StaticString = #filePath, line: UInt = #line) {
-        accountOptions.waitAndClick(file: file, line: line)
-        menuItem(id: AccessibilityID.Sidebar.signOut, title: "Sign Out")
+        signOutMenuItem(prefix: "Sign Out").waitAndClick(file: file, line: line)
+    }
+
+    /// Switches the window to the account whose popover row contains `text`.
+    func switchAccount(to text: String, file: StaticString = #filePath, line: UInt = #line) {
+        accountCard.waitAndClick(file: file, line: line)
+        accountRows.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
             .waitAndClick(file: file, line: line)
     }
 
-    /// Switches the window to the account whose picker row contains `text`.
-    /// Searched inside the switcher's OWN popup only: an app-wide CONTAINS
-    /// search could match a menu-bar item (or another window's) first.
-    func switchAccount(to text: String, file: StaticString = #filePath, line: UInt = #line) {
-        accountSwitcher.waitAndClick(file: file, line: line)
-        let item = accountSwitcher.descendants(matching: .menuItem)
-            .matching(NSPredicate(format: "title CONTAINS %@", text)).firstMatch
-        item.waitAndClick(file: file, line: line)
-    }
-
-    /// An item of the account options popup: by identifier when SwiftUI
-    /// carried it over to the NSMenuItem, else by title. (On macOS 26/27
-    /// SwiftUI does NOT carry `.accessibilityIdentifier` to menu items — they
-    /// all report `menuAction:` — so the title is what matches in practice.)
-    ///
-    /// Scoped to the popup itself (the open menu is a child of its button in
-    /// the accessibility tree): the menu bar has its own "Add Account…" and
-    /// "Sign Out", and an app-wide query could click those instead — a
-    /// different command, possibly for a different account.
-    private func menuItem(id: String, title: String) -> XCUIElement {
-        let items = accountOptions.descendants(matching: .menuItem)
-        let byID = items.matching(identifier: id).firstMatch
-        return byID.exists ? byID : items[title].firstMatch
+    /// The menu bar's sign-out item — scoped to the MENU BAR, so an app-wide
+    /// title search cannot match something else first.
+    private func signOutMenuItem(prefix: String) -> XCUIElement {
+        app.menuBars.descendants(matching: .menuItem)
+            .matching(NSPredicate(format: "title BEGINSWITH %@", prefix)).firstMatch
     }
 }
 

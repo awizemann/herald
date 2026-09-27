@@ -44,13 +44,27 @@ nonisolated enum AccessibilityID {
         /// The slot's "Sign in again" button (dead session only).
         static let statusSignIn = "sidebar.status.signIn"
         static let accountName = "sidebar.accountName"
-        /// The account options menu (Add Account…, Sign Out).
-        static let accountOptions = "sidebar.accountOptions"
-        static let addAccount = "sidebar.accountOptions.addAccount"
-        static let signOut = "sidebar.accountOptions.signOut"
-        /// The account picker; only there with more than one account.
-        static let accountSwitcher = "sidebar.accountSwitcher"
-        static let mailboxPicker = "sidebar.mailboxPicker"
+        /// The account card's button — opens the account popover (it replaced
+        /// the old account options menu and account picker; Sign Out moved to
+        /// Settings › Account, `Settings.signOut`).
+        static let accountCard = "sidebar.accountCard"
+        /// The popover's rows: `accountRowPrefix + <accountID>`.
+        static let accountRowPrefix = "sidebar.accountCard.account."
+        /// The popover's Add Account… (re-homed from the old options menu).
+        static let addAccount = "sidebar.accountCard.addAccount"
+        /// The popover's Settings… (opens Settings › Account).
+        static let settings = "sidebar.accountCard.settings"
+        /// The source list of the level on screen.
+        static let list = "sidebar.list"
+        /// "‹ Domains" / "‹ {domain}".
+        static let back = "sidebar.back"
+        /// Level 2's gear (Domain Settings…).
+        static let domainSettings = "sidebar.domainSettings"
+        /// The level's filter field (domains past 8, mailboxes always).
+        static let filter = "sidebar.filter"
+        /// Rows: `rowPrefix + allDomains | domain.<id> | label.<id> |
+        /// allMailboxes | mailbox.<id> | folder.<name>`.
+        static let rowPrefix = "sidebar.row."
     }
 
     /// The Settings window (`SettingsView` and its pages).

@@ -1,378 +1,542 @@
+import AppKit
 import HeraldKit
 import SwiftUI
 
-/// Account header + mailbox picker + ONE folder list for the picked scope.
+/// The drill-down sidebar (handoff §3.1): the account card, then ONE of three
+/// levels — Domains + Labels, one domain's Mailboxes, one mailbox's Folders.
 ///
-/// The old shape was "All Mailboxes" plus a section per mailbox, which grew a
-/// full folder list per mailbox and pushed everything below the fold on an
-/// account with more than two or three of them.
+/// A native source list (`List(.sidebar)`) with the system selection. The
+/// level is not view state: it is derived from the view-model's scope
+/// (``MailViewModel/sidebarLevel``), so it is persisted and restored with the
+/// scope, and a scope change from anywhere (a notification click, Hide) moves
+/// the sidebar with it. Rows write through the view-model's intents
+/// (``MailViewModel/activate(_:)``); nothing here composes a location itself.
 ///
-/// An INTERIM adapter onto the view-model's scope / folder / label axes until
-/// the redesigned sidebar lands: the picker sets the scope (All mailboxes →
-/// All domains), and the one `List` selection covers folders, Drafts and
-/// labels — so a folder row also closes an open label, the single-selection
-/// behaviour this sidebar has always had. Where the user was is persisted and
-/// restored by the view-model, not here.
+/// Each level's non-selectable chrome — the back link, the domain / mailbox
+/// header, the mailbox filter — rides in the top safe-area inset under the
+/// account card, outside the selectable rows (the Settings sidebar's layout).
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(ListDensity.storageKey) private var densityRaw = ListDensity.comfortable.rawValue
     @Bindable var model: MailViewModel
 
-    /// What one row of this sidebar's `List` selects.
-    enum Row: Hashable {
-        case folder(MailViewModel.Folder)
-        case label(String)
-    }
-
-    /// The `List` selection, read off and written through the view-model's
-    /// intents. Every write comes from a click in the list.
-    private var selectedRow: Binding<Row?> {
-        Binding(
-            get: {
-                // Drafts carry no label, so the Drafts row stays highlighted
-                // even while a label is kept open behind it.
-                if let labelID = model.selectedLabelID, !model.isShowingDrafts { return .label(labelID) }
-                return .folder(model.folder)
-            },
-            set: { row in
-                guard let row else { return }
-                model.pendingNavigationSource = .sidebar
-                switch row {
-                case .folder(let folder):
-                    // One selection for folders and labels: picking a folder
-                    // row is picking it INSTEAD of the label.
-                    model.selectFolder(folder, clearingLabel: true)
-                case .label(let labelID):
-                    model.openLabel(labelID)
-                }
-            }
-        )
-    }
+    /// A drill row the ARROW KEYS landed on: highlighted, not yet opened
+    /// (Return or → opens it). Cleared by any navigation.
+    @State private var keyboardHighlight: MailViewModel.SidebarRow?
+    @State private var domainFilter = ""
+    @State private var mailboxFilter = ""
+    /// Set when a click on a label row changed the selection (and so opened
+    /// the label), so the same click's tap does not close it again — see
+    /// ``labelTapped(_:)``.
+    @State private var labelOpenedBySelection = false
+    /// A level change the user made HERE, whose header should take VoiceOver
+    /// focus once it is on screen.
+    @State private var movesFocusOnLevelChange = false
+    @AccessibilityFocusState private var focusedLevel: Int?
 
     var body: some View {
-        List(selection: selectedRow) {
-            ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
-                FolderRow(folder: folder, unread: model.folderUnreadCounts[folder] ?? 0)
-            }
-            DraftsRow(count: model.draftCount)
-            // Only when the workspace HAS labels: an empty section is a header
-            // with nothing under it, and most instances start with none.
-            if !model.labels.isEmpty {
-                Section(MailTheme.labelsSectionTitle) {
-                    ForEach(model.labels) { label in
-                        // `threadCount` is a dictionary lookup into a structure
-                        // built once per index reload. It used to walk every
-                        // indexed thread PER LABEL, here in the body, on every
-                        // render pass the sidebar took.
-                        LabelRow(label: label, count: model.threadCount(forLabel: label.id))
-                    }
-                }
+        let level = model.sidebarLevel
+        let preferences = environment.domainPreferencesObserved()
+        let tint = environment.accountTint(for: model.accountID)
+        let monograms = DomainBadgeResolver.monograms(for: model.domains, accountID: model.accountID, in: preferences)
+        let density = ListDensity(rawValue: densityRaw) ?? .comfortable
+        List(selection: selection) {
+            switch level {
+            case .domains:
+                domainsLevel(preferences: preferences, tint: tint, monograms: monograms)
+            case .mailboxes(let domainID):
+                mailboxesLevel(domainID: domainID)
+            case .folders(_, let mailboxID):
+                foldersLevel(mailboxID: mailboxID)
             }
         }
         .listStyle(.sidebar)
+        .environment(\.defaultMinListRowHeight, SidebarPresentation.itemHeight(for: density))
+        .accessibilityIdentifier(AccessibilityID.Sidebar.list)
+        // The level swap is the `scope` motion (rows cross-fade); Reduce Motion
+        // makes it instant.
+        .animation(reduceMotion ? nil : MailTheme.Animation.scope, value: level)
+        .onKeyPress(keys: [.return, .rightArrow]) { _ in
+            guard let row = keyboardHighlight, row.drillsIn else { return .ignored }
+            drill(into: row)
+            return .handled
+        }
+        .onKeyPress(.leftArrow) {
+            guard level != .domains else { return .ignored }
+            back()
+            return .handled
+        }
+        .onChange(of: model.location) { keyboardHighlight = nil }
+        .onChange(of: level) {
+            domainFilter = ""
+            mailboxFilter = ""
+            if movesFocusOnLevelChange {
+                movesFocusOnLevelChange = false
+                focusedLevel = level.depth
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                accountHeader
-                AccountSwitcher()
-                mailboxPicker
-                Divider()
-            }
-        }
-    }
-
-    // MARK: Picker
-
-    /// The picker's tag for the scope: a mailbox id, or `""` for All mailboxes
-    /// (a `Picker` tag cannot be optional). A domain scope has no entry in this
-    /// picker and reads as All mailboxes.
-    ///
-    /// The folder and the label are kept deliberately: picking a mailbox
-    /// changes the scope, it is not a jump back to the inbox.
-    private var pickedMailboxID: Binding<String> {
-        Binding(
-            get: {
-                if case .mailbox(let id) = model.scope { return id }
-                return ""
-            },
-            set: { newValue in
-                model.pendingNavigationSource = .sidebar
-                model.selectScope(newValue.isEmpty ? .allDomains : .mailbox(newValue))
-            }
-        )
-    }
-
-    private var mailboxPicker: some View {
-        Picker(selection: pickedMailboxID) {
-            Text(MailViewModel.allMailboxesPickerLabel(unread: model.pickerUnread(forMailbox: nil)))
-                .tag("")
-            ForEach(model.mailboxes) { mailbox in
-                Text(
-                    MailViewModel.pickerLabel(
-                        for: mailbox,
-                        unread: model.pickerUnread(forMailbox: mailbox.id)
-                    )
-                )
-                .tag(mailbox.id)
-            }
-        } label: {
-            Text("Mailbox")
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        // A `Picker` is a real pop-up button, so Full Keyboard Access reaches it
-        // already — but with `labelsHidden()` it has nothing to announce, and
-        // Voice Control nothing to say.
-        .help("Choose which mailbox the folder list shows")
-        .accessibilityLabel("Mailbox")
-        .accessibilityIdentifier(AccessibilityID.Sidebar.mailboxPicker)
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.bottom, MailTheme.Spacing.sm)
-    }
-
-    // MARK: Header
-
-    private var accountHeader: some View {
-        HStack(spacing: MailTheme.Spacing.sm) {
-            Image(systemName: "person.crop.circle")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
-                Text(model.accountLabel)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.accountName)
-                SyncStatusLabel(
-                    status: model.status,
-                    lastSyncedAt: model.lastSyncedAt,
-                    isReauthenticating: environment.isReauthenticating(accountID: model.accountID),
-                    signIn: { [environment, accountID = model.accountID] in
-                        Task { await environment.reauthenticate(accountID: accountID) }
-                    }
-                )
-            }
-            Spacer()
-            // The help tag and the label belong on the MENU, not on its label
-            // image: a `Menu`'s label view is not the accessibility element, so
-            // labelling the image left VoiceOver announcing an unnamed pop-up
-            // button and Voice Control with nothing to say.
-            Menu {
-                Button("Add Account…") { environment.presentsAddAccount = true }
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.addAccount)
-                Button("Sign Out", role: .destructive) {
-                    // This account only — the others keep syncing.
-                    Task { await environment.signOut(accountID: model.accountID) }
-                }
-                .accessibilityIdentifier(AccessibilityID.Sidebar.signOut)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Account options")
-            .accessibilityLabel("Account options")
-            .accessibilityIdentifier(AccessibilityID.Sidebar.accountOptions)
-        }
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.sm)
-        .accessibilityElement(children: .contain)
-    }
-}
-
-/// Picks which account the window shows.
-///
-/// Its OWN view, not a computed property of the sidebar: it reads every signed-in
-/// account's unread count, and inlined it made a poll on a background account
-/// invalidate the whole folder list of the account being read.
-private struct AccountSwitcher: View {
-    @Environment(AppEnvironment.self) private var environment
-
-    var body: some View {
-        // Only worth the row when there is somewhere to switch TO — the header
-        // already names the one account otherwise.
-        if environment.accountIDs.count > 1 {
-            Picker(selection: pickedAccountID) {
-                ForEach(environment.accounts) { account in
-                    Text(
-                        AppEnvironment.accountPickerLabel(
-                            for: account,
-                            unread: environment.unreadCount(forAccount: account.id)
-                        )
-                    )
-                    .tag(account.id)
-                }
-            } label: {
-                Text("Account")
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            // Same reason as the mailbox picker: `labelsHidden()` leaves the
-            // pop-up button with nothing to announce.
-            .help("Choose which account this window shows")
-            .accessibilityLabel("Account")
-            .accessibilityIdentifier(AccessibilityID.Sidebar.accountSwitcher)
-            .padding(.horizontal, MailTheme.Spacing.md)
-            .padding(.bottom, MailTheme.Spacing.sm)
-        }
-    }
-
-    /// Non-optional for the `Picker`'s sake. It falls back to the first account
-    /// rather than an empty sentinel: a selection with no matching tag logs
-    /// "the selection is invalid" and draws a blank pop-up.
-    private var pickedAccountID: Binding<Account.ID> {
-        Binding(
-            get: { environment.selectedAccountID ?? environment.accountIDs.first ?? "" },
-            set: { newValue in
-                guard !newValue.isEmpty else { return }
-                environment.selectedAccountID = newValue
-            }
-        )
-    }
-}
-
-/// The sync status, in a slot that is ALWAYS the same height.
-///
-/// It used to render `EmptyView()` when idle, so the line appeared on every poll
-/// and vanished after it — pushing the picker and the whole folder list down and
-/// back, twice per cadence tick.
-struct SyncStatusLabel: View {
-    let status: MailViewModel.SyncStatus
-    let lastSyncedAt: Date?
-    /// Whether a re-auth round trip is already running for this account.
-    var isReauthenticating = false
-    /// What clicking "Sign in again" does — the re-auth banner's Sign In.
-    var signIn: () -> Void = {}
-
-    /// What the slot offers besides its text.
-    enum SignInAffordance: Equatable {
-        /// Plain status text.
-        case none
-        /// "Sign in again" is a button.
-        case available
-        /// "Sign in again" is a button, disabled: a sign-in is already running,
-        /// and a second click would only be refused by the policy — the control
-        /// says so instead of looking dead.
-        case inProgress
-    }
-
-    /// Pure and static so the rule is assertable without a rendered sidebar.
-    nonisolated static func signInAffordance(
-        for status: MailViewModel.SyncStatus,
-        isReauthenticating: Bool
-    ) -> SignInAffordance {
-        guard case .needsReauth = status else { return .none }
-        return isReauthenticating ? .inProgress : .available
-    }
-
-    var body: some View {
-        let affordance = Self.signInAffordance(for: status, isReauthenticating: isReauthenticating)
-        HStack(spacing: MailTheme.Spacing.xs) {
-            if status == .syncing {
-                ProgressView()
-                    .controlSize(.mini)
+                SidebarAccountCard(model: model)
+                Rectangle()
+                    .fill(MailTheme.Color.lineSoft)
+                    .frame(height: 1)
+                    .padding(.horizontal, SidebarAccountCard.gap)
+                    .padding(.bottom, MailTheme.Spacing.sm)
                     .accessibilityHidden(true)
+                levelChrome(level, tint: tint, monograms: monograms)
             }
-            if affordance == .none {
-                statusText
-            } else {
-                // The red text the user is already looking at IS the way back
-                // in — the same action as the banner's Sign In. Borderless, so
-                // it draws exactly the text it replaces and the slot keeps its
-                // height.
-                Button(action: signIn) { statusText }
-                    .buttonStyle(.borderless)
-                    .disabled(affordance == .inProgress)
-                    .help("Sign in to this account again")
-                    .accessibilityLabel("Sign in again")
-                    .accessibilityHint(
-                        affordance == .inProgress
-                            ? "Signing in is already in progress."
-                            : "Opens the sign-in window for this account."
-                    )
-                    .accessibilityIdentifier(AccessibilityID.Sidebar.statusSignIn)
+            .animation(reduceMotion ? nil : MailTheme.Animation.scope, value: level)
+        }
+    }
+
+    // MARK: Selection
+
+    /// The list's selection, read off the view-model (``MailViewModel/sidebarSelection``)
+    /// unless the arrow keys are resting on a drill row.
+    ///
+    /// Tagged `.tag(row)`, never `.tag(Optional(row))` — see "Herald Settings
+    /// Window Architecture": an explicitly Optional tag matches nothing.
+    private var selection: Binding<MailViewModel.SidebarRow?> {
+        Binding(
+            get: { keyboardHighlight ?? model.sidebarSelection },
+            set: { row in
+                guard let row else { return }
+                let isPointer = SidebarPresentation.isPointerEvent(NSApp.currentEvent)
+                if row.drillsIn, !isPointer {
+                    keyboardHighlight = row
+                    return
+                }
+                keyboardHighlight = nil
+                if case .label(let id) = row, isPointer {
+                    labelOpenedBySelection = model.selectedLabelID != id || model.isShowingDrafts
+                }
+                if row.drillsIn { movesFocusOnLevelChange = true }
+                model.activate(row)
             }
-        }
-        // The slot, not the text, owns the height: whatever is inside it, nothing
-        // below moves.
-        .frame(height: MailTheme.statusSlotHeight, alignment: .leading)
-        // Combined into one element while it is only text; a button stays its
-        // own element so VoiceOver can find and press it.
-        .accessibilityElement(children: affordance == .none ? .combine : .contain)
-        .accessibilityIdentifier(AccessibilityID.Sidebar.status)
-    }
-
-    private var statusText: some View {
-        Text(MailViewModel.statusDescription(for: status, lastSyncedAt: lastSyncedAt))
-            .font(isProblem ? .caption.bold() : .caption)
-            .foregroundStyle(isProblem ? MailTheme.failure : MailTheme.syncing)
-            .lineLimit(1)
-    }
-
-    /// Bold and a system red: caption-sized `.red` on the sidebar material does
-    /// not clear 4.5:1, and this is the only signal that sync is broken.
-    private var isProblem: Bool {
-        switch status {
-        case .failed, .needsReauth: true
-        case .idle, .syncing: false
-        }
-    }
-}
-
-/// The Drafts item. A sibling of the folder rows on screen and a different thing
-/// underneath: its badge is a TOTAL (drafts are never unread), not an unread count.
-private struct DraftsRow: View {
-    let count: Int
-
-    var body: some View {
-        Label(MailTheme.draftsTitle, systemImage: MailTheme.draftsSymbol)
-            .badge(count)
-            .tag(SidebarView.Row.folder(.drafts))
-            .accessibilityLabel(
-                count > 0 ? "\(MailTheme.draftsTitle), \(count) drafts" : MailTheme.draftsTitle
-            )
-    }
-}
-
-/// One workspace label. Opening it narrows the current folder and scope to the
-/// threads carrying it; its badge is a total, not an unread count.
-///
-/// The tag glyph is drawn in the label's colour, and the NAME is always there —
-/// the colour is never the only way to tell two labels apart.
-private struct LabelRow: View {
-    let label: MailLabel
-    /// Cached threads carrying the label — the ones opening it will actually
-    /// list, not the raw assignment rows. A TOTAL, like the Drafts row's badge
-    /// and unlike the folders' unread counts — see `threadCount(forLabel:)`.
-    let count: Int
-
-    var body: some View {
-        Label {
-            Text(label.name).lineLimit(1)
-        } icon: {
-            Image(systemName: MailTheme.labelSymbol)
-                .foregroundStyle(MailTheme.labelTint(for: label.color))
-        }
-        .badge(count)
-        .tag(SidebarView.Row.label(label.id))
-        .accessibilityLabel(
-            count > 0 ? "\(label.name) label, \(count) conversations" : "\(label.name) label"
         )
     }
+
+    private func drill(into row: MailViewModel.SidebarRow) {
+        keyboardHighlight = nil
+        movesFocusOnLevelChange = true
+        model.activate(row)
+    }
+
+    private func back() {
+        keyboardHighlight = nil
+        movesFocusOnLevelChange = true
+        model.sidebarBack()
+    }
+
+    /// A click on a label row. Clicking the OPEN label closes it (handoff: "clicking
+    /// it again … clears it") — but a click on a row that is already selected
+    /// does not change a `List` selection, so the selection binding never hears
+    /// it; this tap does. When the same click DID change the selection (it
+    /// opened the label), the binding already acted and the tap stands down.
+    /// If the list swallows the click entirely, the tap alone opens/closes.
+    private func labelTapped(_ id: String) {
+        if labelOpenedBySelection {
+            labelOpenedBySelection = false
+            return
+        }
+        model.pendingNavigationSource = .sidebar
+        if model.selectedLabelID == id, !model.isShowingDrafts {
+            model.clearLabel()
+        } else {
+            model.activate(.label(id))
+        }
+    }
+
+    // MARK: Level 1 — Domains + Labels
+
+    @ViewBuilder
+    private func domainsLevel(
+        preferences: UserDefaults, tint: MailTheme.AccountTint, monograms: [MailDomain.ID: String]
+    ) -> some View {
+        let visible = SidebarPresentation.visibleDomains(model.domains, accountID: model.accountID, preferences: preferences)
+        let filtersDomains = SidebarPresentation.showsDomainFilter(domainCount: visible.count)
+        let shown = filtersDomains ? SidebarPresentation.filter(visible, query: domainFilter, name: \.name) : visible
+        Section {
+            if filtersDomains {
+                SidebarFilterField(text: $domainFilter, prompt: "Filter \(visible.count) domains")
+            }
+            SidebarItem(
+                symbol: "tray.2", title: "All domains", isStrong: true,
+                unread: model.allDomainsInboxUnread
+            )
+            .tag(MailViewModel.SidebarRow.allDomains)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allDomains")
+            ForEach(shown) { domain in
+                domainRow(domain, tint: tint, monogram: monograms[domain.id] ?? DomainMonogram.derive(from: domain.name))
+            }
+        } header: {
+            HStack {
+                SidebarSectionHeader(title: "Domains")
+                    .accessibilityFocused($focusedLevel, equals: 1)
+                Spacer()
+                if !filtersDomains {
+                    // Decorative until there are enough domains to need the
+                    // field (handoff: the glyph "turns into" it past 8).
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .foregroundStyle(MailTheme.Color.ink3)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        if !model.labels.isEmpty {
+            Section {
+                ForEach(model.labels) { label in
+                    labelRow(label)
+                }
+            } header: {
+                SidebarSectionHeader(title: MailTheme.labelsSectionTitle)
+            }
+        }
+    }
+
+    private func domainRow(_ domain: MailDomain, tint: MailTheme.AccountTint, monogram: String) -> some View {
+        let unread = model.inboxUnreadByDomain[domain.id] ?? 0
+        return HStack(spacing: Self.itemGap) {
+            DomainBadge(monogram: monogram, tint: tint, size: .sidebar)
+            Text(domain.name)
+                .textStyle(unread > 0 ? MailTheme.Typography.headline : MailTheme.Typography.body)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            SidebarCount(unread)
+            SidebarChevron()
+        }
+        .tag(MailViewModel.SidebarRow.domain(domain.id))
+        .contextMenu { domainMenu(domain, unread: unread) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SidebarPresentation.accessibilityLabel(domain.name, unread: unread))
+        .accessibilityHint("Opens this domain's mailboxes")
+        .accessibilityAction { drill(into: .domain(domain.id)) }
+        .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "domain.\(domain.id)")
+    }
+
+    /// Right-click a domain row (handoff §3.1 / 4a-0).
+    @ViewBuilder
+    private func domainMenu(_ domain: MailDomain, unread: Int) -> some View {
+        Button("Open \(domain.name)") { drill(into: .domain(domain.id)) }
+        Button("Mark All as Read") {
+            Task { await model.markAllAsRead(inDomain: domain.id) }
+        }
+        .disabled(unread == 0)
+        Divider()
+        Button("Domain Settings…") { openDomainSettings(domain.id) }
+        Button("Hide from Herald") {
+            Task { await environment.hideDomain(domain.id, accountID: model.accountID) }
+        }
+    }
+
+    private func labelRow(_ label: MailLabel) -> some View {
+        let count = model.threadCount(forLabel: label.id)
+        return HStack(spacing: Self.itemGap) {
+            // The dot is only a second cue: the name is always beside it.
+            Circle()
+                .fill(MailTheme.labelTint(for: label.color))
+                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+                .frame(width: Self.iconWidth)
+                .accessibilityHidden(true)
+            Text(label.name)
+                .textStyle(MailTheme.Typography.body)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if count > 0 {
+                Text("\(count)")
+                    .textStyle(MailTheme.Typography.meta)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { labelTapped(label.id) })
+        .tag(MailViewModel.SidebarRow.label(label.id))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(count > 0 ? "\(label.name) label, \(count) conversations" : "\(label.name) label")
+        .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "label.\(label.id)")
+    }
+
+    // MARK: Level 2 — Mailboxes
+
+    @ViewBuilder
+    private func mailboxesLevel(domainID: MailDomain.ID) -> some View {
+        let domain = model.domains.first { $0.id == domainID }
+        let mailboxes = (domain?.mailboxIDs ?? []).compactMap { id in model.mailboxes.first { $0.id == id } }
+        let shown = SidebarPresentation.filter(mailboxes, query: mailboxFilter, name: \.address)
+        SidebarItem(symbol: "tray.2", title: "All mailboxes", isStrong: true, unread: model.inboxUnreadByDomain[domainID] ?? 0)
+            .tag(MailViewModel.SidebarRow.allMailboxes)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allMailboxes")
+        ForEach(shown) { mailbox in
+            mailboxRow(mailbox)
+        }
+    }
+
+    private func mailboxRow(_ mailbox: Mailbox) -> some View {
+        let unread = model.inboxUnreadByMailbox[mailbox.id] ?? 0
+        let parts = SidebarPresentation.addressParts(mailbox.address)
+        let local = MailTheme.Typography.headline
+        let rest = MailTheme.Typography.body
+        return HStack(spacing: Self.itemGap) {
+            Image(systemName: "at")
+                .foregroundStyle(.secondary)
+                .frame(width: Self.iconWidth)
+                .accessibilityHidden(true)
+            (Text(parts.local).font(unread > 0 ? local.font : rest.font)
+                + Text(parts.domain).font(rest.font).foregroundStyle(.tertiary))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            SidebarCount(unread)
+            SidebarChevron()
+        }
+        .tag(MailViewModel.SidebarRow.mailbox(mailbox.id))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SidebarPresentation.accessibilityLabel(mailbox.address, unread: unread))
+        .accessibilityHint("Opens this mailbox's folders")
+        .accessibilityAction { drill(into: .mailbox(mailbox.id)) }
+        .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "mailbox.\(mailbox.id)")
+    }
+
+    // MARK: Level 3 — Folders
+
+    @ViewBuilder
+    private func foldersLevel(mailboxID: Mailbox.ID) -> some View {
+        ForEach(Self.levelThreeFolders, id: \.self) { folder in
+            folderRow(folder, mailboxID: mailboxID)
+        }
+    }
+
+    /// Inbox, Starred, Sent, Drafts, Archived, Trash (handoff §3.1 level 3).
+    static let levelThreeFolders: [MailViewModel.Folder] = [
+        .inbox, .conversation(.starred), .conversation(.sent), .drafts,
+        .conversation(.archived), .conversation(.trash),
+    ]
+
+    private func folderRow(_ folder: MailViewModel.Folder, mailboxID: Mailbox.ID) -> some View {
+        let title: String
+        let symbol: String
+        let count: Int
+        let spoken: String
+        switch folder {
+        case .conversation(let conversation):
+            title = MailTheme.title(for: conversation)
+            symbol = MailTheme.symbol(for: conversation)
+            // Inbox carries its unread (handoff: "Inbox (unread)"); the other
+            // conversation folders carry nothing.
+            count = conversation == .inbox ? model.inboxUnreadByMailbox[mailboxID] ?? 0 : 0
+            spoken = SidebarPresentation.accessibilityLabel(title, unread: count)
+        case .drafts:
+            title = MailTheme.draftsTitle
+            symbol = MailTheme.draftsSymbol
+            // A TOTAL: drafts are never unread.
+            count = model.draftCount
+            spoken = count > 0 ? "\(title), \(count) drafts" : title
+        }
+        return SidebarItem(symbol: symbol, title: title, isStrong: false, unread: count)
+            .tag(MailViewModel.SidebarRow.folder(folder))
+            .accessibilityLabel(spoken)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "folder.\(NavigationPersistence.raw(for: folder))")
+    }
+
+    // MARK: Level chrome
+
+    @ViewBuilder
+    private func levelChrome(
+        _ level: MailViewModel.SidebarLevel, tint: MailTheme.AccountTint, monograms: [MailDomain.ID: String]
+    ) -> some View {
+        switch level {
+        case .domains:
+            EmptyView()
+        case .mailboxes(let domainID):
+            let domain = model.domains.first { $0.id == domainID }
+            let name = domain?.name ?? ""
+            VStack(alignment: .leading, spacing: 0) {
+                SidebarBackLink(title: "Domains", action: back)
+                HStack(spacing: Self.itemGap) {
+                    DomainBadge(monogram: monograms[domainID] ?? DomainMonogram.derive(from: name), tint: tint, size: .header)
+                    Text(name)
+                        .textStyle(MailTheme.Typography.headline)
+                        .foregroundStyle(MailTheme.Color.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityFocused($focusedLevel, equals: 2)
+                    Spacer(minLength: 0)
+                    Button { openDomainSettings(domainID) } label: {
+                        Image(systemName: "gearshape")
+                            .foregroundStyle(MailTheme.Color.ink2)
+                    }
+                    .buttonStyle(.plain)
+                    .iconButtonStyle("Domain Settings…")
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.domainSettings)
+                }
+                .padding(.horizontal, MailTheme.Spacing.lg)
+                .padding(.bottom, MailTheme.Spacing.sm)
+                SidebarFilterField(
+                    text: $mailboxFilter, prompt: "Filter \(domain?.mailboxIDs.count ?? 0) mailboxes"
+                )
+                .padding(.horizontal, SidebarAccountCard.gap)
+                .padding(.bottom, MailTheme.Spacing.sm)
+            }
+        case .folders(let domainID, let mailboxID):
+            let domainName = domainID.flatMap { id in model.domains.first { $0.id == id }?.name }
+            let address = model.mailboxes.first { $0.id == mailboxID }?.address ?? ""
+            let parts = SidebarPresentation.addressParts(address)
+            VStack(alignment: .leading, spacing: 0) {
+                SidebarBackLink(title: domainName ?? "Domains", action: back)
+                HStack(spacing: Self.itemGap) {
+                    if let domainID {
+                        DomainBadge(
+                            monogram: monograms[domainID] ?? DomainMonogram.derive(from: domainName ?? ""),
+                            tint: tint, size: .header
+                        )
+                    }
+                    (Text(parts.local).font(MailTheme.Typography.headline.font)
+                        + Text(parts.domain).font(MailTheme.Typography.body.font).foregroundStyle(MailTheme.Color.ink3))
+                        .foregroundStyle(MailTheme.Color.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityLabel(address)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityFocused($focusedLevel, equals: 3)
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: MailTheme.hitTarget)
+                .padding(.horizontal, MailTheme.Spacing.lg)
+                .padding(.bottom, MailTheme.Spacing.sm)
+            }
+        }
+    }
+
+    private func openDomainSettings(_ domainID: MailDomain.ID) {
+        environment.showSettings(.domain(domainID, .overview), accountID: model.accountID) { openSettings() }
+    }
+
+    /// 10pt between a row's icon and its name (the mock's gap).
+    static let itemGap = MailTheme.Spacing.sm + MailTheme.Spacing.xxs
+    /// The icon column, so badges, glyphs and dots line their names up.
+    static let iconWidth: CGFloat = 18
 }
 
-private struct FolderRow: View {
-    let folder: ConversationFolder
-    /// Unread in this folder for the current scope.
+// MARK: - Pieces
+
+/// A row with a leading symbol, a title and an unread count.
+private struct SidebarItem: View {
+    let symbol: String
+    let title: String
+    /// The "All …" rows are 600 (the mock's weight for them).
+    let isStrong: Bool
     let unread: Int
 
     var body: some View {
-        Label(MailTheme.title(for: folder), systemImage: MailTheme.symbol(for: folder))
-            .badge(unread)
-            .tag(SidebarView.Row.folder(.conversation(folder)))
-            .accessibilityLabel(
-                unread > 0
-                    ? "\(MailTheme.title(for: folder)), \(unread) unread"
-                    : MailTheme.title(for: folder)
-            )
+        HStack(spacing: SidebarView.itemGap) {
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: SidebarView.iconWidth)
+                .accessibilityHidden(true)
+            Text(title)
+                .textStyle(isStrong ? MailTheme.Typography.headline : MailTheme.Typography.body)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            SidebarCount(unread)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SidebarPresentation.accessibilityLabel(title, unread: unread))
     }
+}
+
+/// Mono 11/600, hidden at zero. Hierarchical, not a fixed ink: it sits inside
+/// a `List` row and must flip with the system selection.
+private struct SidebarCount: View {
+    let value: Int
+    init(_ value: Int) { self.value = value }
+
+    var body: some View {
+        if value > 0 {
+            Text("\(value)")
+                .textStyle(MailTheme.Typography.metaStrong)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct SidebarChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(MailTheme.Typography.caption.font)
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
+    }
+}
+
+/// "DOMAINS", "LABELS" — the handoff's uppercase caption, not the source
+/// list's default header.
+private struct SidebarSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .textStyle(MailTheme.Typography.section)
+            .foregroundStyle(MailTheme.Color.ink3)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// "‹ Domains" / "‹ acme.co": 12pt ink2, a real button (28pt tall).
+private struct SidebarBackLink: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: MailTheme.Spacing.xxs) {
+                Image(systemName: "chevron.left")
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .textStyle(MailTheme.Typography.snippet)
+            .foregroundStyle(MailTheme.Color.ink2)
+            .frame(minHeight: MailTheme.hitTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, MailTheme.Spacing.md)
+        .help("Back to \(title)")
+        .accessibilityLabel("Back to \(title)")
+        .accessibilityIdentifier(AccessibilityID.Sidebar.back)
+    }
+}
+
+/// "Filter N mailboxes": 26pt, surface fill, lineSoft ring.
+private struct SidebarFilterField: View {
+    @Binding var text: String
+    let prompt: String
+
+    var body: some View {
+        HStack(spacing: MailTheme.Spacing.xs) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(MailTheme.Color.ink3)
+                .accessibilityHidden(true)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .textStyle(MailTheme.Typography.snippet)
+                .accessibilityLabel(prompt)
+                .accessibilityIdentifier(AccessibilityID.Sidebar.filter)
+        }
+        .padding(.horizontal, MailTheme.Spacing.sm)
+        .frame(height: Self.height)
+        .background(MailTheme.Color.surface, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+        .overlay {
+            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+                .strokeBorder(MailTheme.Color.lineSoft, lineWidth: 1)
+        }
+    }
+
+    static let height: CGFloat = 26
 }

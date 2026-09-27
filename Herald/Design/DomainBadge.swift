@@ -59,16 +59,58 @@ nonisolated enum DomainBadgeResolver {
         in defaults: UserDefaults
     ) -> Info? {
         let domains = MailDomain.domains(from: mailboxes)
+        let tintOverride = defaults.string(forKey: AccountTintAssignment.storageKey(accountID: accountID))
+        return resolve(
+            mailboxID: mailboxID, domains: domains,
+            monogramOverrides: monogramOverrides(for: domains, accountID: accountID, in: defaults),
+            accountID: accountID, tintOverride: tintOverride
+        )
+    }
+
+    /// The OBSERVED variant: the caller hands in the tint name it read through
+    /// `AppEnvironment.accountTintName(for:)` (observable — it repaints when
+    /// Settings › Account changes the colour) instead of this type reading the
+    /// override out of `UserDefaults`, which nothing observes. Pass
+    /// `environment.domainPreferencesObserved()` as `defaults` so a monogram
+    /// override repaints too.
+    static func resolve(
+        mailboxID: String,
+        mailboxes: [Mailbox],
+        accountID: String,
+        tintName: String,
+        in defaults: UserDefaults
+    ) -> Info? {
+        let domains = MailDomain.domains(from: mailboxes)
+        guard let resolved = resolve(
+            mailboxID: mailboxID, domains: domains,
+            monogramOverrides: monogramOverrides(for: domains, accountID: accountID, in: defaults),
+            accountID: accountID, tintOverride: nil
+        ) else { return nil }
+        return Info(monogram: resolved.monogram, domainName: resolved.domainName, tintName: tintName)
+    }
+
+    /// Every domain's stored monogram override, for ``DomainMonogram/assign(domains:overrides:)``.
+    static func monogramOverrides(
+        for domains: [MailDomain], accountID: String, in defaults: UserDefaults
+    ) -> [MailDomain.ID: String] {
         var overrides: [MailDomain.ID: String] = [:]
         for domain in domains {
             if let override = DomainPreferences.monogramOverride(accountID: accountID, domainID: domain.id, in: defaults) {
                 overrides[domain.id] = override
             }
         }
-        let tintOverride = defaults.string(forKey: AccountTintAssignment.storageKey(accountID: accountID))
-        return resolve(
-            mailboxID: mailboxID, domains: domains, monogramOverrides: overrides,
-            accountID: accountID, tintOverride: tintOverride
+        return overrides
+    }
+
+    /// Each domain's badge letters, clashes and overrides resolved across ALL
+    /// the account's domains (hidden ones included, so hiding one never
+    /// changes the letters another already shows).
+    static func monograms(
+        for domains: [MailDomain], accountID: String, in defaults: UserDefaults
+    ) -> [MailDomain.ID: String] {
+        DomainMonogram.assign(
+            domains: domains,
+            overrides: monogramOverrides(for: domains, accountID: accountID, in: defaults)
         )
     }
 }

@@ -1236,25 +1236,6 @@ final class MailViewModel {
         return MailTheme.accountTint(named: AccountTintAssignment.token(forAccountID: accountID, override: override))
     }
 
-    /// Unread count behind one picker entry (`nil` = the All domains entry).
-    /// Inbox only: that is what is counted per mailbox.
-    func pickerUnread(forMailbox id: String?) -> Int {
-        guard let id else { return allDomainsInboxUnread }
-        return inboxUnreadByMailbox[id] ?? 0
-    }
-
-    /// One line of the mailbox picker. Pure and static so the label the popup
-    /// shows is assertable without a rendered `Picker`.
-    nonisolated static func pickerLabel(for mailbox: Mailbox, unread: Int) -> String {
-        let name = mailbox.displayName.isEmpty ? mailbox.address : mailbox.displayName
-        let base = name == mailbox.address ? name : "\(name) — \(mailbox.address)"
-        return unread > 0 ? "\(base) (\(unread))" : base
-    }
-
-    nonisolated static func allMailboxesPickerLabel(unread: Int) -> String {
-        unread > 0 ? "All mailboxes (\(unread))" : "All mailboxes"
-    }
-
     /// What the sidebar's fixed-height status slot says. Pure and static: the
     /// slot must ALWAYS have text (an empty one is what made the sidebar jump),
     /// and that is only assertable off-screen if the text is a function.

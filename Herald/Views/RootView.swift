@@ -79,6 +79,20 @@ struct MailWindow: View {
     private static let listWidth: Double = 340
 
     var body: some View {
+        // The status banner sits ABOVE the split view, not in a
+        // `.safeAreaInset` on it: NavigationSplitView's columns ignore an
+        // inset added from outside (seen on macOS 27), so the banner was laid
+        // OVER the top of every column — hiding the sidebar's account header
+        // (its "Sign in again" and account options) and clipping the first
+        // row of the list. Caught by the UI test
+        // `testSidebarSignInAgainSignsInAndIsDisabledDuringAnAttempt`.
+        VStack(spacing: 0) {
+            statusBanner
+            splitView
+        }
+    }
+
+    private var splitView: some View {
         NavigationSplitView {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: Self.sidebarWidth, max: 360)
@@ -96,7 +110,6 @@ struct MailWindow: View {
         .navigationTitle(model.accountLabel)
         .navigationSubtitle(model.scopeTitle)
         .toolbar { toolbar }
-        .safeAreaInset(edge: .top, spacing: 0) { statusBanner }
         .alert(
             "Something went wrong",
             isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })

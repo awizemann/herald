@@ -6,14 +6,15 @@ struct BannerPage {
     let app: XCUIApplication
 
     var container: XCUIElement { app.element(id: AccessibilityID.ReauthBanner.container) }
-    /// Combined text element: label = message (+ the failure reason line).
+    /// Combined text element: ``XCUIElement/text`` = message (+ the failure
+    /// reason line) — a StaticText whose words are its VALUE, label empty.
     var message: XCUIElement { app.element(id: AccessibilityID.ReauthBanner.message) }
     var signIn: XCUIElement { app.element(id: AccessibilityID.ReauthBanner.signIn) }
     /// Present only while an attempt runs.
     var cancel: XCUIElement { app.element(id: AccessibilityID.ReauthBanner.cancel) }
 
     /// The banner's message label ("" when absent).
-    var messageText: String { message.exists ? message.label : "" }
+    var messageText: String { message.exists ? message.text : "" }
 
     /// Waits for the banner with Sign In offered (no attempt running).
     @discardableResult
@@ -36,7 +37,7 @@ struct BannerPage {
     /// Waits until the message label contains `text` (e.g. the failure reason).
     @discardableResult
     func waitForMessage(containing text: String, timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
-        message.waitForLabel(timeout: timeout) { $0.contains(text) }
+        message.waitForText(timeout: timeout) { $0.contains(text) }
     }
 }
 
@@ -95,10 +96,12 @@ struct SidebarPage {
     }
 
     /// A SwiftUI `Menu`/`Picker` item: by identifier when SwiftUI carried it
-    /// over to the NSMenuItem, else by title.
+    /// over to the NSMenuItem, else by title. (On macOS 26/27 SwiftUI does NOT
+    /// carry `.accessibilityIdentifier` to menu items — they all report
+    /// `menuAction:` — so the title is what matches in practice.)
     private func menuItem(id: String, title: String) -> XCUIElement {
         let byID = app.menuItems.matching(identifier: id).firstMatch
-        return byID.waitForExistence(timeout: 2) ? byID : app.menuItems[title].firstMatch
+        return byID.exists ? byID : app.menuItems[title].firstMatch
     }
 }
 

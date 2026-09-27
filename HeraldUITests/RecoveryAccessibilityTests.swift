@@ -64,7 +64,11 @@ final class RecoveryAccessibilityTests: HeraldUITestCase {
             XCTFail("\(name) does not exist", file: file, line: line)
             return
         }
-        let label = element.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A StaticText's spoken words are its AX VALUE (label empty) — that is
+        // what VoiceOver reads for the combined banner/compose messages. Any
+        // other element type must carry a real label.
+        let spoken = element.elementType == .staticText ? element.text : element.label
+        let label = spoken.trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertFalse(label.isEmpty, "\(name) has no accessibility label", file: file, line: line)
         if let expected {
             XCTAssertEqual(label, expected, "\(name) is read as \"\(label)\"", file: file, line: line)

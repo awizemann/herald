@@ -18,7 +18,7 @@ struct ComposePage {
     var attach: XCUIElement { scope.element(id: AccessibilityID.Compose.attach) }
     var deleteDraft: XCUIElement { scope.element(id: AccessibilityID.Compose.deleteDraft) }
     var busy: XCUIElement { scope.element(id: AccessibilityID.Compose.busy) }
-    /// The error bar's text (label = message + failure reason); its presence
+    /// The error bar's text (``XCUIElement/text`` = message + failure reason); its presence
     /// IS the bar.
     var errorMessage: XCUIElement { scope.element(id: AccessibilityID.Compose.errorMessage) }
     var errorSignIn: XCUIElement { scope.element(id: AccessibilityID.Compose.errorSignIn) }
@@ -51,6 +51,20 @@ struct ComposePage {
         if let body { self.body.clickAndType(body, file: file, line: line) }
     }
 
+    /// Raises this compose window through the Window menu (by its title).
+    /// Needed after anything in the MAIN window was clicked: the compose
+    /// window opens inside the main window's frame, so once the main window
+    /// is in front it covers the composer completely and a "click" on a
+    /// compose control lands on the main window instead.
+    func bringToFront(file: StaticString = #filePath, line: UInt = #line) {
+        let title = window.title
+        // Clicked WITHOUT opening the menu first: XCUITest opens the menu
+        // itself when it clicks a menu item, and a menu the test had already
+        // opened gets toggled shut ("open menu during menu traversal").
+        app.menuBars.menuBarItems["Window"].menuItems[title].firstMatch.waitAndClick(file: file, line: line)
+        XCTAssertTrue(send.waitUntilHittable(), "the compose window \"\(title)\" did not come to the front", file: file, line: line)
+    }
+
     func clickSend(file: StaticString = #filePath, line: UInt = #line) {
         send.waitAndClick(file: file, line: line)
     }
@@ -65,13 +79,13 @@ struct ComposePage {
     /// Waits until the error bar says `text` (e.g. a sign-in failure reason).
     @discardableResult
     func waitForError(containing text: String, timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
-        errorMessage.waitForLabel(timeout: timeout) { $0.contains(text) }
+        errorMessage.waitForText(timeout: timeout) { $0.contains(text) }
     }
 
     /// Waits for the error bar and returns its label ("" on timeout).
     @discardableResult
     func waitForError(timeout: TimeInterval = HeraldApp.defaultTimeout) -> String {
-        errorMessage.waitForExistence(timeout: timeout) ? errorMessage.label : ""
+        errorMessage.waitForExistence(timeout: timeout) ? errorMessage.text : ""
     }
 }
 
@@ -94,7 +108,7 @@ struct OnboardingPage {
     /// Waits until the inline error says `text`.
     @discardableResult
     func waitForError(containing text: String, timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
-        error.waitForLabel(timeout: timeout) { $0.contains(text) }
+        error.waitForText(timeout: timeout) { $0.contains(text) }
     }
 
     /// Waits for the screen (its origin field).
@@ -169,9 +183,11 @@ struct TestControlsPage {
         return byID.exists ? byID : menuBarItem.menuItems[title].firstMatch
     }
 
-    /// Opens the menu, clicks the item, and waits for the status to reflect it.
+    /// Clicks the item. The menu is NOT opened first: menu items are in the
+    /// accessibility tree while the menu is closed, and XCUITest opens the
+    /// menu itself to click one — opening it beforehand made that traversal
+    /// toggle it shut again ("Not hittable: MenuItem" at an off-screen frame).
     private func choose(id: String, title: String, file: StaticString, line: UInt) {
-        open(file: file, line: line)
         let target = Wait.value { () -> XCUIElement? in
             let candidate = item(id: id, title: title)
             return candidate.exists ? candidate : nil

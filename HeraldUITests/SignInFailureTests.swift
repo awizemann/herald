@@ -31,11 +31,13 @@ final class SignInFailureTests: HeraldUITestCase {
         XCTAssertTrue(banner.signIn.exists, "the banner lost its Sign In after a failure")
         XCTAssertTrue(
             compose.waitForError(containing: Self.failureReason),
-            "the compose error bar does not say why the sign-in failed: \"\(compose.errorMessage.label)\""
+            "the compose error bar does not say why the sign-in failed: \"\(compose.errorMessage.text)\""
         )
         XCTAssertTrue(compose.errorSignIn.exists, "the compose bar lost its Sign In after a failure")
 
         // The composer's own Sign In fails the same way, and says so again.
+        // (The banner click brought the main window forward over the composer.)
+        compose.bringToFront()
         compose.errorSignIn.click()
         XCTAssertNotNil(controls.waitForCount("signIns", atLeast: attemptsBefore + 2), "compose Sign In opened no window")
         XCTAssertTrue(compose.waitForSignInOffered(), "compose Sign In never came back after the failure")
@@ -57,7 +59,7 @@ final class SignInFailureTests: HeraldUITestCase {
         // `OAuthError.unknownAccount` — what activation without a cache fails with.
         XCTAssertTrue(
             onboarding.waitForError(containing: "no longer signed in"),
-            "the activation failure is not on the sheet (error: \"\(onboarding.error.exists ? onboarding.error.label : "none")\")"
+            "the activation failure is not on the sheet (error: \"\(onboarding.error.exists ? onboarding.error.text : "none")\")"
         )
         XCTAssertTrue(onboarding.origin.exists, "the Add Account sheet closed on an activation failure")
         XCTAssertTrue(onboarding.signIn.waitUntilEnabled(), "the sheet is stuck signing in after the failure")
@@ -113,7 +115,7 @@ final class SignInFailureTests: HeraldUITestCase {
 
         XCTAssertTrue(
             onboarding.waitForError(containing: "already signed in to hqbase.uitest.invalid"),
-            "no inline refusal (error: \"\(onboarding.error.exists ? onboarding.error.label : "none")\")"
+            "no inline refusal (error: \"\(onboarding.error.exists ? onboarding.error.text : "none")\")"
         )
         XCTAssertTrue(onboarding.origin.exists, "the sheet closed on a refusal")
         XCTAssertTrue(

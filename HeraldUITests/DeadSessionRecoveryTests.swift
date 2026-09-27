@@ -35,8 +35,15 @@ final class DeadSessionRecoveryTests: HeraldUITestCase {
         XCTAssertTrue(compose.waitForSignInOffered(), "the compose error bar offers no Sign In")
         XCTAssertTrue(banner.waitForSignInOffered(), "the banner offers no Sign In after the automatic attempt ended")
 
-        let afterSend = try XCTUnwrap(controls.waitForStatus { ($0.sendRequests ?? 0) >= 1 })
-        XCTAssertEqual(afterSend.sends, 0, "a send was accepted by a dead session")
+        // The dead session was met — by this Send's POST (401), or by the
+        // 15 s sync poll just before it, in which case the grant is already
+        // latched and the Send fails fast WITHOUT a request (the P1 latch; no
+        // request is the better outcome). Either way nothing may be accepted.
+        let afterSend = try XCTUnwrap(
+            controls.waitForStatus { ($0.unauthorized ?? 0) >= 1 },
+            "the dead session was never contacted: \(controls.currentStatus()?.description ?? "no status")"
+        )
+        XCTAssertEqual(afterSend.sends, 0, "a send was accepted by a dead session: \(afterSend)")
         XCTAssertTrue(
             Wait.holds(for: Self.prompt) { (controls.currentStatus()?.refreshes ?? 0) <= 2 },
             "refresh storm on a dead grant: \(controls.currentStatus()?.description ?? "no status")"
@@ -107,6 +114,9 @@ final class DeadSessionRecoveryTests: HeraldUITestCase {
         killSessionAndWaitForBanner()
 
         XCTAssertTrue(sidebar.waitForSignInAgainEnabled(), "the sidebar offers no clickable Sign in again")
+        // The banner must not be laid over the sidebar's header (it was, on
+        // macOS 27, while it was a `.safeAreaInset` on the split view).
+        XCTAssertTrue(sidebar.statusSignIn.waitUntilHittable(), "the re-auth banner covers the sidebar's Sign in again")
 
         // While an attempt runs it is shown but disabled.
         controls.setPresenter(.hangUntilCancelled)

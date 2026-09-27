@@ -64,9 +64,10 @@ struct UITestStatusLabel: View {
             .lineLimit(1)
             .padding(MailTheme.Spacing.xxs)
             .allowsHitTesting(false)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("UI test status")
-            .accessibilityValue(harness.status)
+            // A plain `Text` stays an XCUI StaticText whose VALUE is its text.
+            // Wrapping it (`.accessibilityElement(children: .ignore)` + a
+            // label) turned it into an "Other" element whose value XCUITest on
+            // macOS reads back as empty — the status then never parsed.
             .accessibilityIdentifier("uitest.status")
     }
 }

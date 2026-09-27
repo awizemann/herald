@@ -91,6 +91,24 @@ extension XCUIElement {
         (value as? String) ?? ""
     }
 
+    /// What the element SAYS: its label, or — when that is empty — its value.
+    /// On macOS a SwiftUI `Text` (and a `.accessibilityElement(children:
+    /// .combine)` group of Texts) surfaces as a StaticText whose words are
+    /// the AX VALUE with an EMPTY label; VoiceOver reads that value. So a
+    /// message element's text is read through this, never `label` alone.
+    var text: String {
+        label.isEmpty ? stringValue : label
+    }
+
+    /// Waits until the element's ``text`` satisfies `predicate`.
+    @discardableResult
+    func waitForText(
+        timeout: TimeInterval = HeraldApp.defaultTimeout,
+        _ predicate: (String) -> Bool
+    ) -> Bool {
+        Wait.until(timeout: timeout) { exists && predicate(text) }
+    }
+
     /// Clicks after waiting for the element; fails the test when it never
     /// becomes available.
     func waitAndClick(
@@ -105,14 +123,28 @@ extension XCUIElement {
         click()
     }
 
-    /// Clicks into a text field/view and types `text`.
+    /// Waits until the element exists and can be clicked where it is drawn
+    /// (not covered, not off screen).
+    @discardableResult
+    func waitUntilHittable(timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        Wait.until(timeout: timeout) { exists && isHittable }
+    }
+
+    /// Clicks into a text field/view and types `text`. Waits for HITTABLE,
+    /// not enabled: on macOS an editable SwiftUI `TextEditor` (NSTextView)
+    /// reports `isEnabled == false` to XCUITest, as do groups and the
+    /// Application element — `isEnabled` means something only for controls.
     func clickAndType(
         _ text: String,
         timeout: TimeInterval = HeraldApp.defaultTimeout,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        waitAndClick(timeout: timeout, file: file, line: line)
+        guard waitUntilHittable(timeout: timeout) else {
+            XCTFail("\(self) never became available to type into", file: file, line: line)
+            return
+        }
+        click()
         typeText(text)
     }
 }

@@ -131,7 +131,7 @@ private struct SettingsRootRows: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } icon: {
-                        SettingsDomainBadge(monogram: item.monogram, tint: environment.accountTint(for: accountID))
+                        DomainBadge(monogram: item.monogram, tint: environment.accountTint(for: accountID), size: .sidebar)
                     }
                     .badge(Text(Image(systemName: "chevron.right")))
                     .tag(SettingsRoute.domain(item.id, .overview))
@@ -250,7 +250,7 @@ private struct SettingsDomainHeader: View {
             .accessibilityIdentifier(AccessibilityID.Settings.back)
 
             HStack(spacing: MailTheme.Spacing.sm) {
-                SettingsDomainBadge(monogram: item.monogram, tint: tint, size: SettingsLayout.headerBadgeSize)
+                DomainBadge(monogram: item.monogram, tint: tint, size: .header)
                 Text(item.domain.name)
                     .textStyle(MailTheme.Typography.headline)
                     .foregroundStyle(MailTheme.Color.ink)
@@ -379,15 +379,37 @@ private struct SettingsDetail: View {
         case .signatures:
             SignaturesSettingsPage(breadcrumb: route.breadcrumb(accountLabel: accountLabel, domainName: nil))
         case .domain(let domainID, let page):
-            let item = environment.selectedAccountID
-                .flatMap { environment.settingsDomains(accountID: $0).first { $0.id == domainID } }
-            if let item {
-                DomainSettingsPlaceholderPage(
-                    item: item,
-                    page: page,
-                    breadcrumb: route.breadcrumb(accountLabel: accountLabel, domainName: item.domain.name)
-                )
+            if let accountID = environment.selectedAccountID,
+               let item = environment.settingsDomains(accountID: accountID).first(where: { $0.id == domainID }) {
+                let breadcrumb = route.breadcrumb(accountLabel: accountLabel, domainName: item.domain.name)
+                domainPage(page, item: item, accountID: accountID, breadcrumb: breadcrumb)
+                    // A fresh identity per domain (and per page): `SettingsDetail`'s
+                    // switch keeps ONE structural identity for every `.domain`
+                    // route, so without this a text field's local `@State` (the
+                    // monogram override draft) would survive a switch to a
+                    // DIFFERENT domain instead of resetting to that domain's own
+                    // stored value.
+                    .id("\(domainID).\(page.rawValue)")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func domainPage(
+        _ page: DomainSettingsPage,
+        item: SettingsDomainItem,
+        accountID: Account.ID,
+        breadcrumb: String
+    ) -> some View {
+        switch page {
+        case .overview:
+            DomainOverviewSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
+        case .mailboxes:
+            DomainMailboxesSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
+        case .signatures:
+            DomainSignaturesSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
+        case .remove:
+            DomainSettingsPlaceholderPage(item: item, page: page, breadcrumb: breadcrumb)
         }
     }
 }

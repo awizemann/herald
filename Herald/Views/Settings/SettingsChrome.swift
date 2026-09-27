@@ -242,36 +242,6 @@ struct SettingsOutlineButtonStyle: ButtonStyle {
     }
 }
 
-/// A domain's monogram tile in the account's tint wash: 22% fill + a 60% 1px
-/// inner border, mono letters in `ink`. Always drawn beside the domain name, so
-/// it is hidden from VoiceOver.
-///
-/// NOTE: a minimal Settings-local badge. Phase R6 may add a shared
-/// `Herald/Design/DomainBadge.swift`; when both land, this one folds into it.
-struct SettingsDomainBadge: View {
-    let monogram: String
-    let tint: MailTheme.AccountTint
-    var size: CGFloat = SettingsLayout.sidebarBadgeSize
-
-    var body: some View {
-        let isHeader = size >= SettingsLayout.headerBadgeSize
-        let radius = isHeader ? MailTheme.Radius.badgeLarge : MailTheme.Radius.badgeMedium
-        // Mono 10 at header size, 9 in a sidebar row (handoff: badges 9–10).
-        Text(monogram)
-            .font(isHeader ? MailTheme.Typography.badge.font : MailTheme.Typography.tag.font)
-            .foregroundStyle(MailTheme.Color.ink)
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .frame(width: size, height: size)
-            .background(tint.solid.opacity(MailTheme.Wash.badgeFill), in: RoundedRectangle(cornerRadius: radius))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius)
-                    .strokeBorder(tint.solid.opacity(MailTheme.Wash.badgeBorder), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-    }
-}
-
 /// The account's avatar: a solid tint disc with the account's initial in the
 /// tint's matching dark text colour.
 struct SettingsAccountAvatar: View {

@@ -74,6 +74,15 @@ nonisolated enum AccessibilityID {
         static let tintReset = "settings.account.tintReset"
         /// Sign Out… — re-homed here from `Sidebar.signOut` (handoff §4).
         static let signOut = "settings.account.signOut"
+        /// Settings › Domain › Overview's monogram override field.
+        static let domainMonogram = "settings.domain.monogram"
+        static let domainIncludeInAll = "settings.domain.includeInAll"
+        static let domainCountInBadge = "settings.domain.countInBadge"
+        static let domainNotify = "settings.domain.notify"
+        /// Settings › Domain › Mailboxes' read-only table.
+        static let domainMailboxTable = "settings.domain.mailboxTable"
+        /// Settings › Domain › Signatures' "New Signature" button.
+        static let domainNewSignature = "settings.domain.newSignature"
     }
 
     /// The conversation list (middle column).

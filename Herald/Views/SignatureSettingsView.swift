@@ -20,16 +20,7 @@ struct SignatureSettingsPane: View {
 
     var body: some View {
         Group {
-            switch model.state {
-            case .loading:
-                SignatureMessagePane(
-                    symbol: "hourglass",
-                    title: "Loading signatures…",
-                    message: nil
-                ) {
-                    ProgressView().controlSize(.small)
-                }
-            case .ready:
+            if model.state == .ready {
                 if model.groups.isEmpty {
                     SignatureMessagePane(
                         symbol: "signature",
@@ -41,77 +32,19 @@ struct SignatureSettingsPane: View {
                 } else {
                     signatureList
                 }
-            case .needsReauthorization:
-                SignatureMessagePane(
-                    symbol: "person.badge.key",
-                    title: "Sign in again to manage signatures",
-                    message: "This account was signed in before signature management existed — sign in again to manage signatures."
-                ) {
-                    if let reauthenticate {
-                        Button("Sign In Again") {
-                            // Recorded BEFORE the sign-in starts: if the new
-                            // token still does not carry `signatures:manage`,
-                            // the next load draws the terminal screen instead of
-                            // offering this button again forever.
-                            model.signInAgainRequested()
-                            reauthenticate()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-            case .cannotManage:
-                SignatureMessagePane(
-                    symbol: "person.badge.key",
-                    title: "This account cannot manage signatures",
-                    message: "The server did not grant Herald permission to manage signatures for this account. Ask whoever administers it to grant the account signature management."
-                ) {}
-            case .unsupportedByServer:
-                SignatureMessagePane(
-                    symbol: "exclamationmark.triangle",
-                    title: "Server too old",
-                    message: "This server cannot manage signatures. It needs HQBase 1.4.2 or newer."
-                ) {}
-            case .failed(let message):
-                SignatureMessagePane(
-                    symbol: "exclamationmark.triangle",
-                    title: "Signatures could not be loaded",
-                    message: message
-                ) {
-                    Button("Try Again") { Task { await model.load() } }
-                }
+            } else {
+                // Every other state (loading and the four ways loading can
+                // fail) is identical whatever page is showing this model —
+                // the domain Signatures page (R8) reuses the SAME screens
+                // rather than forking their copy or the sign-in/retry logic.
+                SignatureStateMessagePane(model: model, reauthenticate: reauthenticate)
             }
         }
         // Keyed on the model's identity rather than reset with `.id(…)`: a new
         // account hands this pane a different model, and the load has to re-run
         // for it. A bare `.task` would keep showing the previous account's list.
         .task(id: ObjectIdentifier(model)) { await model.load() }
-        .sheet(item: Bindable(model).editor) { editor in
-            SignatureEditorSheet(model: model, editor: editor)
-        }
-        // Posted for the same reason every other Herald banner is: this one
-        // appears at the top of a Form the cursor is not in, so VoiceOver would
-        // otherwise never mention that the delete or the save failed.
-        .onChange(of: model.announcementCount) { _, _ in
-            guard let message = model.announcement else { return }
-            AccessibilityNotification.Announcement(message).post()
-        }
-        .confirmationDialog(
-            // `deletionPromptName`, not `pendingDeletion?.name`: confirming clears
-            // `pendingDeletion` immediately, and SwiftUI re-reads the title while
-            // the dialog is still animating out — which retitled it “Delete “”?”
-            // in front of the user.
-            "Delete “\(model.deletionPromptName)”?",
-            isPresented: Binding(
-                get: { model.pendingDeletion != nil },
-                set: { if !$0 { model.cancelDeletion() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) { Task { await model.confirmDeletion() } }
-            Button("Cancel", role: .cancel) { model.cancelDeletion() }
-        } message: {
-            Text("Messages already sent keep the signature they were sent with.")
-        }
+        .signatureManagementModifiers(model: model)
     }
 
     private var signatureList: some View {
@@ -160,9 +93,107 @@ struct SignatureSettingsPane: View {
     }
 }
 
+extension View {
+    /// The editor sheet, delete confirmation and VoiceOver announcement
+    /// plumbing every Signatures-showing page needs. Shared by the root
+    /// Settings › Signatures list (``SignatureSettingsPane``) and a domain's
+    /// Signatures page (``DomainSignaturesSettingsPage``, R8) so a domain page
+    /// reuses the same editing/deleting logic rather than forking it.
+    func signatureManagementModifiers(model: SignatureSettingsModel) -> some View {
+        self
+            .sheet(item: Bindable(model).editor) { editor in
+                SignatureEditorSheet(model: model, editor: editor)
+            }
+            // Posted for the same reason every other Herald banner is: this one
+            // appears at the top of a Form (or card) the cursor is not in, so
+            // VoiceOver would otherwise never mention that the delete or the
+            // save failed.
+            .onChange(of: model.announcementCount) { _, _ in
+                guard let message = model.announcement else { return }
+                AccessibilityNotification.Announcement(message).post()
+            }
+            .confirmationDialog(
+                // `deletionPromptName`, not `pendingDeletion?.name`: confirming
+                // clears `pendingDeletion` immediately, and SwiftUI re-reads the
+                // title while the dialog is still animating out — which
+                // retitled it “Delete “”?” in front of the user.
+                "Delete “\(model.deletionPromptName)”?",
+                isPresented: Binding(
+                    get: { model.pendingDeletion != nil },
+                    set: { if !$0 { model.cancelDeletion() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) { Task { await model.confirmDeletion() } }
+                Button("Cancel", role: .cancel) { model.cancelDeletion() }
+            } message: {
+                Text("Messages already sent keep the signature they were sent with.")
+            }
+    }
+}
+
+/// The four ways loading can fail, plus the loading screen itself — identical
+/// wherever a `SignatureSettingsModel` is shown, so the root Settings ›
+/// Signatures pane and a domain's Signatures page (R8) both draw THESE screens
+/// rather than each stating their copy and their sign-in/retry actions again.
+/// The `.ready` state is deliberately not here: what a page shows once loaded
+/// (the full cross-scope list vs. one domain's slice, and each one's own
+/// empty-state copy) is the caller's job.
+struct SignatureStateMessagePane: View {
+    let model: SignatureSettingsModel
+    /// The re-auth action, for the "signed in before this existed" screen.
+    /// `nil` hides the button rather than offering one that does nothing.
+    var reauthenticate: (() -> Void)?
+
+    var body: some View {
+        switch model.state {
+        case .loading:
+            SignatureMessagePane(symbol: "hourglass", title: "Loading signatures…", message: nil) {
+                ProgressView().controlSize(.small)
+            }
+        case .ready:
+            EmptyView()
+        case .needsReauthorization:
+            SignatureMessagePane(
+                symbol: "person.badge.key",
+                title: "Sign in again to manage signatures",
+                message: "This account was signed in before signature management existed — sign in again to manage signatures."
+            ) {
+                if let reauthenticate {
+                    Button("Sign In Again") {
+                        // Recorded BEFORE the sign-in starts: if the new token
+                        // still does not carry `signatures:manage`, the next
+                        // load draws the terminal screen instead of offering
+                        // this button again forever.
+                        model.signInAgainRequested()
+                        reauthenticate()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        case .cannotManage:
+            SignatureMessagePane(
+                symbol: "person.badge.key",
+                title: "This account cannot manage signatures",
+                message: "The server did not grant Herald permission to manage signatures for this account. Ask whoever administers it to grant the account signature management."
+            ) {}
+        case .unsupportedByServer:
+            SignatureMessagePane(
+                symbol: "exclamationmark.triangle",
+                title: "Server too old",
+                message: "This server cannot manage signatures. It needs HQBase 1.4.2 or newer."
+            ) {}
+        case .failed(let message):
+            SignatureMessagePane(symbol: "exclamationmark.triangle", title: "Signatures could not be loaded", message: message) {
+                Button("Try Again") { Task { await model.load() } }
+            }
+        }
+    }
+}
+
 /// The loading/empty/error screens, which differ only in symbol, words and the
 /// action underneath.
-private struct SignatureMessagePane<Action: View>: View {
+struct SignatureMessagePane<Action: View>: View {
     let symbol: String
     let title: String
     let message: String?

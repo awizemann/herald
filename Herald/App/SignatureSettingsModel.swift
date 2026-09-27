@@ -243,9 +243,15 @@ final class SignatureSettingsModel {
 
     // MARK: - Editing
 
-    func beginCreate() {
+    /// Opens the create sheet. `preferring` pre-selects a scope — the domain
+    /// page's "New Signature" (R8) wants its own domain chosen rather than
+    /// whatever sorts first — falling back to the first offered scope when the
+    /// preferred one is not (yet) among ``scopeOptions`` (e.g. a domain with no
+    /// signature-manageable mailbox loaded before the list did).
+    func beginCreate(preferring scope: SignatureScopeRef? = nil) {
         actionError = nil
-        editor = SignatureEditor(existing: nil, scope: scopeOptions.first?.ref)
+        let preferred = scope.flatMap { requested in scopeOptions.first { $0.ref == requested }?.ref }
+        editor = SignatureEditor(existing: nil, scope: preferred ?? scopeOptions.first?.ref)
     }
 
     func beginEdit(_ signature: Signature) {

@@ -15,7 +15,7 @@ struct OnboardingView: View {
         VStack(spacing: MailTheme.Spacing.lg) {
             Image(systemName: "envelope.badge.shield.half.filled")
                 .font(MailTheme.Typography.heroGlyph)
-                .foregroundStyle(.tint)
+                .foregroundStyle(MailTheme.Color.accent)
                 .accessibilityHidden(true)
             Text("Connect to HQBase")
                 .font(.title2.weight(.semibold))

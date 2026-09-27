@@ -109,8 +109,8 @@ struct ComposeView: View {
         } isTargeted: { isDropTarget = $0 }
         .overlay {
             if isDropTarget {
-                RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
-                    .strokeBorder(Color.accentColor, lineWidth: MailTheme.selectionBorderWidth * 2)
+                RoundedRectangle(cornerRadius: MailTheme.Radius.md)
+                    .strokeBorder(MailTheme.Color.accent, lineWidth: MailTheme.selectionBorderWidth * 2)
                     .padding(MailTheme.Spacing.xs)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -271,7 +271,7 @@ struct ComposeView: View {
                     .padding(MailTheme.Spacing.sm)
             }
             .frame(maxHeight: 160)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.md))
         }
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
@@ -293,7 +293,7 @@ struct ComposeView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(MailTheme.Spacing.sm)
-                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.md))
                     .accessibilityLabel("Signature preview, added automatically when you send")
             }
             Menu {

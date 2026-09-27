@@ -9,8 +9,8 @@ import SwiftUI
 /// VoiceOver reads labels from the row's combined summary, hence the hidden flag.
 ///
 /// The name is drawn in ``MailTheme/chipLabelForeground`` and the tint carries the
-/// FILL and the border only: a caption2 name in systemYellow/orange/teal over an
-/// 18% wash of the same tint misses AA in light mode.
+/// FILL and the border only (``MailTheme/Wash``): a caption2 name drawn in a
+/// mid-lightness label tint over an 18% wash of the same tint misses AA.
 struct LabelChip: View {
     let label: MailLabel
 
@@ -24,8 +24,8 @@ struct LabelChip: View {
             .lineLimit(1)
             .padding(.horizontal, MailTheme.Spacing.xs)
             .padding(.vertical, MailTheme.Spacing.xxs)
-            .background(tint.opacity(MailTheme.mailboxChipFillOpacity), in: Capsule())
-            .overlay(Capsule().strokeBorder(tint.opacity(MailTheme.chipBorderOpacity)))
+            .background(tint.opacity(MailTheme.Wash.chipFill), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(MailTheme.Wash.chipBorder)))
             .accessibilityHidden(true)
     }
 }

@@ -41,10 +41,12 @@ final class SmokeTests: HeraldUITestCase {
         )
         XCTAssertEqual(status.server, "healthy")
         XCTAssertEqual(status.presenter, "succeed")
-        for key in UITestStatus.requiredKeys where !["server", "presenter", "storeRefusesList"].contains(key) {
+        let booleans = ["storeRefusesList", "pollPaused"]
+        for key in UITestStatus.requiredKeys where !(["server", "presenter"] + booleans).contains(key) {
             XCTAssertNotNil(status.count(key), "\(key) is not an integer in \(status)")
         }
         XCTAssertEqual(status.storeRefusesList, false)
+        XCTAssertEqual(status.pollPaused, false)
 
         controls.open()
         let reset = controls.item(id: "uitest.resetCounters", title: "Reset counters")

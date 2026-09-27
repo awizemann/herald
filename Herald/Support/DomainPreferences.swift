@@ -9,15 +9,70 @@ import Foundation
 /// so a later `@Observable` owner — `MailViewModel` in R3a — can read and write
 /// through it without this type needing to know about observation itself.
 ///
-/// Key shape: `domain.<accountID>.<domainID>.<field>`. Every getter defaults
-/// exactly the way the design spec calls for (§4 State): `includeInAll` and
-/// `countInBadge` default ON, `hidden` defaults OFF, `notify` defaults to `nil`
-/// ("use the global notification setting" — see ``NotificationSettings``).
+/// Key shape: `domain.<accountID>.<domainID>.<field>`, with `accountID` and
+/// `domainID` percent-escaped (see ``escapeKeyComponent(_:)``) before they go
+/// into the key. Every getter defaults exactly the way the design spec calls
+/// for (§4 State): `includeInAll` and `countInBadge` default ON, `hidden`
+/// defaults OFF, `notify` defaults to `nil` ("use the global notification
+/// setting" — see ``NotificationSettings``).
 nonisolated enum DomainPreferences {
     // MARK: - Keys
 
     private static func key(_ field: String, accountID: String, domainID: String) -> String {
-        "domain.\(accountID).\(domainID).\(field)"
+        "domain.\(escapeKeyComponent(accountID)).\(escapeKeyComponent(domainID)).\(field)"
+    }
+
+    /// Escapes `.` and `%` in a key component so `domain.<a>.<b>.<field>` can
+    /// always be split back into exactly those four parts.
+    ///
+    /// Without this, an `accountID` is `Account.normalize(origin).absoluteString`
+    /// (e.g. `https://mail.example`) — it contains dots — and same-host-prefix
+    /// origins are realistic (`https://mail.example` vs `https://mail.example.org`).
+    /// A plain `hasPrefix("domain.\(accountID).")` then matches the LONGER
+    /// account's keys too (`domain.https://mail.example.org.dom.hidden` starts
+    /// with `domain.https://mail.example.`), so ``hiddenDomainIDs(accountID:in:)``
+    /// would read another account's hidden domains as this account's, with a
+    /// mangled id, and ``purgeAll(accountID:from:)`` would delete them. Escaping
+    /// `.` (the field separator) makes an escaped component never itself
+    /// contain an unescaped `.`, so `domain.<escaped accountID>.` is safe as an
+    /// exact prefix regardless of what either account id contains. `%` is
+    /// escaped too because it is the escape marker itself. `domainID` gets the
+    /// same treatment for the same reason — this module's own `MailDomain`
+    /// fallback ids already contain dots (`"domain-name:<name>"`).
+    private static func escapeKeyComponent(_ raw: String) -> String {
+        var result = ""
+        for scalar in raw.unicodeScalars {
+            switch scalar {
+            case "%": result += "%25"
+            case ".": result += "%2E"
+            default: result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
+    }
+
+    /// Inverse of ``escapeKeyComponent(_:)``, for recovering a domain id out of
+    /// a scanned key (``hiddenDomainIDs(accountID:in:)``). Any `%XX` that isn't
+    /// valid hex is left as literal text rather than dropped or trapped — a key
+    /// this function did not itself write must never crash the scan.
+    private static func unescapeKeyComponent(_ escaped: String) -> String {
+        var result = ""
+        var index = escaped.startIndex
+        while index < escaped.endIndex {
+            let character = escaped[index]
+            if character == "%",
+               let hexEnd = escaped.index(index, offsetBy: 3, limitedBy: escaped.endIndex) {
+                let hex = escaped[escaped.index(after: index)..<hexEnd]
+                if let value = UInt8(hex, radix: 16) {
+                    result.unicodeScalars.append(UnicodeScalar(value))
+                    index = hexEnd
+                    continue
+                }
+            }
+            result.append(character)
+            index = escaped.index(after: index)
+        }
+        return result
     }
 
     static func monogramKey(accountID: String, domainID: String) -> String {
@@ -146,13 +201,14 @@ nonisolated enum DomainPreferences {
     /// the hidden list from stored prefs alone, including a domain that has
     /// since stopped appearing in the account's mailboxes.
     static func hiddenDomainIDs(accountID: String, in defaults: UserDefaults) -> Set<String> {
-        let prefix = "domain.\(accountID)."
+        let prefix = "domain.\(escapeKeyComponent(accountID))."
         let suffix = ".hidden"
         var ids: Set<String> = []
         for (key, value) in defaults.dictionaryRepresentation() {
             guard key.hasPrefix(prefix), key.hasSuffix(suffix) else { continue }
             guard let hidden = value as? Bool, hidden else { continue }
-            let domainID = String(key.dropFirst(prefix.count).dropLast(suffix.count))
+            let escapedDomainID = String(key.dropFirst(prefix.count).dropLast(suffix.count))
+            let domainID = unescapeKeyComponent(escapedDomainID)
             guard !domainID.isEmpty else { continue }
             ids.insert(domainID)
         }
@@ -164,7 +220,7 @@ nonisolated enum DomainPreferences {
     /// later phase decides whether/when a signed-out account's domain prefs
     /// should be purged and calls this itself.
     static func purgeAll(accountID: String, from defaults: UserDefaults) {
-        let prefix = "domain.\(accountID)."
+        let prefix = "domain.\(escapeKeyComponent(accountID))."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
             defaults.removeObject(forKey: key)
         }

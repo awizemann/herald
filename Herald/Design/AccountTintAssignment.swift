@@ -41,6 +41,11 @@ nonisolated enum AccountTintAssignment {
     }
 
     /// The UserDefaults key one account's tint override is stored under.
+    ///
+    /// Read and written only by exact key (never scanned or prefix-matched
+    /// across accounts, unlike `DomainPreferences`), so an `accountID`
+    /// containing `.` cannot cause the same one-account's-keys-look-like-
+    /// another's collision `DomainPreferences` had to escape against.
     static func storageKey(accountID: String) -> String {
         "account.\(accountID).tint"
     }

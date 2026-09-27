@@ -21,6 +21,28 @@ struct DomainPreferencesTests {
         #expect(DomainPreferences.hiddenAtKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.hiddenAt")
     }
 
+    /// `accountID`/`domainID` are percent-escaped (`.` → `%2E`, `%` → `%25`)
+    /// before they go into the key, so a literal `.` inside either can never
+    /// be mistaken for the `domain.<a>.<b>.<field>` separator. Pins the exact
+    /// escaped form — a silent change to the escaping scheme would otherwise
+    /// still pass every round-trip test while quietly breaking any key an
+    /// older build already wrote to disk.
+    @Test("accountID and domainID are percent-escaped in the key, not raw")
+    func keysEscapeDotsAndPercent() {
+        #expect(
+            DomainPreferences.hiddenKey(accountID: "https://mail.x", domainID: "dom1")
+                == "domain.https://mail%2Ex.dom1.hidden"
+        )
+        #expect(
+            DomainPreferences.hiddenKey(accountID: "acct1", domainID: "domain-name:acme.co")
+                == "domain.acct1.domain-name:acme%2Eco.hidden"
+        )
+        #expect(
+            DomainPreferences.hiddenKey(accountID: "100%", domainID: "dom1")
+                == "domain.100%25.dom1.hidden"
+        )
+    }
+
     // MARK: - Defaults
 
     @Test("Fresh defaults: includeInAll and countInBadge default ON, hidden defaults OFF, notify defaults to nil")
@@ -150,7 +172,47 @@ struct DomainPreferencesTests {
         #expect(DomainPreferences.hiddenDomainIDs(accountID: "acct1", in: defaults).isEmpty)
     }
 
+    /// `accountID` is a normalized origin (`https://mail.example`) and contains
+    /// dots. Without escaping, `hiddenDomainIDs(accountID: "https://mail.x")`'s
+    /// naive `"domain.https://mail.x."` prefix ALSO matches
+    /// `"https://mail.x.y"`'s keys (`domain.https://mail.x.y.<dom>.hidden`
+    /// starts with that prefix too), reading the longer account's hidden
+    /// domains as the shorter account's own — with a mangled id
+    /// (`"y.<dom>"`). Same-host-prefix origins are realistic
+    /// (mail.example vs mail.example.org).
+    @Test("hiddenDomainIDs does not leak between accounts whose ids are prefix-related")
+    func hiddenDomainIDsDoesNotLeakAcrossPrefixRelatedAccounts() {
+        let defaults = makeDefaults()
+        let shorter = "https://mail.x"
+        let longer = "https://mail.x.y"
+
+        DomainPreferences.setHidden(true, accountID: shorter, domainID: "dom1", in: defaults)
+        DomainPreferences.setHidden(true, accountID: longer, domainID: "dom2", in: defaults)
+
+        #expect(DomainPreferences.hiddenDomainIDs(accountID: shorter, in: defaults) == ["dom1"])
+        #expect(DomainPreferences.hiddenDomainIDs(accountID: longer, in: defaults) == ["dom2"])
+    }
+
     // MARK: - purgeAll(accountID:from:)
+
+    /// Same collision as ``hiddenDomainIDsDoesNotLeakAcrossPrefixRelatedAccounts()``,
+    /// but for deletion: a naive prefix match would have `purgeAll(accountID:
+    /// "https://mail.x")` delete `"https://mail.x.y"`'s keys too.
+    @Test("purgeAll does not touch a prefix-related account's keys")
+    func purgeAllDoesNotTouchPrefixRelatedAccount() {
+        let defaults = makeDefaults()
+        let shorter = "https://mail.x"
+        let longer = "https://mail.x.y"
+
+        DomainPreferences.setHidden(true, accountID: shorter, domainID: "dom1", in: defaults)
+        DomainPreferences.setHidden(true, accountID: longer, domainID: "dom2", in: defaults)
+
+        DomainPreferences.purgeAll(accountID: shorter, from: defaults)
+
+        #expect(DomainPreferences.isHidden(accountID: shorter, domainID: "dom1", in: defaults) == false)
+        // The longer account's key must survive the shorter account's purge.
+        #expect(DomainPreferences.isHidden(accountID: longer, domainID: "dom2", in: defaults) == true)
+    }
 
     @Test("purgeAll removes every key for the given account and leaves other accounts untouched")
     func purgeAllScopesByAccount() {

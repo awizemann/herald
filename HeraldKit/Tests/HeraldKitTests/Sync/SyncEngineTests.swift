@@ -59,7 +59,7 @@ struct SyncEngineTests {
 
         let cursors = await api.conversationCursors()
         #expect(cursors == [nil, "c1", "c2"], "Exactly three pages, each using the previous nextCursor")
-        let cached = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .inbox)
+        let cached = try await store.conversations(accountID: account, mailboxIDs: ["mbx_a"], folder: .inbox)
         #expect(Set(cached.map(\.id)) == ["t1", "t2", "t3"])
     }
 
@@ -83,7 +83,7 @@ struct SyncEngineTests {
 
         let pageCalls = await api.conversationCursors()
         #expect(pageCalls.count == 2, "Cap must bound the walk")
-        let cached = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .inbox)
+        let cached = try await store.conversations(accountID: account, mailboxIDs: ["mbx_a"], folder: .inbox)
         #expect(Set(cached.map(\.id)) == ["t1", "t2"], "A capped walk must not delete rows it never saw")
     }
 

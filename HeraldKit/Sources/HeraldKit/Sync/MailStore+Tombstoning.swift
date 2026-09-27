@@ -26,7 +26,10 @@ extension MailStore {
         keeping ids: Set<String>
     ) throws -> ChangeSet {
         let descriptor = FetchDescriptor<CachedMessage>(
-            predicate: Self.messageScopePredicate(accountID: accountID, mailboxID: mailboxID, folder: folder)
+            // One mailbox (a sync scope), or every mailbox when `nil`.
+            predicate: Self.messageScopePredicate(
+                accountID: accountID, mailboxIDs: mailboxID.map { [$0] }, folder: folder
+            )
         )
         do {
             var changes = ChangeSet()

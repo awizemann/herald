@@ -80,29 +80,25 @@ private struct DraftHarness {
 
 @Suite(.scratchDefaults) @MainActor
 struct DraftsFolderTests {
-    /// Fails if the Drafts sidebar item is modelled as a folder selection. It
-    /// cannot be one — there is no `drafts` conversation folder on the server —
-    /// and mapping it onto a folder would list messages from a route
-    /// (`GET /messages?folder=drafts`) that is permanently empty.
-    @Test("Selecting Drafts shows the drafts list without disturbing the folder scope")
-    func selectingDraftsIsNotAFolderChange() async throws {
+    /// Fails if Drafts is modelled as a CONVERSATION folder — there is no
+    /// `drafts` conversation folder on the server, and listing one would read a
+    /// route (`GET /messages?folder=drafts`) that is permanently empty — or if
+    /// entering it disturbs the scope, which is an independent axis.
+    @Test("Selecting Drafts shows the drafts list and keeps the scope")
+    func selectingDraftsKeepsTheScope() async throws {
         let harness = try await DraftHarness.make()
         try await harness.seed([DraftHarness.draft(id: "dft_1")])
-        harness.model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
 
-        harness.model.sidebarItem = .drafts
+        harness.model.selectFolder(.drafts)
 
         #expect(harness.model.isShowingDrafts)
-        #expect(harness.model.sidebarItem == .drafts)
-        // The conversation scope is untouched, so going back lands where the
-        // user left rather than in the inbox.
-        #expect(harness.model.selection.folder == .archived)
-        #expect(harness.model.selection.mailboxID == "mbA")
+        #expect(harness.model.listFolder == nil, "Drafts is not a conversation folder")
+        #expect(harness.model.presentedConversations.isEmpty)
+        #expect(harness.model.scope == .mailbox("mbA"), "the scope is its own axis")
         #expect(harness.model.scopeTitle == "Drafts")
 
-        harness.model.sidebarItem = .folder(
-            MailViewModel.FolderSelection(mailboxID: "mbA", folder: .archived)
-        )
+        harness.model.selectFolder(.conversation(.archived))
         #expect(!harness.model.isShowingDrafts)
         #expect(harness.model.scopeTitle == "Archived")
     }
@@ -115,7 +111,7 @@ struct DraftsFolderTests {
         let harness = try await DraftHarness.make()
         try await harness.seed([DraftHarness.draft(id: "dft_1"), DraftHarness.draft(id: "dft_2", subject: "Second")])
 
-        harness.model.showDrafts(true)
+        harness.model.selectFolder(.drafts)
         try await wait("the drafts list loaded", until: { harness.model.drafts.count == 2 })
 
         #expect(harness.model.draftCount == 2)
@@ -132,7 +128,7 @@ struct DraftsFolderTests {
     @Test("A composer autosave shows up in the folder immediately")
     func autosaveWritesThrough() async throws {
         let harness = try await DraftHarness.make()
-        harness.model.showDrafts(true)
+        harness.model.selectFolder(.drafts)
         try await wait("the empty list settled", until: { harness.model.draftReloadCount > 0 })
         #expect(harness.model.drafts.isEmpty)
 

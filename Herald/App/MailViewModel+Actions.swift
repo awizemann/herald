@@ -68,13 +68,13 @@ extension MailViewModel {
     }
 
     /// Whether the list the user is looking at is the Trash.
-    var isTrashScope: Bool { selection.folder == .trash }
+    var isTrashScope: Bool { folder == .conversation(.trash) }
 
     /// Whether "Archive" does anything here. The server only archives messages
     /// in inbox/catchall (conversation-queries.ts), so in Trash and Archive the
     /// affordance is dropped in favour of the restore one below.
     var offersArchiveAction: Bool {
-        selection.folder != .trash && selection.folder != .archived
+        folder != .conversation(.trash) && folder != .conversation(.archived)
     }
 
     /// The "put back" verb for the folder being looked at, or nil where nothing
@@ -82,19 +82,16 @@ extension MailViewModel {
     /// the request's `folder` matches the one it undoes, which is exactly the
     /// folder the user is looking at.
     ///
-    /// Never offered inside a LABEL listing: both verbs are server no-ops unless
-    /// the request's `folder` is the one the row is actually in, and a label
-    /// listing crosses folders — `selection.folder` there is only the folder the
-    /// user was last looking at, so the verb would be wrong for most rows and
-    /// would silently no-op-and-revert. (Archive and Trash stay: they are safe
-    /// from any folder, at worst an accurate no-op.)
+    /// Offered inside a label too: a label listing is now label ∩ folder, so
+    /// every row in it IS in the folder the request names. (It used to span
+    /// folders, where the verb would have been wrong for most rows.)
     var restoreAction: ConversationAction? {
-        selectedLabelID == nil ? Self.restoreAction(in: selection.folder) : nil
+        Self.restoreAction(in: folder.conversationFolder)
     }
 
     /// Both verbs land the thread back in inbox/sent/catchall, so the Archive
     /// folder's says where it goes and the Trash's says what it undoes.
-    var restoreActionTitle: String { Self.restoreActionTitle(in: selection.folder) }
+    var restoreActionTitle: String { Self.restoreActionTitle(in: folder.conversationFolder) }
 
     /// Shared with ``MailCommands``, which only has the focused folder value —
     /// one rule, so the menu and the list can never name different verbs.
@@ -119,6 +116,10 @@ extension MailViewModel {
         onThread threadID: String,
         scope: UsageActionScope
     ) async {
+        // The folder the row is listed in — what the server matches restore
+        // and unarchive against. Drafts list no conversations, so nothing can
+        // be acted on from there.
+        guard let listFolder = folder.conversationFolder else { return }
         record(.messageActionPerformed(
             action: Self.usageAction(for: action), scope: scope, count: .one
         ))
@@ -132,7 +133,7 @@ extension MailViewModel {
             try await actions.perform(
                 action,
                 onConversation: threadID,
-                in: selection.folder,
+                in: listFolder,
                 accountID: accountID,
                 // A server-search hit has no cached messages, so the service has
                 // no message id to address the server with; the row itself does.
@@ -219,7 +220,7 @@ extension MailViewModel {
         requestCompose(
             kind,
             messageID: selectedMessageID,
-            mailboxID: selection.mailboxID ?? selectedMessage?.mailboxID
+            mailboxID: composeMailboxID ?? selectedMessage?.mailboxID
         )
     }
 
@@ -236,8 +237,16 @@ extension MailViewModel {
         requestCompose(
             kind,
             messageID: row.latest.id,
-            mailboxID: selection.mailboxID ?? row.latest.mailboxID
+            mailboxID: composeMailboxID ?? row.latest.mailboxID
         )
+    }
+
+    /// The mailbox a new message is sent from when the scope pins one — only a
+    /// single-mailbox scope does; a domain or All domains leaves it to the
+    /// message being answered (or the account's first mailbox).
+    private var composeMailboxID: String? {
+        if case .mailbox(let id) = scope { return id }
+        return nil
     }
 
     /// The one place a ``ComposeRequest`` is made — both entry points above land

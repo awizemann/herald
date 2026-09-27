@@ -62,10 +62,10 @@ struct ConversationListView: View {
                 highlight: model.searchQuery,
                 // Only in the all-mailboxes scope: with a mailbox picked, every
                 // row would carry the same chip and say nothing.
-                mailboxName: model.selection.mailboxID == nil
+                mailboxName: model.attributesRowsToMailbox
                     ? model.mailboxName(for: row.latest.mailboxID)
                     : nil,
-                mailboxTint: model.selection.mailboxID == nil
+                mailboxTint: model.attributesRowsToMailbox
                     ? model.mailboxTint(for: row.latest.mailboxID)
                     : nil,
                 labels: model.labels(forThread: row.id),
@@ -155,7 +155,7 @@ struct ConversationListView: View {
                 ContentUnavailableView {
                     Label(
                         model.searchQuery.isEmpty ? "No Messages" : "No Results",
-                        systemImage: MailTheme.symbol(for: model.selection.folder)
+                        systemImage: MailTheme.symbol(for: model.folder.conversationFolder ?? .inbox)
                     )
                 } description: {
                     // Only worth saying while a search is running and the server
@@ -334,7 +334,7 @@ struct SearchStatusBar: View {
 struct ThreadMessageListView: View {
     @Bindable var model: MailViewModel
 
-    private var folderTitle: String { MailTheme.title(for: model.selection.folder) }
+    private var folderTitle: String { MailTheme.title(for: model.folder.conversationFolder ?? .inbox) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -345,10 +345,10 @@ struct ThreadMessageListView: View {
                     message: message,
                     // Same rule as the conversation list: attribution only where
                     // the scope is ambiguous.
-                    mailboxName: model.selection.mailboxID == nil
+                    mailboxName: model.attributesRowsToMailbox
                         ? model.mailboxName(for: message.mailboxID)
                         : nil,
-                    mailboxTint: model.selection.mailboxID == nil
+                    mailboxTint: model.attributesRowsToMailbox
                         ? model.mailboxTint(for: message.mailboxID)
                         : nil,
                     toggleStar: {

@@ -62,7 +62,10 @@ private struct UsageHarness {
     let model: MailViewModel
     let events: AsyncStream<SyncEvent>.Continuation
 
-    static func make() async throws -> UsageHarness {
+    /// - Parameter navigationDefaults: when given, the view-model persists and
+    ///   restores its location there (the launch-restore tests); otherwise it
+    ///   does neither, like every other view-model test.
+    static func make(navigationDefaults: UserDefaults? = nil) async throws -> UsageHarness {
         let store = try MailStore.inMemory()
         let api = FakeMailAPIClient()
         let tracker = RecordingUsageTracker()
@@ -76,6 +79,8 @@ private struct UsageHarness {
             actions: MailActionService(api: api, store: store),
             events: stream,
             markReadDelay: .seconds(3600),
+            defaults: navigationDefaults ?? .standard,
+            persistsNavigation: navigationDefaults != nil,
             record: environment.recordUsage
         )
         return UsageHarness(
@@ -94,6 +99,14 @@ private struct UsageHarness {
 
     static func scratchDefaults() -> UserDefaults {
         ScratchDefaults.make()
+    }
+
+    static func mailbox(_ id: String) -> Mailbox {
+        Mailbox(
+            id: id, address: "\(id)@example.com", addresses: [], displayName: id,
+            isActive: true, accessLevel: .manager,
+            createdAt: MailFixtures.epoch, updatedAt: MailFixtures.epoch
+        )
     }
 }
 
@@ -170,7 +183,7 @@ private struct UsageHarness {
 @MainActor
 @Suite(.scratchDefaults) struct UsageViewShownTests {
 
-    /// `selection` is assigned in `init`, where a `didSet` never fires, so the
+    /// The restore in `start()` assigns `location` directly, never through `navigate`, so the
     /// folder the window comes up on has to be said out loud. Fails if the launch
     /// view is missing, is attributed to anything but `launch`, or is emitted
     /// twice — the sentinel is what makes "exactly once" assertable.
@@ -187,47 +200,62 @@ private struct UsageHarness {
         #expect(events.last == .remoteMediaLoaded)
     }
 
-    /// The sidebar restores the last mailbox scope on a task of its own, which can
-    /// run either side of `start()`. Both orders must produce exactly ONE launch
-    /// view: fails if the restore assigns `selection` itself (a second
-    /// `view_shown`, which is what a raw `pendingNavigationSource = .launch` plus
-    /// an assignment does), or if the restore-first order loses the launch view
-    /// entirely because `start()` then thinks it has nothing to say.
+    /// The launch restores where the account was left, and that must still be
+    /// exactly ONE launch view — of the RESTORED folder. Run both with the
+    /// mailbox list already cached and with a cold cache (the restore cannot
+    /// judge the scope yet and keeps it). Fails if the restore is reported as a
+    /// navigation of its own (a second `view_shown`), or if the launch view
+    /// names the default folder rather than the restored one.
     @Test(arguments: [true, false])
-    func theLaunchViewIsRecordedOnceAcrossTheSidebarRestore(startsFirst: Bool) async throws {
-        let harness = try await UsageHarness.make()
-        let restored = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .inbox)
-
-        if startsFirst {
-            await harness.model.start()
-            harness.model.restoreSelection(restored)
-        } else {
-            harness.model.restoreSelection(restored)
-            await harness.model.start()
+    func theLaunchViewIsRecordedOnceAndNamesTheRestoredFolder(mailboxesCached: Bool) async throws {
+        let defaults = ScratchDefaults.make()
+        let restored = MailViewModel.Location(scope: .mailbox("mbA"), folder: .conversation(.archived), labelID: nil)
+        NavigationPersistence.save(restored, accountID: "acct", to: defaults)
+        let harness = try await UsageHarness.make(navigationDefaults: defaults)
+        if mailboxesCached {
+            try await harness.store.upsertMailboxes([UsageHarness.mailbox("mbA")], accountID: "acct")
         }
+
+        await harness.model.start()
         harness.model.record(.remoteMediaLoaded)  // sentinel
 
         let events = await harness.recorded()
         let views = events.filter { $0.name == "view_shown" }
-        #expect(views == [.viewShown(view: .inbox, via: .launch)])
-        #expect(harness.model.selection == restored, "the restore must still apply")
+        #expect(views == [.viewShown(view: .archived, via: .launch)])
+        #expect(harness.model.location == restored, "the restore must apply")
         #expect(events.last == .remoteMediaLoaded)
     }
 
-    /// A restore that is not part of the launch at all (the scope it wants is
-    /// already showing) must stay silent AND must not leave a `.launch` source
-    /// behind for the user's next click to wear.
-    @Test func aNoOpRestoreReportsNothingAndLeavesNoSource() async throws {
-        let harness = try await UsageHarness.make()
+    /// The other half of the old sidebar/`start()` race: a restored scope that
+    /// could not be judged at launch (cold cache) and turns out to be GONE once
+    /// the mailbox list arrives. Fails if the correction reports a second view,
+    /// if it eats the source of the user's next click, or if the stale scope is
+    /// kept (an empty list forever).
+    @Test func aStaleRestoredScopeFallsBackSilentlyOnceMailboxesArrive() async throws {
+        let defaults = ScratchDefaults.make()
+        NavigationPersistence.save(
+            MailViewModel.Location(scope: .mailbox("gone"), folder: .inbox, labelID: nil),
+            accountID: "acct", to: defaults
+        )
+        let harness = try await UsageHarness.make(navigationDefaults: defaults)
         await harness.model.start()
+        #expect(harness.model.scope == .mailbox("gone"), "nothing to judge it against yet")
 
-        harness.model.restoreSelection(harness.model.selection)
-        harness.model.selection = .init(mailboxID: nil, folder: .trash)
+        try await harness.store.upsertMailboxes([UsageHarness.mailbox("mbA")], accountID: "acct")
+        harness.model.pendingNavigationSource = .sidebar
+        await harness.model.reloadMailboxes()
+        #expect(harness.model.scope == .allDomains)
+        #expect(
+            NavigationPersistence.load(accountID: "acct", from: defaults).scope == .allDomains,
+            "the correction is what the next launch restores"
+        )
+        // The user's click, which set that source, now lands.
+        harness.model.selectFolder(.conversation(.trash))
 
         let views = await harness.recorded().filter { $0.name == "view_shown" }
         #expect(views == [
             .viewShown(view: .inbox, via: .launch),
-            .viewShown(view: .trash, via: .other),
+            .viewShown(view: .trash, via: .sidebar),
         ])
     }
 
@@ -238,8 +266,8 @@ private struct UsageHarness {
         await harness.model.start()
 
         harness.model.pendingNavigationSource = .sidebar
-        harness.model.selection = .init(mailboxID: nil, folder: .archived)
-        harness.model.selection = .init(mailboxID: nil, folder: .archived)
+        harness.model.showListing(mailboxID: nil, folder: .archived)
+        harness.model.showListing(mailboxID: nil, folder: .archived)
         harness.model.record(.remoteMediaLoaded)
 
         let views = await harness.recorded().filter { $0.name == "view_shown" }
@@ -259,24 +287,25 @@ private struct UsageHarness {
 
         // A sidebar click on the folder that is already showing: nothing changes.
         harness.model.pendingNavigationSource = .sidebar
-        harness.model.selection = .init(mailboxID: nil, folder: .inbox)
+        harness.model.showListing(mailboxID: nil, folder: .inbox)
         // …and now a navigation that says nothing about where it came from.
-        harness.model.selection = .init(mailboxID: nil, folder: .trash)
+        harness.model.showListing(mailboxID: nil, folder: .trash)
 
         let views = await harness.recorded().filter { $0.name == "view_shown" }
         #expect(views.last == .viewShown(view: .trash, via: .other), "a stale `via` leaked")
     }
 
-    /// Drafts is the other half of the middle column. Fails if entering it is
-    /// silent, or if leaving it for the folder underneath reports nothing —
-    /// which is what a `selection`-only implementation does, because the
-    /// selection never changes.
+    /// Drafts is a folder like the others now. Fails if entering it is silent,
+    /// or if leaving it for the folder that was showing before reports nothing
+    /// (the pre-redesign trap: Drafts was a flag beside an unchanged selection).
     @Test func enteringAndLeavingDraftsBothReportAView() async throws {
         let harness = try await UsageHarness.make()
         await harness.model.start()
 
-        harness.model.sidebarItem = .drafts
-        harness.model.sidebarItem = .folder(.init(mailboxID: nil, folder: .inbox))
+        harness.model.pendingNavigationSource = .sidebar
+        harness.model.selectFolder(.drafts, clearingLabel: true)
+        harness.model.pendingNavigationSource = .sidebar
+        harness.model.selectFolder(.inbox, clearingLabel: true)
 
         let views = await harness.recorded().filter { $0.name == "view_shown" }
         #expect(views == [
@@ -288,15 +317,15 @@ private struct UsageHarness {
 
     /// Leaving Drafts for a DIFFERENT folder is one navigation, to the folder the
     /// user picked. Fails if the folder being LEFT is reported on the way out — a
-    /// phantom view nobody saw, ahead of the real one — which is what reporting
-    /// from `showDrafts(false)` does, since it reads `selection` before the
-    /// selection has moved.
+    /// phantom view nobody saw, ahead of the real one.
     @Test func leavingDraftsForAnotherFolderReportsOnlyTheDestination() async throws {
         let harness = try await UsageHarness.make()
         await harness.model.start()
 
-        harness.model.sidebarItem = .drafts
-        harness.model.sidebarItem = .folder(.init(mailboxID: nil, folder: .trash))
+        harness.model.pendingNavigationSource = .sidebar
+        harness.model.selectFolder(.drafts, clearingLabel: true)
+        harness.model.pendingNavigationSource = .sidebar
+        harness.model.selectFolder(.conversation(.trash), clearingLabel: true)
         harness.model.record(.remoteMediaLoaded)  // sentinel: nothing landed late
 
         let events = await harness.recorded()
@@ -327,7 +356,7 @@ private struct UsageHarness {
         harness.model.openSelectedThreadViaShortcut()
         harness.model.exitThreadViaShortcut()
         // The source must not survive the step it labelled.
-        harness.model.selection = .init(mailboxID: nil, folder: .trash)
+        harness.model.showListing(mailboxID: nil, folder: .trash)
 
         let views = await harness.recorded().filter { $0.name == "view_shown" }
         #expect(views == [

@@ -367,14 +367,23 @@ extension MailStore {
 
     /// Conversation rows carrying one label, newest first and DEDUPED by thread.
     ///
-    /// A thread legitimately has a row per listing scope (inbox and archived, say)
-    /// and a label listing is not one of those scopes, so the newest row per
-    /// thread is the one shown — the same row the folder list would have shown.
+    /// A thread legitimately has a row per listing scope (inbox and archived, say,
+    /// or two mailboxes of the same folder), so the newest row per thread is the
+    /// one shown — the same row the folder list would have shown.
+    ///
+    /// - Parameters:
+    ///   - folder: narrows to the rows listed under one conversation folder — the
+    ///     view-model's label ∩ folder listing. `nil` spans every folder.
+    ///   - mailboxIDs: narrows to rows listed under these mailboxes; `nil` = every
+    ///     mailbox, an empty set = nothing (same contract as the folder listing).
     public func conversations(
         withLabel labelID: String,
         accountID: String,
+        folder: ConversationFolder? = nil,
+        mailboxIDs: Set<String>? = nil,
         limit: Int = 200
     ) throws -> [ConversationSummary] {
+        if let mailboxIDs, mailboxIDs.isEmpty { return [] }
         do {
             var assignments = FetchDescriptor<CachedLabelAssignment>(
                 predicate: #Predicate { $0.accountID == accountID && $0.labelID == labelID }
@@ -404,9 +413,9 @@ extension MailStore {
                     threadIDs[chunk ..< min(chunk + Self.labelPredicateChunkSize, threadIDs.count)]
                 )
                 var descriptor = FetchDescriptor<CachedConversation>(
-                    predicate: #Predicate {
-                        $0.accountID == accountID && ids.contains($0.threadID)
-                    },
+                    predicate: Self.labelListingPredicate(
+                        accountID: accountID, threadIDs: ids, folder: folder, mailboxIDs: mailboxIDs
+                    ),
                     sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
                 )
                 // NOT `fetchLimit`: a thread holds one row per listing scope and
@@ -436,6 +445,42 @@ extension MailStore {
         } catch {
             logger.error("Label conversation fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
+        }
+    }
+
+    /// One chunk's predicate for ``conversations(withLabel:accountID:folder:mailboxIDs:limit:)``.
+    ///
+    /// Spelled out per case rather than folded into `(anyMailbox || …)`: the
+    /// mailbox half is a captured-collection `contains`, and "every mailbox"
+    /// would otherwise have to be expressed as an empty collection the store
+    /// still has to bind. A non-nil `mailboxIDs` is never empty here — the
+    /// caller answers that case before fetching.
+    private nonisolated static func labelListingPredicate(
+        accountID: String,
+        threadIDs: [String],
+        folder: ConversationFolder?,
+        mailboxIDs: Set<String>?
+    ) -> Predicate<CachedConversation> {
+        switch (folder?.rawValue, mailboxIDs) {
+        case (nil, nil):
+            return #Predicate { $0.accountID == accountID && threadIDs.contains($0.threadID) }
+        case (let listFolder?, nil):
+            return #Predicate {
+                $0.accountID == accountID && $0.listFolder == listFolder && threadIDs.contains($0.threadID)
+            }
+        case (nil, let mailboxIDs?):
+            return #Predicate {
+                $0.accountID == accountID
+                    && threadIDs.contains($0.threadID)
+                    && mailboxIDs.contains($0.mailboxKey)
+            }
+        case (let listFolder?, let mailboxIDs?):
+            return #Predicate {
+                $0.accountID == accountID
+                    && $0.listFolder == listFolder
+                    && threadIDs.contains($0.threadID)
+                    && mailboxIDs.contains($0.mailboxKey)
+            }
         }
     }
 

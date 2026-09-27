@@ -127,7 +127,7 @@ struct JournalSyncTests {
 
         let cursors = await api.messageCursors()
         #expect(cursors == [nil, "inbox-mbx_a-p1", "inbox-mbx_a-p2"], "three pages, each following the previous cursor")
-        let cached = try await store.messages(accountID: account, mailboxID: "mbx_a", folder: .inbox)
+        let cached = try await store.messages(accountID: account, mailboxIDs: ["mbx_a"], folder: .inbox)
         #expect(Set(cached.map(\.id)) == ["m1", "m2", "m3"], "a page-walk that stops early silently drops mail")
 
         let checkpoint = try await store.syncCheckpoint(accountID: account)
@@ -830,7 +830,7 @@ struct JournalSyncTests {
         #expect(await api.messageLimits() == [SyncEngine.messagePageLimit], "the engine must ask for a full page")
         let cached = try await store.messages(
             accountID: account,
-            mailboxID: "mbx_a",
+            mailboxIDs: ["mbx_a"],
             folder: .inbox,
             limit: 500
         )

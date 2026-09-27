@@ -142,7 +142,7 @@ struct MailWindow: View {
         .focusedSceneValue(\.selectedThreadID, model.selectedThreadID)
         // The Message menu's Archive title and its Trash enablement depend on the
         // scope, and a focused reference type never reports that it changed.
-        .focusedSceneValue(\.selectionFolder, model.selection.folder)
+        .focusedSceneValue(\.selectionFolder, model.folder.conversationFolder)
         .focusedSceneValue(\.selectedMessageID, model.selectedMessageID)
         .focusedSceneValue(\.selectedIsUnread, model.selectedConversation?.isUnread)
         .focusedSceneValue(\.selectedIsStarred, model.selectedConversation?.isStarred)

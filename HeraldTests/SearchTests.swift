@@ -35,7 +35,7 @@ struct SearchTests {
                 mailboxID: "mbA",
                 folder: .inbox
             )
-            model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .inbox)
+            model.showListing(mailboxID: "mbA", folder: .inbox)
             await model.reloadConversations()
             return Harness(store: store, api: api, model: model)
         }
@@ -276,7 +276,7 @@ struct SearchTests {
         await harness.settle()
         #expect(harness.model.presentedConversations.map(\.id) == ["t9"])
 
-        harness.model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
         #expect(harness.model.presentedConversations.isEmpty)
         #expect(harness.model.serverSearchState == .idle)
     }

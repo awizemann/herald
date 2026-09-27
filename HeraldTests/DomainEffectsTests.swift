@@ -49,7 +49,6 @@ struct DomainEffectsTests {
         await model.domainPreferencesDidChange()
         #expect(model.inboxUnreadByDomain[ScopeHarness.north] == 1)
         #expect(model.allDomainsInboxUnread == 3)
-        #expect(model.pickerUnread(forMailbox: nil) == 3, "the All domains entry reads the same number")
 
         // Hidden as well: acme leaves the total too.
         DomainPreferences.setIncludeInAll(true, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: harness.defaults)

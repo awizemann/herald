@@ -890,23 +890,12 @@ func wait(
         await harness.model.start()
         harness.model.showListing(mailboxID: nil, folder: .archived)
 
-        // Exactly what the picker's binding does.
+        // Exactly what a sidebar mailbox row does.
         harness.model.selectScope(.mailbox("mbA"))
 
         #expect(harness.model.listFolder == .archived)
         await (try #require(harness.model.reloadTask)).value
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
-    }
-
-    /// The picker's labels are the only place a mailbox's address and its unread
-    /// count are shown now. Fails if either is dropped, or if a zero count starts
-    /// rendering as a noisy "(0)".
-    @Test func pickerLabelsCarryTheAddressAndTheUnreadCount() {
-        let mailbox = Harness.mailbox("mbA")
-        #expect(MailViewModel.pickerLabel(for: mailbox, unread: 3) == "mbA — mbA@example.com (3)")
-        #expect(MailViewModel.pickerLabel(for: mailbox, unread: 0) == "mbA — mbA@example.com")
-        #expect(MailViewModel.allMailboxesPickerLabel(unread: 7) == "All mailboxes (7)")
-        #expect(MailViewModel.allMailboxesPickerLabel(unread: 0) == "All mailboxes")
     }
 
     /// The sidebar draws a badge per folder now, not just the inbox. Fails if the

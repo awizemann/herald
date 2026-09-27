@@ -66,7 +66,7 @@ final class SignInFailureTests: HeraldUITestCase {
         let status = try XCTUnwrap(controls.waitForStatus())
         XCTAssertEqual(status.signIns, 1, "the failure must come after consent (one sign-in window)")
         XCTAssertGreaterThanOrEqual(try XCTUnwrap(status.codeExchanges), 1, "consent never completed")
-        XCTAssertFalse(sidebar.accountSwitcher.exists, "an account that failed to activate was added anyway")
+        XCTAssertFalse(sidebar.hasSeveralAccounts, "an account that failed to activate was added anyway")
     }
 
     /// Catches (audit N4): a sign-out whose Keychain half fails with other
@@ -74,7 +74,7 @@ final class SignInFailureTests: HeraldUITestCase {
     /// next launch, looking like Herald had ignored the sign-out.
     func testASignOutThatCannotFinishRaisesAnAlertWithTheReason() {
         launch(.twoAccounts)
-        XCTAssertTrue(sidebar.accountSwitcher.waitUntilExists(), "two accounts but no account switcher")
+        XCTAssertTrue(sidebar.waitForSeveralAccounts(), "two accounts signed in, but the app shows one")
         controls.setAccountStoreRefusesList(true)
 
         sidebar.signOut()

@@ -62,7 +62,10 @@ import Testing
     /// an attach (or two autosaves) on a draft with no server id created TWO server
     /// drafts and orphaned one. Fails on any implementation without the per-draft
     /// in-flight create.
-    @Test("Two concurrent first-saves of one draft create exactly one server draft")
+    @Test(
+        "Two concurrent first-saves of one draft create exactly one server draft",
+        .timeLimit(.minutes(1))
+    )
     func concurrentFirstSaveCreatesOneDraft() async throws {
         let api = FakeMailAPIClient()
         let outbox = OutboxService(api: api)
@@ -71,16 +74,24 @@ import Testing
         // `async let` alone does NOT guarantee the second save starts while the
         // first is still in flight — under load the first finished first and the
         // test passed for the wrong reason (~1 run in 8). The gate holds the
-        // create open and the join counter proves the overlap really happened.
+        // create open and the join event proves the overlap really happened.
+        // The waits are EVENTS on one stream (the fake reports a call parking at
+        // the gate, the service reports a join), not polls against a wall clock:
+        // a 2 s poll timed out on a loaded machine. Iterating an AsyncStream is
+        // cancellation-aware, so `.timeLimit` really ends a hang.
+        enum Event { case reachedServer, joined }
+        let (events, sink) = AsyncStream<Event>.makeStream()
+        await api.observeGateArrivals { sink.yield(.reachedServer) }
+        await outbox.observeJoinedCreates { sink.yield(.joined) }
+        var next = events.makeAsyncIterator()
+
         await api.armGate()
         async let first = outbox.saveDraft(draft)
-        try await waitUntil("the first create to reach the server") {
-            await api.callCount { if case .createDraft = $0 { true } else { false } } == 1
-        }
+        #expect(await next.next() == .reachedServer, "the first create should park at the server")
         async let second = outbox.saveDraft(draft)
-        try await waitUntil("the second save to join the in-flight create") {
-            await outbox.joinedCreateCount == 1
-        }
+        // Correct: the second save joins the in-flight create. The bug: it
+        // reaches the server as a second POST /drafts — reported at once.
+        #expect(await next.next() == .joined, "The second save started its own POST /drafts instead of joining")
         await api.openGate()
         let saved = try await [first, second]
 

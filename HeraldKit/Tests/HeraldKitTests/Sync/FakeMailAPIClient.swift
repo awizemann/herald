@@ -74,7 +74,11 @@ actor FakeMailAPIClient: MailAPIClient {
     // MARK: Gate
     private var gateArmed = false
     private var gateOpened = false
-    private var gateContinuation: CheckedContinuation<Void, Never>?
+    /// Every call parked on the gate; `openGate` releases them all.
+    private var gateContinuations: [CheckedContinuation<Void, Never>] = []
+    /// Told each time a call parks on the armed gate — the event a test awaits
+    /// instead of polling the call log against a clock.
+    private var gateArrivalObserver: (@Sendable () -> Void)?
 
     init() {}
 
@@ -181,16 +185,20 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func openGate() {
         gateOpened = true
-        if let continuation = gateContinuation {
-            gateContinuation = nil
-            continuation.resume()
-        }
+        let parked = gateContinuations
+        gateContinuations = []
+        parked.forEach { $0.resume() }
+    }
+
+    func observeGateArrivals(_ observer: @escaping @Sendable () -> Void) {
+        gateArrivalObserver = observer
     }
 
     private func awaitGate() async {
         guard gateArmed, !gateOpened else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            gateContinuation = continuation
+            gateContinuations.append(continuation)
+            gateArrivalObserver?()
         }
     }
 

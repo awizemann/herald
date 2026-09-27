@@ -10,7 +10,7 @@ import Testing
 /// just flipped back to "Sign In" with no explanation, and the stale message
 /// then greeted the user in the next Add Account.
 @MainActor
-@Suite struct ReauthFailureReasonTests {
+@Suite(.scratchDefaults) struct ReauthFailureReasonTests {
     static let account = ReauthCancelTests.account
     static let other = ReauthCancelTests.other
     static let reason = "The sign-in window never appeared."
@@ -30,9 +30,7 @@ import Testing
         try store.setTokens(ReauthCancelTests.deadGrant, for: account.id)
         let presenter = ScriptedOutcomePresenter()
         let flag = ReauthCancelTests.ActivationFlag(false)
-        let suite = "ReauthFailureReasonTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = ScratchDefaults.make()
         let environment = AppEnvironment(
             auth: AuthCoordinator(store: store, presenter: presenter, session: OAuthTestServer.session()),
             defaults: defaults,

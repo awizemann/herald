@@ -93,15 +93,12 @@ private struct UsageHarness {
     }
 
     static func scratchDefaults() -> UserDefaults {
-        let suite = "UsageInstrumentationTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+        ScratchDefaults.make()
     }
 }
 
 @MainActor
-@Suite struct UsageRecordChainTests {
+@Suite(.scratchDefaults) struct UsageRecordChainTests {
 
     /// The chain exists so events arrive in the order they happened. Fails if
     /// `record` ever forks an independent task per event — which reorders under
@@ -171,7 +168,7 @@ private struct UsageHarness {
 }
 
 @MainActor
-@Suite struct UsageViewShownTests {
+@Suite(.scratchDefaults) struct UsageViewShownTests {
 
     /// `selection` is assigned in `init`, where a `didSet` never fires, so the
     /// folder the window comes up on has to be said out loud. Fails if the launch
@@ -343,7 +340,7 @@ private struct UsageHarness {
 }
 
 @MainActor
-@Suite struct UsageSearchTests {
+@Suite(.scratchDefaults) struct UsageSearchTests {
 
     /// A search is what the user COMMITTED, not what the debounce pushed. Fails if
     /// the local emission goes back into `searchQuery.didSet`, where typing one
@@ -375,7 +372,7 @@ private struct UsageHarness {
 }
 
 @MainActor
-@Suite struct UsageActionAndSyncTests {
+@Suite(.scratchDefaults) struct UsageActionAndSyncTests {
 
     /// The menu-bar verbs act on "the selection", which is a different scope from
     /// clicking a row — and the count is a bucket, never a number. Fails if the
@@ -452,7 +449,7 @@ private struct UsageHarness {
 }
 
 @MainActor
-@Suite struct UsageAccountTests {
+@Suite(.scratchDefaults) struct UsageAccountTests {
 
     /// A launch restore assigns the selected account too, and it is not the user
     /// switching accounts. Fails if bringing accounts up — or falling back after

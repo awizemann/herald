@@ -8,7 +8,7 @@ import Testing
 /// the existing account under the same id, rebound its composers and mixed two
 /// mailboxes in one cache. Add Account now refuses it; re-auth is unaffected.
 @MainActor
-@Suite struct AddAccountGuardTests {
+@Suite(.scratchDefaults) struct AddAccountGuardTests {
     private static let account = Account(
         origin: URL(string: "https://\(OAuTestServerConstants.host)")!,
         clientID: "cid_registered",

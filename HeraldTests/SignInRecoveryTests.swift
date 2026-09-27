@@ -11,7 +11,7 @@ import Testing
 /// things that make a hang survivable: it NAMES where it is, and it can be
 /// abandoned.
 @MainActor
-@Suite struct SignInRecoveryTests {
+@Suite(.scratchDefaults) struct SignInRecoveryTests {
     static let origin = "https://mail.test.invalid"
 
     // MARK: - The reported wedge
@@ -164,9 +164,7 @@ import Testing
         store: (any AccountStore)? = nil,
         session: URLSession? = nil
     ) -> AppEnvironment {
-        let suite = "SignInRecoveryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = ScratchDefaults.make()
         return AppEnvironment(
             auth: AuthCoordinator(
                 store: store ?? InMemoryAccountStore(),

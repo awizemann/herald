@@ -15,8 +15,8 @@ private actor RecordingCenter: NewMailNotificationPosting {
 }
 
 /// A `UserDefaults` nobody else shares — never the user's real preferences.
-private func makeDefaults(_ name: String = UUID().uuidString) -> UserDefaults {
-    UserDefaults(suiteName: name)!
+private func makeDefaults() -> UserDefaults {
+    ScratchDefaults.make()
 }
 
 @Suite("Dock badge")
@@ -46,7 +46,7 @@ struct DockBadgeTests {
     }
 }
 
-@Suite("Notification settings")
+@Suite("Notification settings", .scratchDefaults)
 struct NotificationSettingsTests {
     /// Fails if the absent-key default flips: a fresh install must notify and
     /// badge, and `object(forKey:) as? Bool ?? true` is the only spelling that
@@ -64,7 +64,7 @@ struct NotificationSettingsTests {
 }
 
 @MainActor
-@Suite("New-mail notification wiring")
+@Suite("New-mail notification wiring", .scratchDefaults)
 struct NewMailWiringTests {
     private static func makeModel(
         store: MailStore,

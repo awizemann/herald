@@ -13,7 +13,7 @@ import Testing
 /// lands after it does (and, for the user-initiated Cancel, no longer does), and
 /// the two small UI rules around it.
 @MainActor
-@Suite struct ReauthCancelTests {
+@Suite(.scratchDefaults) struct ReauthCancelTests {
     /// Served by `OAuthTestServer`, so a re-auth runs the real `addAccount`
     /// round trip — discovery, registration, the presenter, the code exchange
     /// and the Keychain write — with only the browser window scripted.
@@ -74,9 +74,7 @@ import Testing
         let presenter = GatedPresenter()
         let tracker = RecordingUsageTracker()
         let flag = ActivationFlag(false)
-        let suite = "ReauthCancelTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = ScratchDefaults.make()
         let environment = AppEnvironment(
             auth: AuthCoordinator(store: store, presenter: presenter, session: OAuthTestServer.session()),
             defaults: defaults,

@@ -90,13 +90,13 @@ import Testing
 }
 
 @MainActor
-@Suite struct UITestHarnessWiringTests {
+@Suite(.scratchDefaults) struct UITestHarnessWiringTests {
     static func harness(
         _ scenario: UITestLaunchConfiguration.Scenario,
         server: FakeHQBaseState = .healthy,
         presenter: SignInPresenterMode = .succeed
     ) -> (UITestHarness, String) {
-        let suite = "UITestHarnessTests.\(UUID().uuidString)"
+        let suite = ScratchDefaults.suiteName()
         let harness = UITestHarness(
             configuration: UITestLaunchConfiguration(scenario: scenario, serverState: server, presenterMode: presenter),
             defaultsSuiteName: suite
@@ -106,13 +106,13 @@ import Testing
 
     static func cleanUp(_ harness: UITestHarness, suite: String) async {
         for id in harness.environment.accountIDs { await harness.environment.stopGraph(accountID: id) }
-        UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        ScratchDefaults.discard(suite)
     }
 
     /// Fails if any real dependency survives into test mode.
     @Test func everyDependencyIsFake() async throws {
         let (harness, suite) = Self.harness(.oneAccount)
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        defer { ScratchDefaults.discard(suite) }
         let environment = harness.environment
 
         #expect(environment.apiSession !== URLSession.shared)
@@ -138,8 +138,8 @@ import Testing
     /// Fails if the defaults suite is shared across launches (a UI test would
     /// inherit the previous run's selection, mailbox colours, settings).
     @Test func theDefaultsSuiteIsWipedAtLaunch() {
-        let suite = "UITestHarnessTests.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let suite = ScratchDefaults.suiteName()
+        defer { ScratchDefaults.discard(suite) }
         let first = UITestHarness(configuration: .init(scenario: .signedOut), defaultsSuiteName: suite)
         first.defaults.set("leftover", forKey: "probe")
         let second = UITestHarness(configuration: .init(scenario: .signedOut), defaultsSuiteName: suite)
@@ -150,7 +150,7 @@ import Testing
         let (signedOut, s1) = Self.harness(.signedOut)
         let (one, s2) = Self.harness(.oneAccount)
         let (two, s3) = Self.harness(.twoAccounts)
-        defer { for s in [s1, s2, s3] { UserDefaults(suiteName: s)?.removePersistentDomain(forName: s) } }
+        defer { for s in [s1, s2, s3] { ScratchDefaults.discard(s) } }
 
         #expect(try signedOut.accountStore.accounts().isEmpty)
         #expect(try one.accountStore.accounts().map(\.origin) == [UITestOrigins.primary])
@@ -203,7 +203,7 @@ import Testing
     /// The status line is the contract U2+ read; fails if its keys change order.
     @Test func statusLineContract() async throws {
         let (harness, suite) = Self.harness(.oneAccount)
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        defer { ScratchDefaults.discard(suite) }
         harness.setServerState(.invalidGrant)
         harness.setPresenterMode(.hangUntilCancelled)
         let keys = harness.status.split(separator: " ").map { String($0.split(separator: "=")[0]) }
@@ -266,7 +266,7 @@ import Testing
 
 /// Each server state through the REAL client stack.
 @MainActor
-@Suite struct FakeHQBaseWireTests {
+@Suite(.scratchDefaults) struct FakeHQBaseWireTests {
     private nonisolated final class DeathRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0
@@ -299,14 +299,14 @@ import Testing
     }
 
     private static func finish(_ rig: Rig) {
-        UserDefaults(suiteName: rig.suite)?.removePersistentDomain(forName: rig.suite)
+        ScratchDefaults.discard(rig.suite)
     }
 
     /// Raw HTTP, so the documented matrix is asserted on the wire itself:
     /// 1.4.0 dead session = old token 401 invalid_token, refresh 200, new token 401.
     @Test func deadSession140WireMatrix() async throws {
         let (harness, suite) = UITestHarnessWiringTests.harness(.oneAccount, server: .deadSession140)
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        defer { ScratchDefaults.discard(suite) }
         let account = try #require(try harness.accountStore.accounts().first)
         let tokens = try #require(try harness.accountStore.tokens(for: account.id))
         let origin = UITestOrigins.primary.absoluteString

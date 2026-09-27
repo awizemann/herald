@@ -143,7 +143,7 @@ import Testing
 }
 
 @MainActor
-@Suite struct MailboxColorViewModelTests {
+@Suite(.scratchDefaults) struct MailboxColorViewModelTests {
     /// A throwaway defaults suite, so the test never reads or writes the owner's
     /// real preferences.
     private static func makeModel(defaults: UserDefaults) async throws -> MailViewModel {
@@ -179,10 +179,7 @@ import Testing
     }
 
     private static func scratchDefaults() throws -> UserDefaults {
-        let name = "herald.tests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+        ScratchDefaults.make()
     }
 
     /// Picking a colour must beat the default AND survive a relaunch, and Reset

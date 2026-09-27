@@ -82,7 +82,7 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
 /// hook (P1) is the one signal; these pin that the app routes it to the right
 /// account, once, and never to an account that has gone.
 @MainActor
-@Suite struct SessionExpiryRoutingTests {
+@Suite(.scratchDefaults) struct SessionExpiryRoutingTests {
     private static let accountA = Account(origin: URL(string: "https://127.0.0.1:9")!, clientID: "cid", scopes: [])
     private static let accountB = Account(origin: URL(string: "https://127.0.0.1:19")!, clientID: "cid", scopes: [])
 
@@ -96,10 +96,7 @@ private nonisolated final class DeadSessionRequestCounts: @unchecked Sendable {
     }
 
     private static func scratchDefaults() -> UserDefaults {
-        let suite = "SessionExpiryRoutingTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+        ScratchDefaults.make()
     }
 
     /// Herald in the BACKGROUND by default: the automatic attempt is then

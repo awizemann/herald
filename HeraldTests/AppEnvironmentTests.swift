@@ -4,7 +4,7 @@ import Testing
 @testable import Herald
 
 @MainActor
-@Suite struct AppEnvironmentLifecycleTests {
+@Suite(.scratchDefaults) struct AppEnvironmentLifecycleTests {
     private static func account(_ host: String) -> Account {
         Account(origin: URL(string: "https://\(host)")!, clientID: "cid", scopes: [])
     }
@@ -531,9 +531,6 @@ import Testing
 
     /// A throwaway suite, so a test never writes the developer's real pick.
     private static func scratchDefaults() -> UserDefaults {
-        let suite = "AppEnvironmentTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+        ScratchDefaults.make()
     }
 }

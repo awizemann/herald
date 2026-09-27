@@ -15,14 +15,12 @@ import Testing
 /// half-written message, and the send that finally worked did so only because
 /// the old client's provider happened to re-read the new Keychain grant.
 @MainActor
-@Suite struct ComposeReauthTests {
+@Suite(.scratchDefaults) struct ComposeReauthTests {
     private static let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
     private static let b = Account(origin: URL(string: "https://b.example.com")!, clientID: "cid", scopes: [])
 
     private static func environment(accounts: [Account] = [a, b]) -> AppEnvironment {
-        let suite = "ComposeReauthTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = ScratchDefaults.make()
         return AppEnvironment(
             auth: AuthCoordinator(store: InMemoryAccountStore(accounts: accounts)),
             defaults: defaults,

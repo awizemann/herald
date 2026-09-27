@@ -58,59 +58,28 @@ import Testing
         }
 
         /// Removes the queue directory AND the identity suite — the whole suite,
-        /// not just its contents.
-        ///
-        /// `UserDefaults.standard.removePersistentDomain(forName:)` empties the
-        /// domain but leaves the suite registered and its backing file behind, so
-        /// every run of this file used to deposit another empty
-        /// `com.wizemann.stats.com.wizemann.herald.usagetests.<uuid>.plist` in the
-        /// app container's Preferences directory, forever. Emptying it through the
-        /// suite's own `UserDefaults`, unregistering it, and deleting the file is
-        /// what actually leaves nothing behind.
+        /// not just its contents: `removePersistentDomain` alone leaves an empty
+        /// `com.wizemann.stats.com.wizemann.herald.usagetests.<uuid>.plist` behind
+        /// in the app container on every run (see ``ScratchDefaults/discard(_:)``).
         func tearDown() {
             try? FileManager.default.removeItem(at: directory)
-            let suite = "com.wizemann.stats.\(appId)"
-            let suiteDefaults = UserDefaults(suiteName: suite)
-            suiteDefaults?.removePersistentDomain(forName: suite)
-            // Flushed BEFORE the file is deleted: `cfprefsd` writes back on its
-            // own schedule, and a write-back that lands after the delete puts the
-            // (now empty) plist straight back.
-            suiteDefaults?.synchronize()
-            UserDefaults.standard.removeSuite(named: suite)
-            UserDefaults.standard.synchronize()
-            if let url = UsageTrackerTests.preferencesFileURL(forSuite: suite) {
-                try? FileManager.default.removeItem(at: url)
-            }
+            ScratchDefaults.discard("com.wizemann.stats.\(appId)")
         }
     }
 
     /// Removes `usagetests` identity plists left over from EARLIER runs, once per
     /// run, before the first harness is built.
     ///
-    /// The in-process teardown below is necessary but cannot be sufficient on its
+    /// The in-process teardown above is necessary but cannot be sufficient on its
     /// own: `cfprefsd` — not this process — owns the file, and it can write an
     /// empty plist back for a domain we emptied after the test process has
     /// exited. Rather than race the daemon, the next run simply sweeps what the
-    /// previous one left; those files belong to no live process.
-    private static let sweptStale: Void = {
-        guard let preferences = preferencesFileURL(forSuite: "any")?.deletingLastPathComponent(),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: preferences.path)
-        else { return }
-        for name in names where name.hasPrefix("com.wizemann.stats.com.wizemann.herald.usagetests.") {
-            try? FileManager.default.removeItem(at: preferences.appendingPathComponent(name))
-        }
-    }()
+    /// previous one left (anything over five minutes old); those files belong to no
+    /// live process.
+    private static let sweptStale: Void =
+        ScratchDefaults.sweep(prefix: "com.wizemann.stats.com.wizemann.herald.usagetests.")
 
     static func sweepStale() { _ = sweptStale }
-
-    /// Where a `UserDefaults` suite's plist lands for this process — inside the
-    /// app container when the host is sandboxed, which is exactly where the stray
-    /// files were accumulating.
-    static func preferencesFileURL(forSuite suite: String) -> URL? {
-        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Preferences", isDirectory: true)
-            .appendingPathComponent("\(suite).plist")
-    }
 
     /// The teardown, tested. Fails if a run of this suite leaves its throwaway
     /// identity suite behind — as a registered domain or as a file — which is how
@@ -131,9 +100,8 @@ import Testing
         // hand back an EMPTY dictionary rather than nil — what must not survive
         // is the plist on disk.
         #expect(UserDefaults.standard.persistentDomain(forName: suite)?.isEmpty ?? true)
-        if let url = Self.preferencesFileURL(forSuite: suite) {
-            #expect(!FileManager.default.fileExists(atPath: url.path), "left \(url.lastPathComponent)")
-        }
+        let url = ScratchDefaults.fileURL(forSuite: suite)
+        #expect(!FileManager.default.fileExists(atPath: url.path), "left \(url.lastPathComponent)")
     }
 
     /// Would fail if a name were rejected by the SDK's `isValidForApp` (the event
@@ -257,8 +225,8 @@ import Testing
     /// or otherwise disturbs that suite or its file.
     @Test func buildingTheLiveTrackerNeverTouchesTheProductionSuite() {
         let suite = "com.wizemann.stats.\(UsageAnalytics.appId)"
-        let url = UsageTrackerTests.preferencesFileURL(forSuite: suite)
-        let before = url.map { FileManager.default.contents(atPath: $0.path) }
+        let url = ScratchDefaults.fileURL(forSuite: suite)
+        let before = FileManager.default.contents(atPath: url.path)
         let domainBefore = UserDefaults.standard.persistentDomain(forName: suite) as NSDictionary?
 
         let tracker = UsageAnalytics.makeTracker(
@@ -268,10 +236,8 @@ import Testing
 
         let domainAfter = UserDefaults.standard.persistentDomain(forName: suite) as NSDictionary?
         #expect(domainAfter == domainBefore, "the production suite changed")
-        if let url {
-            let after = FileManager.default.contents(atPath: url.path)
-            #expect(after == before, "\(url.lastPathComponent) was created or rewritten")
-        }
+        let after = FileManager.default.contents(atPath: url.path)
+        #expect(after == before, "\(url.lastPathComponent) was created or rewritten")
     }
 
     /// The constants are load-bearing: `installIdSalt` re-identifies every install if

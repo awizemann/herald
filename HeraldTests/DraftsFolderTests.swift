@@ -78,7 +78,7 @@ private struct DraftHarness {
     }
 }
 
-@Suite @MainActor
+@Suite(.scratchDefaults) @MainActor
 struct DraftsFolderTests {
     /// Fails if the Drafts sidebar item is modelled as a folder selection. It
     /// cannot be one — there is no `drafts` conversation folder on the server —
@@ -245,9 +245,7 @@ struct DraftsFolderTests {
     func draftsFollowTheComposersAccount() async throws {
         let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
         let b = Account(origin: URL(string: "https://b.example.com")!, clientID: "cid", scopes: [])
-        let suite = "DraftsFolderTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = ScratchDefaults.make()
         let environment = AppEnvironment(defaults: defaults)
         let store = try MailStore.inMemory()
 

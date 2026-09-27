@@ -17,7 +17,7 @@ import Testing
 /// - J: the composer re-saves a draft an overlapping older save left stale, and
 ///   a second Send during the pre-send waits is refused.
 @MainActor
-@Suite(.timeLimit(.minutes(1))) struct SessionRecoveryP9bTests {
+@Suite(.timeLimit(.minutes(1)), .scratchDefaults) struct SessionRecoveryP9bTests {
     static let account = ReauthCancelTests.account
     static let other = ReauthCancelTests.other
     /// Alive for an hour, so nothing in these tests refreshes it by itself: a
@@ -31,10 +31,7 @@ import Testing
     )
 
     private static func scratchDefaults() -> UserDefaults {
-        let suite = "SessionRecoveryP9bTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+        ScratchDefaults.make()
     }
 
     // MARK: - E: healing without consent

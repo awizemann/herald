@@ -4,35 +4,41 @@ import SwiftUI
 /// The Drafts folder's middle column.
 ///
 /// Deliberately the same shape as ``ConversationListView`` — same `List` style,
-/// same unmeasured-row height floor, same trailing date slot, same row metrics —
-/// because it sits in the same slot and switching folders must not feel like
-/// switching apps. What it is NOT is a conversation list: drafts are not
-/// messages, have no read/unread state, no star and no thread to drill into, so
-/// none of those affordances appear.
+/// same unmeasured-row height floor, same row anatomy and density — because it
+/// sits in the same slot and switching folders must not feel like switching
+/// apps. What it is NOT is a conversation list: drafts are not messages, have
+/// no read/unread state, no star and no thread to drill into, so none of those
+/// affordances appear.
 struct DraftListView: View {
     @Bindable var model: MailViewModel
+    let metrics: ListColumn.RowMetrics
 
     var body: some View {
-        // Once per pass, not per row: every attributed row draws the same tint.
-        let accountTint = model.accountTint
+        // Once per pass, not per row (see `ConversationListView`).
+        let attribution = model.rowAttributionIndex()
+        let accountTint = model.listAccountTint
+        let rowHeight = metrics.conversationRowHeight(.current)
         List(model.drafts, selection: $model.selectedDraftID) { draft in
             DraftRow(
                 draft: draft,
-                // Same rule as a conversation row: attribute the mailbox only
-                // where the scope leaves it ambiguous.
-                mailboxName: model.attributesRowsToMailbox
-                    ? model.mailboxName(for: draft.mailboxID)
-                    : nil,
-                mailboxTint: model.attributesRowsToMailbox ? accountTint : nil,
+                // Same rule as a conversation row (handoff §2); at All domains a
+                // draft tied to no mailbox gets the "No mailbox" tag instead.
+                attribution: attribution.attribution(forMailbox: draft.mailboxID),
+                accountTint: accountTint,
+                metrics: metrics,
+                minHeight: rowHeight,
+                isSelected: model.selectedDraftID == draft.id,
                 open: { model.openDraft(draft.id) },
                 delete: { Task { await model.deleteDraft(draft.id) } }
             )
             .tag(draft.id)
+            .listRowInsets(EdgeInsets())
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         // Same NSTableView row-height floor as the conversation list: a freshly
         // inserted row it has not measured is otherwise drawn at 24pt.
-        .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
+        .environment(\.defaultMinListRowHeight, rowHeight)
         // ⏎ opens, ⌫ deletes — scoped to this list's focus, exactly like the
         // conversation list's triage keys, so neither fires while the user is
         // typing somewhere else in the window.
@@ -48,11 +54,9 @@ struct DraftListView: View {
         }
         .overlay {
             if model.drafts.isEmpty {
-                ContentUnavailableView(
-                    "No Drafts",
-                    systemImage: MailTheme.draftsSymbol,
-                    description: Text("Messages you start but don't send appear here.")
-                )
+                // Inside a mailbox: "No drafts in team@" + Show All Drafts,
+                // since mailbox-less drafts only list under All domains.
+                ListEmptyStateView(state: model.listEmptyState) { model.showAllDrafts() }
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -67,39 +71,52 @@ struct DraftListView: View {
     }
 }
 
-/// One draft row: who it is for, what it is about, how it starts, when it was
-/// last touched.
+/// One draft row: attribution + "Draft" (in `danger`), the subject, how it
+/// starts, when it was last touched (handoff §3.1 "Drafts", screenshot 5a-3).
 struct DraftRow: View {
     let draft: DraftSummary
-    let mailboxName: String?
-    let mailboxTint: MailTheme.AccountTint?
+    let attribution: ListColumn.Attribution
+    let accountTint: MailTheme.AccountTint?
+    let metrics: ListColumn.RowMetrics
+    let minHeight: CGFloat
+    var isSelected = false
     let open: () -> Void
     let delete: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
+        HStack(alignment: .top, spacing: ListColumn.Layout.rowColumnGap) {
             // Where a conversation row carries its unread dot. Blank, not absent:
             // the two lists' text columns start at the same x or switching
             // folders visibly shifts every row sideways.
-            Color.clear
-                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
-                .accessibilityHidden(true)
+            UnreadDot(isUnread: false)
 
-            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                HStack(spacing: MailTheme.Spacing.sm) {
-                    if let mailboxName {
-                        MailboxChip(name: mailboxName, tint: mailboxTint)
-                            .layoutPriority(2)
-                    } else {
-                        recipientsLabel
+            VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
+                HStack(spacing: ListColumn.Layout.attributionGap) {
+                    if !attribution.isEmpty {
+                        RowAttributionView(attribution: attribution, tint: accountTint)
+                    }
+                    // `danger` names what the row IS; on a selected row it
+                    // yields to the selection's own text colour, since a fixed
+                    // red on the accent fill would not read.
+                    Text(Self.senderTitle)
+                        .textStyle(MailTheme.Typography.bodyMedium)
+                        .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.Color.danger))
+                        .lineLimit(1)
+                    if metrics.subjectInline {
+                        Text(MailViewModel.subjectLabel(for: draft))
+                            .textStyle(MailTheme.Typography.body)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
-                if mailboxName != nil { recipientsLabel }
-                Text(MailViewModel.subjectLabel(for: draft))
-                    .font(.body)
-                    .lineLimit(1)
-                HStack(spacing: MailTheme.Spacing.xs) {
+                .frame(minHeight: ListColumn.Layout.badgeRowHeight)
+                if !metrics.subjectInline {
+                    Text(MailViewModel.subjectLabel(for: draft))
+                        .textStyle(MailTheme.Typography.body)
+                        .lineLimit(1)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if draft.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(.caption)
@@ -107,31 +124,34 @@ struct DraftRow: View {
                             .accessibilityHidden(true)
                     }
                     Text(draft.snippet)
-                        .font(.caption)
+                        .textStyle(MailTheme.Typography.snippet)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(metrics.snippetLines)
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(MailViewModel.accessibilitySummary(for: draft))
+            .accessibilityLabel(MailViewModel.accessibilitySummary(for: draft, attribution: attribution.spoken))
             .accessibilityValue(RowDateFormatter.full(draft.updatedAt))
+            .accessibilityIdentifier(AccessibilityID.MailList.draftRowPrefix + draft.id)
 
-            // Same fixed trailing slot as a conversation row, so the two lists
-            // line up: the date on top, the open affordance beneath it.
+            // The date on top, the open affordance beneath it — where a
+            // conversation row has its star.
             VStack(alignment: .trailing, spacing: 0) {
                 RowDateLabel(date: draft.updatedAt)
                 Button(action: open) {
                     Image(systemName: "square.and.pencil")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                         .iconButtonStyle("Open Draft")
                 }
                 .buttonStyle(.plain)
             }
-            .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
+            .fixedSize()
         }
-        .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
+        .padding(.vertical, metrics.verticalPadding)
+        .padding(.horizontal, ListColumn.Layout.rowHorizontalPadding)
+        .frame(minHeight: minHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, MailTheme.Spacing.xxs)
+        .selectionOutline(isSelected)
         // A count-2 tap, not the count-1 gesture that raced List's own selection
         // in issue #4: a double click still lets the first click through to the
         // list, so the row selects and then opens.
@@ -142,12 +162,6 @@ struct DraftRow: View {
         .accessibilityAction(named: "Delete Draft", delete)
     }
 
-    private var recipientsLabel: some View {
-        Text(MailViewModel.recipientsLabel(for: draft))
-            .font(.subheadline)
-            .foregroundStyle(draft.recipients.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(2)
-    }
+    /// Where a conversation row names its sender, a draft says what it is.
+    static let senderTitle = "Draft"
 }

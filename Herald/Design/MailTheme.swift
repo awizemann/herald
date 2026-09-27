@@ -7,7 +7,7 @@ import SwiftUI
 enum MailTheme {
     // MARK: Folders
 
-    static func symbol(for folder: ConversationFolder) -> String {
+    nonisolated static func symbol(for folder: ConversationFolder) -> String {
         switch folder {
         case .inbox: "tray"
         case .sent: "paperplane"
@@ -18,7 +18,7 @@ enum MailTheme {
         }
     }
 
-    static func title(for folder: ConversationFolder) -> String {
+    nonisolated static func title(for folder: ConversationFolder) -> String {
         switch folder {
         case .inbox: "Inbox"
         case .sent: "Sent"
@@ -41,8 +41,8 @@ enum MailTheme {
 
     /// The Drafts sidebar item. Its own tokens rather than a `title(for:)` case,
     /// because there is no folder value to switch on.
-    static let draftsTitle = "Drafts"
-    static let draftsSymbol = "doc.text"
+    nonisolated static let draftsTitle = "Drafts"
+    nonisolated static let draftsSymbol = "doc.text"
 
     // MARK: Colour tokens
 
@@ -120,16 +120,13 @@ enum MailTheme {
     /// colour (Differentiate Without Color).
     static let selectionBorderWidth: CGFloat = 1
 
-    /// Foreground for the mailbox attribution chip on a row in the "All
-    /// Mailboxes" scope. A token, not `.secondary` spelled inline, and paired
-    /// with the chip background so the chip is never colour-only.
-    ///
-    /// Still the HIERARCHICAL `.secondary`, not `ink2`: it is drawn inside `List`
-    /// rows, and only the system styles flip to the emphasised (white) variant on
-    /// a selected row — a fixed `ink2` would stay grey on the blue selection.
-    /// The same holds for ``chipLabelForeground`` and ``searchMatchForeground``;
-    /// the row rebuild (phase R5) decides how its own text meets the selection.
-    static let attributionForeground: SwiftUI.Color = .secondary
+    // Text drawn INSIDE `List` rows (conversation, draft and thread-message
+    // rows) uses the HIERARCHICAL styles — `.primary` / `.secondary` /
+    // `.tertiary` for the ink / ink2 / ink3 roles — never the fixed ink tokens:
+    // only the system styles flip to the emphasised (white) variant on a
+    // selected row, and a fixed ink would stay dark on the blue selection.
+    // Surfaces outside a `List` (the list header band, empty states, the
+    // thread header) read `Color.ink*` directly.
 
     // MARK: Search
 
@@ -140,7 +137,7 @@ enum MailTheme {
     /// Foreground of a matched run. Lifted to `.primary` because the snippet it
     /// most often sits in is drawn `.secondary`; paired with the bold weight the
     /// highlighter also applies, so the mark is never colour alone. Hierarchical
-    /// for the selected-row reason given on ``attributionForeground``.
+    /// for the `List`-row reason given under Surfaces.
     nonisolated static let searchMatchForeground: SwiftUI.Color = .primary
 
     // MARK: Account tints
@@ -198,21 +195,13 @@ enum MailTheme {
 
     // MARK: Chips
 
-    /// How strongly a chip's tint fills its background (``Wash/chipFill``).
-    nonisolated static let mailboxChipFillOpacity: Double = Wash.chipFill
-
-    /// Strength of a chip's hairline border, drawn in the same tint as the fill
-    /// (``Wash/chipBorder``). The border is what keeps two chips of different
-    /// colours distinguishable now that the NAME is drawn in the text colour.
-    nonisolated static let chipBorderOpacity: Double = Wash.chipBorder
-
     /// The colour a tinted chip's NAME is drawn in.
     ///
     /// `.primary` (the design's `ink` role), deliberately NOT the chip's own
     /// tint: a caption name drawn in a mid-lightness tint over an 18% wash of the
     /// same tint fails WCAG AA. The tint stays on the fill and the border, where
     /// it is a second cue on top of readable text — the chip rule. Hierarchical
-    /// for the selected-row reason given on ``attributionForeground``.
+    /// for the `List`-row reason given under Surfaces.
     nonisolated static let chipLabelForeground: SwiftUI.Color = .primary
 
     // MARK: Label colours
@@ -250,20 +239,9 @@ enum MailTheme {
 
     // MARK: Metrics
 
-    /// Width of a row's trailing date slot. FIXED, and sized for the longest form
-    /// ``RowDateFormatter`` produces, so neither a long mailbox name nor a long
-    /// sender can squeeze the date into an ellipsis — which is exactly what the
-    /// one-line layout did before.
-    static let dateSlotWidth: CGFloat = 78
-    /// Every list row reserves at least this height (chip/date line, sender, subject,
-    /// one preview line). macOS `List` caches a row's measured height, so a row whose
-    /// content grows after first layout — new mail arriving, mailbox names filling in —
-    /// can otherwise stay clipped at the shorter height it was first measured with.
-    /// It also feeds `defaultMinListRowHeight` on both lists — the height an
-    /// unmeasured, freshly inserted row is drawn at — so it must be the FULL
-    /// height of a four-line row (chip, sender, subject, two preview lines ≈ the
-    /// ~71pt trailing column plus padding), not a partial one.
-    static let rowMinHeight: CGFloat = 88
+    // A list row's minimum height is per DENSITY now (redesign R5):
+    // `ListColumn.RowMetrics.conversationRowHeight` / `messageRowHeight`, which
+    // also feed each list's `defaultMinListRowHeight`.
 
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).
@@ -461,12 +439,22 @@ enum MailTheme {
         /// Mono 10 semibold — a domain badge's letters (header/sidebar size).
         static let badge = Style(.monoSemibold, size: 10, relativeTo: .caption)
         /// Mono 9 semibold, +5% — the SERVER / HERALD source tags in Settings.
-        static let tag = Style(.monoSemibold, size: 9, relativeTo: .caption2, tracking: 0.05)
+        static let sourceTag = Style(.monoSemibold, size: 9, relativeTo: .caption2, tracking: 0.05)
+        /// Mono 10 — a row's message-count pill.
+        static let count = Style(.mono, size: 10, relativeTo: .caption)
+        /// Geist 10 — a small outlined tag ("No mailbox").
+        static let tag = Style(.text, size: 10, relativeTo: .caption)
+        /// Geist 11 medium — the name on the list header's label-filter chip.
+        static let chip = Style(.textMedium, size: 11, relativeTo: .subheadline)
+        /// Serif 18 — a list empty state's title ("Nothing in Sent").
+        static let emptyTitle = Style(.serifSubhead, size: 18, relativeTo: .title3)
 
         /// 44pt light — the onboarding welcome glyph (an SF Symbol, so system).
         static let heroGlyph = Font.system(size: 44, weight: .light)
         /// 40pt light — the empty-state glyph on the root pane.
         static let largeGlyph = Font.system(size: 40, weight: .light)
+        /// 34pt thin — a list empty state's glyph (handoff: weight 200).
+        static let emptyGlyph = Font.system(size: 34, weight: .thin)
     }
 
     // MARK: Web (reading pane)

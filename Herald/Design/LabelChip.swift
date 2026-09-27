@@ -3,7 +3,7 @@ import SwiftUI
 
 /// One label, drawn as a tinted pill.
 ///
-/// The same rule as ``MailboxChip``: the NAME is always drawn and the colour is a
+/// The chip rule: the NAME is always drawn and the colour is a
 /// second cue on top of it, never the label itself — so the chip survives
 /// greyscale, Increase Contrast and a reader who cannot tell teal from green.
 /// VoiceOver reads labels from the row's combined summary, hence the hidden flag.

@@ -13,10 +13,13 @@ nonisolated enum ListDensity: String, Sendable, CaseIterable {
     /// tampering) falls back to it rather than to whatever `Compact` happens to
     /// mean today.
     static func current(in defaults: UserDefaults) -> ListDensity {
-        guard let raw = defaults.string(forKey: storageKey), let value = ListDensity(rawValue: raw) else {
-            return .comfortable
-        }
-        return value
+        resolve(defaults.string(forKey: storageKey))
+    }
+
+    /// The same fallback for a raw stored value — what a view observing the
+    /// key through `@AppStorage` reads.
+    static func resolve(_ raw: String?) -> ListDensity {
+        raw.flatMap(ListDensity.init(rawValue:)) ?? .comfortable
     }
 
     static func set(_ value: ListDensity, in defaults: UserDefaults) {

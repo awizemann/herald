@@ -1117,13 +1117,8 @@ func wait(
         let plain = ConversationRow.accessibilitySummary(for: row)
         #expect(plain.hasPrefix("Support") == false)
         #expect(plain.contains("Support") == false)
-
-        let message = MailFixtures.message(id: "m1", threadID: "t1", subject: "Standup")
-        #expect(
-            ThreadMessageRow.accessibilitySummary(for: message, mailboxName: "Support")
-                .hasPrefix("Support, ")
-        )
-        #expect(ThreadMessageRow.accessibilitySummary(for: message).contains("Support") == false)
+        // (A thread's message rows carry no attribution since the redesign —
+        // the thread header states it once; see ListColumnTests.)
     }
 }
 

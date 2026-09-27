@@ -387,13 +387,6 @@ final class MailViewModel {
         }
     }
 
-    /// Whether rows say which mailbox they came from — everywhere the scope has
-    /// not already fixed it. (The redesign refines this per level in R5.)
-    var attributesRowsToMailbox: Bool {
-        if case .mailbox = scope { return false }
-        return true
-    }
-
     /// Whether a domain stays out of the `.allDomains` listing on this Mac.
     func isExcludedFromAllDomains(_ domain: MailDomain) -> Bool {
         DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
@@ -1222,15 +1215,23 @@ final class MailViewModel {
 
     // MARK: - Account tint
 
-    /// The account's tint — the one hue a mailbox chip's wash is drawn in now
-    /// that mailboxes have no colour of their own (handoff §2: "Account →
+    /// Bumped by ``accountTintDidChange()`` — `AppEnvironment.setAccountTint`
+    /// calls it — so every row, avatar and badge drawn from ``accountTint``
+    /// repaints the moment Settings › Account changes the colour. The tint
+    /// itself lives in `UserDefaults`, which Observation cannot see.
+    private(set) var accountTintRevision = 0
+
+    func accountTintDidChange() { accountTintRevision &+= 1 }
+
+    /// The account's tint — the one hue a row's domain badge and the user's own
+    /// thread avatar are drawn in, now that mailboxes have no colour of their own (handoff §2: "Account →
     /// colour… Nothing else gets its own hue"). The user's override
     /// (`account.<accountID>.tint`) wins, else the stable hash default.
     ///
     /// Read through on every call rather than cached: it is one `UserDefaults`
-    /// lookup, and a cache would need invalidating from wherever the override
-    /// is edited (Settings › Account).
+    /// lookup, and ``accountTintRevision`` is what makes it observable.
     var accountTint: MailTheme.AccountTint? {
+        _ = accountTintRevision
         let override = defaults.string(forKey: AccountTintAssignment.storageKey(accountID: accountID))
         return MailTheme.accountTint(named: AccountTintAssignment.token(forAccountID: accountID, override: override))
     }
@@ -1703,9 +1704,10 @@ final class MailViewModel {
                 if message.threadID == selectedThreadID { reloadThread = true }
                 // A message can resolve fine and still name a mailbox we have never
                 // listed (added server-side since the last mailbox reload). Its row
-                // would draw with no chip and the sender on line one — and the list
-                // caches that shorter row. Mailboxes reload before conversations
-                // below, so the chip is there on the row's first render.
+                // would draw with no attribution (`ListColumn.AttributionIndex`
+                // knows no local part for it). Mailboxes reload before
+                // conversations below, so the attribution is there on the row's
+                // first render.
                 if let mailboxID = message.mailboxID, mailboxNames[mailboxID] == nil {
                     reloadMailboxList = true
                 }
@@ -1806,8 +1808,8 @@ final class MailViewModel {
             // BEFORE the rows are published, not after: macOS `List` caches a
             // measured height per row identity, so a row that first renders
             // without its label chips and grows a line afterwards stays clipped
-            // at the height it was measured at (the same trap the mailbox chip
-            // has — see the design-system note).
+            // at the height it was measured at (see the design-system note,
+            // list row heights).
             await reloadLabelIndex()
             guard location == self.location, !Task.isCancelled else { return }
             allConversations = rows

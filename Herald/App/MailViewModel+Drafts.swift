@@ -170,8 +170,11 @@ extension MailViewModel {
 
     /// What VoiceOver reads for one draft row: on screen the state is a date, a
     /// paperclip and two greyed lines, none of which say anything out loud.
-    nonisolated static func accessibilitySummary(for draft: DraftSummary) -> String {
-        var parts = [recipientsLabel(for: draft), subjectLabel(for: draft)]
+    /// - Parameter attribution: the row's spoken attribution (its mailbox
+    ///   address, or "No mailbox"), leading as it does on screen; `nil` where
+    ///   the scope has already fixed the mailbox.
+    nonisolated static func accessibilitySummary(for draft: DraftSummary, attribution: String? = nil) -> String {
+        var parts = [attribution, "Draft", recipientsLabel(for: draft), subjectLabel(for: draft)].compactMap { $0 }
         if draft.hasAttachments { parts.append("has attachments") }
         if !draft.snippet.isEmpty { parts.append(draft.snippet) }
         return parts.joined(separator: ", ")

@@ -329,6 +329,27 @@ import Testing
         #expect(environment.settingsDomains(accountID: id).map(\.id) == ["dom_acme"])
         #expect(mail.mailboxIDs(for: .allDomains) == ["mb_acme"])
     }
+
+    /// The list column reads the tint from the account's view-model, not from
+    /// the environment. A Settings write must invalidate that reader too, or
+    /// rows keep the old colour until something unrelated redraws them.
+    @Test func aTintChangeInvalidatesTheViewModelsTintReaders() async throws {
+        let (environment, accounts) = try await Self.environment(["a.example.com"])
+        let id = accounts[0].id
+        let mail = try #require(environment.graphs[id]?.mail)
+        let other = try #require(AccountTintAssignment.tokenNames.first { $0 != mail.accountTint?.name })
+
+        let invalidated = Mutex(false)
+        withObservationTracking {
+            _ = mail.listAccountTint
+        } onChange: {
+            invalidated.withLock { $0 = true }
+        }
+        environment.setAccountTint(other, for: id)
+
+        #expect(invalidated.withLock { $0 }, "The list column's tint must repaint")
+        #expect(mail.listAccountTint?.name == other)
+    }
 }
 
 private extension Account {

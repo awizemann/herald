@@ -7,10 +7,6 @@ import Foundation
 /// is a boundary (midnight, the sixth day, New Year) and none of them is testable
 /// against the wall clock.
 nonisolated enum RowDateFormatter {
-    /// Longest string the compact form can produce, used to size the row's fixed
-    /// date slot. Not asserted — `MailTheme.dateSlotWidth` is the real budget.
-    static let longestCompactSample = "Dec 31, 2024"
-
     /// - today → "6:44 PM"
     /// - yesterday → "Yesterday"
     /// - the five days before that → "Tue"

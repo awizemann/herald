@@ -170,7 +170,7 @@ private struct DensityPreview: View {
 
     private var badge: some View {
         Text(Self.monogram)
-            .font(MailTheme.Typography.tag.font)
+            .font(MailTheme.Typography.sourceTag.font)
             .padding(.horizontal, MailTheme.Spacing.xs)
             .frame(height: SettingsLayout.rowBadgeHeight)
             .background(tint.solid.opacity(MailTheme.Wash.badgeFill), in: RoundedRectangle(cornerRadius: MailTheme.Radius.badgeSmall))

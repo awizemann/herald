@@ -98,6 +98,7 @@ extension AppEnvironment {
             defaults.removeObject(forKey: key)
         }
         accountTintRevision &+= 1
+        graphs[accountID]?.mail.accountTintDidChange()
     }
 
     // MARK: - Domain preferences

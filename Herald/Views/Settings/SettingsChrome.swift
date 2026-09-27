@@ -194,7 +194,7 @@ struct SettingsSourceTag: View {
 
     var body: some View {
         Text(source.text)
-            .textStyle(MailTheme.Typography.tag)
+            .textStyle(MailTheme.Typography.sourceTag)
             .foregroundStyle(foreground)
             .padding(.vertical, MailTheme.Spacing.xxs)
             .padding(.horizontal, MailTheme.Spacing.xs + MailTheme.Spacing.xxs)
@@ -258,7 +258,7 @@ struct SettingsDomainBadge: View {
         let radius = isHeader ? MailTheme.Radius.badgeLarge : MailTheme.Radius.badgeMedium
         // Mono 10 at header size, 9 in a sidebar row (handoff: badges 9–10).
         Text(monogram)
-            .font(isHeader ? MailTheme.Typography.badge.font : MailTheme.Typography.tag.font)
+            .font(isHeader ? MailTheme.Typography.badge.font : MailTheme.Typography.sourceTag.font)
             .foregroundStyle(MailTheme.Color.ink)
             .lineLimit(1)
             .minimumScaleFactor(0.7)

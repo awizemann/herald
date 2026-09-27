@@ -182,7 +182,7 @@ private struct SettingsDomainRows: View {
             // selectable (no tag), and it says why in words, not only by being
             // dimmed.
             Label("Workflows", systemImage: "point.3.connected.trianglepath.dotted")
-                .badge(Text("LATER").font(MailTheme.Typography.tag.font))
+                .badge(Text("LATER").font(MailTheme.Typography.sourceTag.font))
                 .opacity(0.5)
                 .accessibilityLabel("Workflows, coming later")
         }

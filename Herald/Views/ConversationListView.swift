@@ -19,22 +19,36 @@ struct MiddleColumnView: View {
     /// (server results and all) 250 ms after the user pressed ⎋. Owned by the
     /// view that SURVIVES the swap, it simply comes back as it was.
     @State private var searchText = ""
+    /// Settings › General's density, observed live: a change there re-lays
+    /// every row at once. Read through ``ListDensity/resolve(_:)`` so an absent
+    /// or unknown value is Comfortable, the same rule as the Settings page.
+    @AppStorage(ListDensity.storageKey) private var densityRaw = ListDensity.comfortable.rawValue
+
+    private var metrics: ListColumn.RowMetrics { ListColumn.RowMetrics(ListDensity.resolve(densityRaw)) }
 
     var body: some View {
-        ZStack {
-            if model.isShowingDrafts {
-                // Drafts are not conversations and not messages — a different
-                // list entirely, in the same slot.
-                DraftListView(model: model)
-                    .transition(.opacity)
-            } else if model.isShowingThread {
-                ThreadMessageListView(model: model)
-                    .transition(.opacity)
-            } else {
-                ConversationListView(model: model, searchText: $searchText)
+        VStack(spacing: 0) {
+            // The thread view brings its own header (back link, subject).
+            if !model.isShowingThread {
+                ListHeaderBand(model: model)
                     .transition(.opacity)
             }
+            ZStack {
+                if model.isShowingDrafts {
+                    // Drafts are not conversations and not messages — a different
+                    // list entirely, in the same slot.
+                    DraftListView(model: model, metrics: metrics)
+                        .transition(.opacity)
+                } else if model.isShowingThread {
+                    ThreadMessageListView(model: model, metrics: metrics)
+                        .transition(.opacity)
+                } else {
+                    ConversationListView(model: model, searchText: $searchText, metrics: metrics)
+                        .transition(.opacity)
+                }
+            }
         }
+        .background(MailTheme.Color.bg)
         // A cross-fade, and none at all when the user asked for less motion.
         .animation(reduceMotion ? nil : MailTheme.Animation.quick, value: model.isShowingThread)
         .animation(reduceMotion ? nil : MailTheme.Animation.quick, value: model.isShowingDrafts)
@@ -48,13 +62,17 @@ struct ConversationListView: View {
     /// debounced here before it reaches the view-model — so a keystroke never
     /// re-runs the list's data source (or the detail pane).
     @Binding var searchText: String
+    let metrics: ListColumn.RowMetrics
     /// ⌘F focus. `@FocusState` cannot be reached from `Commands`, which is why
     /// the shortcut rides on a hidden button in this view instead of the menu bar.
     @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
-        // Once per pass, not per row: every attributed row draws the same tint.
-        let accountTint = model.accountTint
+        // Once per pass, not per row: every row of the pass shares the scope's
+        // attribution rule, the domain monograms and the account tint.
+        let attribution = model.rowAttributionIndex()
+        let accountTint = model.listAccountTint
+        let rowHeight = metrics.conversationRowHeight(.current)
         List(model.presentedConversations, selection: $model.selectedThreadID) { row in
             ConversationRow(
                 row: row,
@@ -62,12 +80,12 @@ struct ConversationListView: View {
                 // were filtered with this one, so marking them with a needle the
                 // user is still typing would highlight what is not matched yet.
                 highlight: model.searchQuery,
-                // Only in the all-mailboxes scope: with a mailbox picked, every
-                // row would carry the same chip and say nothing.
-                mailboxName: model.attributesRowsToMailbox
-                    ? model.mailboxName(for: row.latest.mailboxID)
-                    : nil,
-                mailboxTint: model.attributesRowsToMailbox ? accountTint : nil,
+                // Only the levels the scope has not fixed (handoff §2).
+                attribution: attribution.attribution(forMailbox: row.latest.mailboxID),
+                accountTint: accountTint,
+                metrics: metrics,
+                minHeight: rowHeight,
+                isSelected: model.selectedThreadID == row.id,
                 labels: model.labels(forThread: row.id),
                 toggleStar: { Task { await model.toggleStar(row) } },
                 archive: model.offersArchiveAction
@@ -85,18 +103,22 @@ struct ConversationListView: View {
                 openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
             )
             .tag(row.id)
+            // The row draws its own padding (14/7 × 12, handoff §3.1).
+            .listRowInsets(EdgeInsets())
             // Selection itself drills into a multi-message thread (see
             // MailViewModel.selectedThreadID). No tap gesture here: issue #4 —
             // a simultaneous TapGesture on the row content raced the List's own
             // selection, so clicks on text often failed to select at all.
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         // The row's own `minHeight` cannot win this one: macOS `List` is an
         // NSTableView that caches a measured height per row identity, and a
         // freshly inserted row it has not measured yet is drawn at
         // `defaultMinListRowHeight` — 24pt by default, which is exactly the
-        // one-line row new mail was arriving as. Raise the FLOOR to a full row.
-        .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
+        // one-line row new mail was arriving as. Raise the FLOOR to a full row
+        // of the current density.
+        .environment(\.defaultMinListRowHeight, rowHeight)
         // Mail's single-key triage, scoped to this list's focus. As a toolbar or
         // menu shortcut these are window-global and fire while the user is typing
         // in the search field — which is how a bare ⌫ deletes the wrong thing.
@@ -112,7 +134,9 @@ struct ConversationListView: View {
             model.openSelectedThreadViaShortcut()
             return .handled
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search mail")
+        // The native toolbar field (handoff §3.1); the prompt names the scope a
+        // search covers — "Search all domains", "Search acme.co".
+        .searchable(text: $searchText, placement: .toolbar, prompt: Text(model.searchPrompt))
         .searchFocused($searchFieldFocused)
         // Return in the search field searches the SERVER for what is on screen;
         // the local pass has already run on every keystroke.
@@ -152,19 +176,9 @@ struct ConversationListView: View {
         }
         .overlay {
             if model.presentedConversations.isEmpty {
-                ContentUnavailableView {
-                    Label(
-                        model.searchQuery.isEmpty ? "No Messages" : "No Results",
-                        systemImage: MailTheme.symbol(for: model.folder.conversationFolder ?? .inbox)
-                    )
-                } description: {
-                    // Only worth saying while a search is running and the server
-                    // has not been asked yet — otherwise it promises a second
-                    // answer that is already on its way (or already in).
-                    if !model.searchQuery.isEmpty, model.serverSearchState == .idle {
-                        Text("Press Return to search the server.")
-                    }
-                }
+                // "Nothing in Sent / in acme.co", or "No Results" while a
+                // search filters the list (see `ListColumn.emptyState`).
+                ListEmptyStateView(state: model.listEmptyState)
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -326,226 +340,19 @@ struct SearchStatusBar: View {
     }
 }
 
-/// One drilled-into thread: a header that gets back out, then a row per message.
+/// A row's trailing date (`meta`, mono 11). The short form is ambiguous by
+/// design ("Tue"), so the absolute date rides along as the tooltip, and the
+/// row's accessibility value carries it for VoiceOver.
 ///
-/// A `List` with a selection binding, not a hand-rolled `LazyVStack` of buttons:
-/// arrowing between messages is then the list's own behaviour rather than two
-/// `.onKeyPress` handlers that only work while the stack happens to be focused.
-struct ThreadMessageListView: View {
-    @Bindable var model: MailViewModel
-
-    private var folderTitle: String { MailTheme.title(for: model.folder.conversationFolder ?? .inbox) }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            List(model.threadMessages, selection: $model.selectedMessageID) { message in
-                ThreadMessageRow(
-                    message: message,
-                    // Same rule as the conversation list: attribution only where
-                    // the scope is ambiguous.
-                    mailboxName: model.attributesRowsToMailbox
-                        ? model.mailboxName(for: message.mailboxID)
-                        : nil,
-                    mailboxTint: model.attributesRowsToMailbox ? model.accountTint : nil,
-                    toggleStar: {
-                        Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id) }
-                    }
-                )
-                .tag(message.id)
-            }
-            .listStyle(.inset)
-            // Same unmeasured-row floor as the conversation list.
-            .environment(\.defaultMinListRowHeight, MailTheme.rowMinHeight)
-        }
-        // ⎋ backs out, as it does everywhere else on macOS; ⌘[ does the same from
-        // a hidden carrier beside the back button (see `header`).
-        .onExitCommand { model.exitThreadViaShortcut() }
-    }
-
-    private var header: some View {
-        HStack(spacing: MailTheme.Spacing.sm) {
-            Button { model.exitThread() } label: {
-                Image(systemName: "chevron.left")
-                    .iconButtonStyle("Back to \(folderTitle)")
-            }
-            .buttonStyle(.plain)
-            // ⌘[ carries the same step on a hidden button of its own, next to
-            // the control it belongs to: a `keyboardShortcut` ON the chevron
-            // cannot tell the key press from the click, and the two are
-            // different ways of getting here. Hidden from accessibility — the
-            // chevron beside it is the reachable control.
-            .background {
-                Button("Back") { model.exitThreadViaShortcut() }
-                    .keyboardShortcut("[", modifiers: .command)
-                    .hidden()
-                    .accessibilityHidden(true)
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(subject)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                Text("\(model.threadMessages.count) messages")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.trailing, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.xs)
-    }
-
-    private var subject: String {
-        let subject = model.selectedConversation?.latest.subject ?? ""
-        return subject.isEmpty ? "(No subject)" : subject
-    }
-}
-
-/// One message inside a drilled-into thread.
-struct ThreadMessageRow: View {
-    let message: MessageSummary
-    let mailboxName: String?
-    let mailboxTint: MailTheme.AccountTint?
-    let toggleStar: () -> Void
-
-    private var fromLabel: some View {
-        Text(message.fromAddress)
-            .font(.subheadline)
-            .fontWeight(message.isUnread ? .bold : .regular)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(2)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
-            // Unread is bold text AND a dot: never color alone.
-            Circle()
-                .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
-                .padding(.top, MailTheme.Spacing.xs)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                // Same rule as a conversation row: mailbox leads and holds its
-                // width, sender gives way first, date keeps its own slot.
-                HStack(spacing: MailTheme.Spacing.sm) {
-                    if let mailboxName {
-                        MailboxChip(name: mailboxName, tint: mailboxTint)
-                            .layoutPriority(2)
-                    } else {
-                        fromLabel
-                    }
-                    Spacer(minLength: 0)
-                }
-                if mailboxName != nil { fromLabel }
-                Text("To: \(message.to.joined(separator: ", "))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(SnippetCleaner.clean(message.snippet))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilitySummary(for: message, mailboxName: mailboxName))
-            .accessibilityValue(RowDateFormatter.full(message.displayDate))
-
-            // Same trailing column as a conversation row: date on top, star under it.
-            VStack(alignment: .trailing, spacing: 0) {
-                RowDateLabel(date: message.displayDate)
-                Button(action: toggleStar) {
-                    Image(systemName: message.isStarred ? "star.fill" : "star")
-                        .foregroundStyle(message.isStarred ? MailTheme.starred : .secondary)
-                        .iconButtonStyle(message.isStarred ? "Unstar" : "Star")
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
-        }
-        .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, MailTheme.Spacing.xxs)
-        .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
-    }
-
-    /// What VoiceOver reads for one message row: on screen the state is a dot, a
-    /// bold weight and a star, none of which say anything out loud.
-    nonisolated static func accessibilitySummary(
-        for message: MessageSummary,
-        mailboxName: String? = nil
-    ) -> String {
-        var parts: [String] = []
-        if let mailboxName { parts.append(mailboxName) }
-        parts.append(message.fromAddress)
-        parts.append("To: \(message.to.joined(separator: ", "))")
-        if message.isUnread { parts.append("unread") }
-        if message.isStarred { parts.append("starred") }
-        parts.append(message.snippet)
-        return parts.joined(separator: ", ")
-    }
-}
-
-/// Which mailbox a row belongs to, shown only in the all-mailboxes scope, where
-/// it is the row's PRIMARY label — the sender reads as secondary next to it.
-///
-/// Washed in the ACCOUNT's tint — every chip of one account shares it, so the
-/// NAME is the attribution and the colour only says which account (handoff §2:
-/// mailboxes carry no colour of their own). The name is always drawn, so the
-/// chip survives greyscale and Increase Contrast. The redesign's row rebuild
-/// (R5) replaces this chip with the domain badge + mailbox name. VoiceOver reads it from the row's own combined label,
-/// hence `accessibilityHidden`.
-struct MailboxChip: View {
-    let name: String
-    /// `nil` falls back to the neutral chip surface — a tint name this build no
-    /// longer ships must still render a readable chip.
-    let tint: MailTheme.AccountTint?
-
-    var body: some View {
-        Text(name)
-            .font(.caption2)
-            .fontWeight(.medium)
-            // A tinted chip draws its name in the text colour, not in the tint:
-            // a caption2 name in a mid-lightness tint over an 18% wash of itself
-            // misses AA in light mode. The tint lives on the fill and the border. The
-            // untinted fallback keeps the neutral attribution colour, which is
-            // already contrast-safe on the neutral chip surface.
-            .foregroundStyle(tint == nil ? MailTheme.attributionForeground : MailTheme.chipLabelForeground)
-            .lineLimit(1)
-            .padding(.horizontal, MailTheme.Spacing.xs)
-            .padding(.vertical, MailTheme.Spacing.xxs)
-            .background(background, in: Capsule())
-            .overlay {
-                if let tint {
-                    Capsule().strokeBorder(tint.solid.opacity(MailTheme.chipBorderOpacity))
-                }
-            }
-            .accessibilityHidden(true)
-    }
-
-    private var background: AnyShapeStyle {
-        guard let tint else { return MailTheme.chipBackground }
-        return AnyShapeStyle(tint.solid.opacity(MailTheme.mailboxChipFillOpacity))
-    }
-}
-
-/// A row's trailing date: a FIXED-width slot, so a long mailbox name or a long
-/// sender runs into its own truncation instead of squeezing the date out — which
-/// is what the old free-flowing line did. The short form is ambiguous by design
-/// ("Tue"), so the absolute date rides along as the tooltip, and the row's
-/// accessibility value carries it for VoiceOver.
+/// `.tertiary`, not `ink3`: it is drawn inside `List` rows, where only the
+/// hierarchical styles flip with the system selection.
 struct RowDateLabel: View {
     let date: Date
 
     var body: some View {
         Text(RowDateFormatter.compact(date))
-            .font(.caption)
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
+            .textStyle(MailTheme.Typography.meta)
+            .foregroundStyle(.tertiary)
             .lineLimit(1)
             .fixedSize()
             .help(RowDateFormatter.full(date))
@@ -553,16 +360,44 @@ struct RowDateLabel: View {
     }
 }
 
+/// The unread dot at the head of a row: 8pt accent, or nothing. Never the only
+/// cue — the sender and subject go semibold too.
+///
+/// On a SELECTED row the dot turns `.primary` (white on the focused system
+/// selection): an accent dot on an accent fill would disappear.
+struct UnreadDot: View {
+    let isUnread: Bool
+    var isSelected = false
+
+    var body: some View {
+        Circle()
+            .fill(isUnread ? (isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.unreadIndicator)) : AnyShapeStyle(.clear))
+            .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
+            .frame(width: ListColumn.Layout.dotColumnWidth)
+            .accessibilityHidden(true)
+    }
+}
+
+/// One conversation (handoff §3.1 "Conversation row"): dot | text | trailing,
+/// with the attribution the scope leaves open (§2) leading the sender.
+///
+/// Comfortable: `[AC] sales@ · Sender` / subject / a two-line snippet.
+/// Compact: `[AC] sales@ · Sender  Subject` / a one-line snippet.
+/// Label chips (≤3, then +n) close either. Trailing: the date over
+/// [count][star][chevron when the thread has more than one message].
 struct ConversationRow: View {
     let row: ConversationSummary
     /// The committed search query, marked up inside subject and snippet. Empty
     /// when nothing is being searched, which costs one plain `AttributedString`.
     var highlight: String = ""
-    /// Non-nil only in the all-mailboxes scope.
-    let mailboxName: String?
-    /// The chip's wash: the ACCOUNT's tint (mailboxes have no colour of their
-    /// own since the redesign), resolved by the view-model.
-    let mailboxTint: MailTheme.AccountTint?
+    /// What the scope leaves open: badge + mailbox, mailbox, or nothing.
+    let attribution: ListColumn.Attribution
+    /// The account's tint — the domain badge's wash.
+    let accountTint: MailTheme.AccountTint?
+    let metrics: ListColumn.RowMetrics
+    /// A full row's height for the density (the list's unmeasured-row floor).
+    let minHeight: CGFloat
+    var isSelected = false
     /// The labels on ANY message of the thread, in sidebar order. Empty for most
     /// rows, and the chip row renders nothing at all then.
     var labels: [MailLabel] = []
@@ -579,36 +414,17 @@ struct ConversationRow: View {
     /// Non-nil when the conversation has more than one message.
     let openThread: (() -> Void)?
 
-    var body: some View {
-        HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
-            // Unread is bold text AND a dot: never color alone.
-            Circle()
-                .fill(row.isUnread ? MailTheme.unreadIndicator : .clear)
-                .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
-                .padding(.top, MailTheme.Spacing.xs)
-                .accessibilityHidden(true)
+    private var lines: ListColumn.LineHeights { .current }
 
-            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                HStack(spacing: MailTheme.Spacing.sm) {
-                    // Mailbox first and with the higher layout priority: it is
-                    // WHICH INBOX this landed in, which the owner reads before the
-                    // sender. It never truncates before the sender does.
-                    // Owner request 2026-08-16: when the chip is shown, the sender
-                    // gets its OWN line beneath it — the two never share a line.
-                    if let mailboxName {
-                        MailboxChip(name: mailboxName, tint: mailboxTint)
-                            .layoutPriority(2)
-                    } else {
-                        participantsLabel
-                    }
-                    Spacer(minLength: 0)
-                }
-                if mailboxName != nil { participantsLabel }
-                Text(SearchHighlighter.highlight(subjectText, matching: highlight))
-                    .font(.body)
-                    .fontWeight(row.isUnread ? .semibold : .regular)
-                    .lineLimit(1)
-                HStack(spacing: MailTheme.Spacing.xs) {
+    var body: some View {
+        HStack(alignment: .top, spacing: ListColumn.Layout.rowColumnGap) {
+            UnreadDot(isUnread: row.isUnread, isSelected: isSelected)
+                .padding(.top, (firstLineHeight - MailTheme.unreadDotDiameter) / 2)
+
+            VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
+                firstLine
+                if !metrics.subjectInline { subjectLabel }
+                HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if row.latest.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(.caption)
@@ -618,77 +434,34 @@ struct ConversationRow: View {
                     Text(SearchHighlighter.highlight(
                         SnippetCleaner.clean(row.latest.snippet), matching: highlight
                     ))
-                    .font(.caption)
+                    .textStyle(MailTheme.Typography.snippet)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(metrics.snippetLines)
                 }
                 // Last line, under the snippet: labels are metadata about the
                 // thread, not part of what it says.
                 LabelChipRow(labels: labels)
             }
-            // COMBINE, not the row's old `contain`: as a container VoiceOver
-            // stopped on each Text separately and the row's own label — the only
-            // place unread/starred/attachments were spoken — was never read.
+            // COMBINE, not `contain`: as a container VoiceOver stopped on each
+            // Text separately and the row's own label — the only place
+            // unread/starred/attachments are spoken — was never read.
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                Self.accessibilitySummary(for: row, mailboxName: mailboxName, labels: labels)
+                Self.accessibilitySummary(for: row, mailboxName: attribution.spoken, labels: labels)
             )
             // The full date, not the "Tue" on screen: the short form is not a date.
             .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
             .accessibilityIdentifier(AccessibilityID.MailList.rowPrefix + row.id)
 
-            // Trailing column: star (and the open-thread chevron) on top, the
-            // message count beneath — off the crowded first line, where it can
-            // be read at a glance and doesn't compete with the chip or the date.
-            // Trailing column, FIXED width so every row lines up: the date on top,
-            // right-justified at the row's edge, then the tools beneath it —
-            // chevron (or an equal-sized blank), star, message count.
-            VStack(alignment: .trailing, spacing: 0) {
-                RowDateLabel(date: row.latest.displayDate)
-                // Line 2: [count][chevron] — the count sits LEFT of the arrow, and
-                // a single-message row keeps an equal-sized blank so every row's
-                // text column has the same width.
-                HStack(spacing: MailTheme.Spacing.xxs) {
-                    if row.messageCount > 1 {
-                        Text("\(row.messageCount)")
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .padding(.horizontal, MailTheme.Spacing.xs)
-                            .padding(.vertical, MailTheme.Spacing.xxs)
-                            .background(MailTheme.chipBackground, in: Capsule())
-                            .accessibilityHidden(true) // spoken in the row summary
-                    }
-                    if let openThread {
-                        // A real button, not a decorative chevron: re-entering a
-                        // thread has to work from the keyboard and the rotor, not
-                        // only by re-clicking an already-selected row.
-                        Button(action: openThread) {
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                                .iconButtonStyle("Show \(row.messageCount) messages")
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Color.clear
-                            .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
-                            .accessibilityHidden(true)
-                    }
-                }
-                // Its own element on purpose: it is a control, and folding it
-                // into the row would cost the only way to star without the mouse.
-                Button(action: toggleStar) {
-                    Image(systemName: row.isStarred ? "star.fill" : "star")
-                        .foregroundStyle(row.isStarred ? MailTheme.starred : .secondary)
-                        .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(width: MailTheme.dateSlotWidth, alignment: .trailing)
+            trailingColumn
         }
-        // Stable minimum height + no vertical compression: see MailTheme.rowMinHeight.
-        .frame(minHeight: MailTheme.rowMinHeight, alignment: .top)
+        .padding(.vertical, metrics.verticalPadding)
+        .padding(.horizontal, ListColumn.Layout.rowHorizontalPadding)
+        // Stable minimum height + no vertical compression: see the list's
+        // `defaultMinListRowHeight`, which is the same number.
+        .frame(minHeight: minHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, MailTheme.Spacing.xxs)
+        .selectionOutline(isSelected)
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
@@ -701,19 +474,79 @@ struct ConversationRow: View {
         }
     }
 
+    /// The badge is 16pt, taller than a line of text; line 1 is whichever wins.
+    private var firstLineHeight: CGFloat { max(lines.body, ListColumn.Layout.badgeRowHeight) }
+
+    /// Attribution, then the sender (the part that truncates first after the
+    /// subject), then — in Compact — the subject on the same line.
+    private var firstLine: some View {
+        HStack(spacing: ListColumn.Layout.attributionGap) {
+            if !attribution.isEmpty {
+                RowAttributionView(attribution: attribution, tint: accountTint)
+            }
+            Text(Self.displayParticipants(for: row))
+                .textStyle(row.isUnread ? MailTheme.Typography.headline : MailTheme.Typography.bodyMedium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            if metrics.subjectInline {
+                subjectLabel
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: ListColumn.Layout.badgeRowHeight)
+    }
+
+    private var subjectLabel: some View {
+        Text(SearchHighlighter.highlight(subjectText, matching: highlight))
+            .textStyle(row.isUnread ? MailTheme.Typography.headline : MailTheme.Typography.body)
+            .lineLimit(1)
+    }
+
+    /// Date on top; [count][star][chevron] beneath it (handoff §3.1).
+    private var trailingColumn: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            RowDateLabel(date: row.latest.displayDate)
+            HStack(spacing: 0) {
+                if row.messageCount > 1 {
+                    CountPill(count: row.messageCount)
+                }
+                // Its own element on purpose: it is a control, and folding it
+                // into the row would cost the only way to star without the mouse.
+                Button(action: toggleStar) {
+                    Image(systemName: row.isStarred ? "star.fill" : "star")
+                        .foregroundStyle(row.isStarred ? AnyShapeStyle(MailTheme.starred) : AnyShapeStyle(.tertiary))
+                        .iconButtonStyle(row.isStarred ? "Unstar" : "Star")
+                }
+                .buttonStyle(.plain)
+                if let openThread {
+                    // A real button, not a decorative chevron: re-entering a
+                    // thread has to work from the keyboard and the rotor, not
+                    // only by re-clicking an already-selected row.
+                    Button(action: openThread) {
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.tertiary)
+                            .iconButtonStyle("Show \(row.messageCount) messages")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .fixedSize()
+    }
+
     private var subjectText: String {
         row.latest.subject.isEmpty ? "(No subject)" : row.latest.subject
     }
 
-    private var participants: String { Self.participants(for: row) }
-
-    private var participantsLabel: some View {
-        Text(participants)
-            .font(.subheadline)
-            .fontWeight(row.isUnread ? .bold : .regular)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(2)
+    /// Who the row names on screen: the sender's display name, or — for a
+    /// thread whose latest message is the user's own — "To:" and its
+    /// recipients.
+    nonisolated static func displayParticipants(for row: ConversationSummary) -> String {
+        row.latest.direction == .outbound
+            ? "To: " + row.latest.to.map(ListColumn.senderName).joined(separator: ", ")
+            : ListColumn.senderName(row.latest.fromAddress)
     }
 
     private nonisolated static func participants(for row: ConversationSummary) -> String {
@@ -726,8 +559,7 @@ struct ConversationRow: View {
     /// easiest to drop — unread, starred, attachments, and the mailbox a row is
     /// attributed to — are assertable without a rendered list.
     ///
-    /// The mailbox leads, matching the chip's new position: it is the row's
-    /// primary label on screen and has to be the first thing spoken too.
+    /// The attribution leads, matching its position on screen.
     nonisolated static func accessibilitySummary(
         for row: ConversationSummary,
         mailboxName: String? = nil,
@@ -746,5 +578,21 @@ struct ConversationRow: View {
         if let phrase = LabelChipRow.accessibilityPhrase(for: labels) { parts.append(phrase) }
         parts.append(row.latest.snippet)
         return parts.joined(separator: ", ")
+    }
+}
+
+/// A thread's message count on its row (mono 10 on the neutral chip fill).
+/// Spoken in the row summary, so hidden here.
+struct CountPill: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .textStyle(MailTheme.Typography.count)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, MailTheme.Spacing.xs + MailTheme.Spacing.xxs)
+            .padding(.vertical, MailTheme.Spacing.xxs / 2)
+            .background(MailTheme.chipBackground, in: Capsule())
+            .accessibilityHidden(true)
     }
 }

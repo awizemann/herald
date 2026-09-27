@@ -43,6 +43,7 @@ xcodebuild \
     -derivedDataPath DerivedData \
     -skipPackagePluginValidation \
     -resultBundlePath "$RESULT" \
+    -test-timeouts-enabled YES \
     "$@" \
     test >"$LOG" 2>&1
 STATUS=$?

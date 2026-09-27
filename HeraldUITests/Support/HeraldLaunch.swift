@@ -106,6 +106,11 @@ class HeraldUITestCase: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         continueAfterFailure = false
+        // Per-test time limit (XCTest rounds up to whole minutes; enforced because
+        // scripts/ui-tests.sh passes `-test-timeouts-enabled YES`). The slowest
+        // healthy test takes well under a minute, so a test past this is hung —
+        // it fails with a spindump instead of stalling the whole run.
+        executionTimeAllowance = 180
     }
 
     override func tearDown() async throws {

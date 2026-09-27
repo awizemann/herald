@@ -37,6 +37,8 @@ struct UITestStatus: Equatable, CustomStringConvertible, Sendable {
     var server: String? { fields["server"] }
     var presenter: String? { fields["presenter"] }
     var storeRefusesList: Bool? { fields["storeRefusesList"].flatMap(Bool.init) }
+    /// Appended in U4 (`uitest.activation.*`); not in ``requiredKeys``.
+    var activationRefused: Bool? { fields["activationRefused"].flatMap(Bool.init) }
 
     var sends: Int? { count("sends") }
     var sendRequests: Int? { count("sendRequests") }

@@ -25,6 +25,14 @@ enum Wait {
         }
     }
 
+    /// The opposite wait: polls `condition` for the whole `duration` and
+    /// returns false the moment it stops holding — for "nothing ELSE happens"
+    /// assertions (no second send, no refresh storm, the error stays up).
+    /// Still polling, never sleeping; `duration` is how long "nothing" must last.
+    static func holds(for duration: TimeInterval, _ condition: () -> Bool) -> Bool {
+        !until(timeout: duration) { !condition() }
+    }
+
     /// Polls `produce` until it yields a non-nil value; `nil` on timeout.
     static func value<T>(
         timeout: TimeInterval = HeraldApp.defaultTimeout,

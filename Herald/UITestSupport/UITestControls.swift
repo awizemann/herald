@@ -32,6 +32,12 @@ struct UITestCommands: Commands {
                 Button("Account store: healthy") { harness.setAccountStoreRefusesList(false) }
                     .accessibilityIdentifier("uitest.store.healthy")
             }
+            Section("Account activation") {
+                Button("Activation: refuse") { harness.setActivationRefused(true) }
+                    .accessibilityIdentifier("uitest.activation.refuse")
+                Button("Activation: healthy") { harness.setActivationRefused(false) }
+                    .accessibilityIdentifier("uitest.activation.healthy")
+            }
             Divider()
             Button("Reset counters") { harness.resetCounters() }
                 .accessibilityIdentifier("uitest.resetCounters")

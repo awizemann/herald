@@ -70,6 +70,10 @@ final class UITestHarness {
     private(set) var signInAttempts = 0
     private(set) var pendingSignIns = 0
     private(set) var accountStoreRefusesList = false
+    /// Whether ``setActivationRefused(_:)`` has taken the mail cache away.
+    private(set) var activationRefused = false
+    /// The mail cache held aside while activation is refused.
+    @ObservationIgnored private var parkedMailStore: MailStore?
 
     init(configuration: UITestLaunchConfiguration, defaultsSuiteName: String = UITestHarness.defaultsSuiteName) {
         self.configuration = configuration
@@ -83,10 +87,13 @@ final class UITestHarness {
         defaults.removePersistentDomain(forName: defaultsSuiteName)
         self.defaults = defaults
 
-        var servers = [FakeHQBase(origin: UITestOrigins.primary, mailboxAddress: "me@hqbase.uitest.invalid")]
-        if configuration.scenario == .twoAccounts {
-            servers.append(FakeHQBase(origin: UITestOrigins.secondary, mailboxAddress: "me@second.uitest.invalid"))
-        }
+        // Both origins are served in EVERY scenario; only the seeding differs.
+        // An unseeded second server is what Add Account signs in to from
+        // `oneAccount` (a new origin, not a refusal for an existing one).
+        let servers = [
+            FakeHQBase(origin: UITestOrigins.primary, mailboxAddress: "me@hqbase.uitest.invalid"),
+            FakeHQBase(origin: UITestOrigins.secondary, mailboxAddress: "me@second.uitest.invalid"),
+        ]
         let network = FakeHQBaseNetwork(servers: servers)
         self.network = network
         let session = network.makeSession()
@@ -107,9 +114,12 @@ final class UITestHarness {
 
         let store = InMemoryAccountStore()
         accountStore = store
-        if configuration.scenario != .signedOut {
-            for server in servers { Self.seedSignedInAccount(on: server, into: store) }
+        let seeded: ArraySlice<FakeHQBase> = switch configuration.scenario {
+        case .signedOut: servers.prefix(0)
+        case .oneAccount: servers.prefix(1)
+        case .twoAccounts: servers.prefix(2)
         }
+        for server in seeded { Self.seedSignedInAccount(on: server, into: store) }
         for server in servers {
             server.setState(configuration.serverState)
             server.setObserver { relay.fire() }
@@ -172,6 +182,25 @@ final class UITestHarness {
         refreshMirrors()
     }
 
+    /// Fault injection: while `true`, every account ACTIVATION fails after
+    /// consent — Add Account's "signed in, but could not bring the account
+    /// up" (P9b, item G). Done exactly as `SessionRecoveryP9bTests` does it:
+    /// activation's first requirement is the mail cache, so it is held aside.
+    /// Accounts already running keep their own reference to it and are
+    /// untouched. `false` puts the same cache back.
+    func setActivationRefused(_ refused: Bool) {
+        if refused, !activationRefused {
+            parkedMailStore = environment.store
+            environment.store = nil
+        } else if !refused, activationRefused {
+            if environment.store == nil { environment.store = parkedMailStore }
+            parkedMailStore = nil
+        }
+        activationRefused = refused
+        logger.notice("UI-test activation refused: \(refused, privacy: .public)")
+        refreshMirrors()
+    }
+
     func resetCounters() {
         for server in network.all { server.resetCounters() }
         presenter.resetCounters()
@@ -208,6 +237,7 @@ final class UITestHarness {
             "unauthorized=\(counters.unauthorized)",
             "revocations=\(counters.revocations)",
             "storeRefusesList=\(accountStoreRefusesList)",
+            "activationRefused=\(activationRefused)",
         ].joined(separator: " ")
     }
 }

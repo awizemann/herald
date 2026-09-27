@@ -66,6 +66,13 @@ struct SidebarPage {
     var mailboxPicker: XCUIElement { app.element(id: AccessibilityID.Sidebar.mailboxPicker) }
     var syncFailedBanner: SyncFailedBannerPage { SyncFailedBannerPage(app: app) }
 
+    /// Waits for "Sign in again" to be offered AND clickable (no attempt
+    /// running).
+    @discardableResult
+    func waitForSignInAgainEnabled(timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        statusSignIn.waitUntilEnabled(timeout: timeout)
+    }
+
     /// Opens the account options menu and picks Add Account….
     func addAccount(file: StaticString = #filePath, line: UInt = #line) {
         accountOptions.waitAndClick(file: file, line: line)
@@ -154,6 +161,11 @@ struct AlertsPage {
         let showsTitle = NSPredicate(format: "label == %@ OR value == %@", title, title)
         let sheet = app.sheets.containing(showsTitle).firstMatch
         return sheet.exists ? sheet : app.dialogs.containing(showsTitle).firstMatch
+    }
+
+    /// Any text in the app whose label contains `text` (an alert's message).
+    func text(containing text: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", text, text)).firstMatch
     }
 
     /// Waits for a static text with the alert's title anywhere in the app —

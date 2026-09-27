@@ -210,9 +210,57 @@ import Testing
         #expect(keys == [
             "server", "presenter", "sends", "sendRequests", "tokenRequests", "refreshes", "codeExchanges",
             "registrations", "signIns", "pendingSignIns", "draftCreates", "draftUpdates", "draftDeletes",
-            "unauthorized", "revocations", "storeRefusesList",
+            "unauthorized", "revocations", "storeRefusesList", "activationRefused",
         ])
         #expect(harness.status.hasPrefix("server=invalidGrant presenter=hangUntilCancelled sends=0 "))
+        #expect(harness.status.hasSuffix(" activationRefused=false"))
+    }
+
+    /// U4 scenario 6 signs in to the SECOND origin from `oneAccount`. Fails if
+    /// that origin is not served (the scripted window cannot mint a callback
+    /// for it and the sign-in fails before activation) or if serving it
+    /// seeded an account there (Add Account would be refused instead).
+    @Test func oneAccountServesAnUnseededSecondOrigin() async throws {
+        let (harness, suite) = Self.harness(.oneAccount)
+        let environment = harness.environment
+        await environment.start()
+        #expect(try harness.accountStore.accounts().map(\.origin) == [UITestOrigins.primary])
+
+        await environment.signIn(originText: UITestOrigins.secondary.absoluteString)
+
+        #expect(environment.signInError == nil)
+        #expect(environment.graphs.count == 2)
+        let second = try #require(harness.network.server(for: UITestOrigins.secondary))
+        #expect(second.counters.codeExchanges == 1)
+        await Self.cleanUp(harness, suite: suite)
+    }
+
+    /// `uitest.activation.refuse`: consent completes but activation fails, the
+    /// Add Account sheet stays up with the reason, and `healthy` restores the
+    /// SAME cache. Fails if the control does not reach activation (the account
+    /// installs, the sheet closes) or if the restore loses or replaces the cache.
+    @Test func activationRefusalFailsAddAccountAndRestores() async throws {
+        let (harness, suite) = Self.harness(.oneAccount)
+        let environment = harness.environment
+        await environment.start()
+        let cache = try #require(environment.store)
+
+        harness.setActivationRefused(true)
+        #expect(harness.status.hasSuffix(" activationRefused=true"))
+        environment.presentsAddAccount = true
+        await environment.signIn(originText: UITestOrigins.secondary.absoluteString)
+
+        #expect(harness.presenter.attemptCount == 1, "the failure must come AFTER consent")
+        #expect(environment.graphs.count == 1)
+        #expect(environment.presentsAddAccount, "the sheet closed on an activation failure")
+        #expect(environment.signInError == OAuthError.unknownAccount("").localizedDescription)
+        // The running account kept syncing throughout.
+        #expect(environment.graphs[environment.accountIDs[0]] != nil)
+
+        harness.setActivationRefused(false)
+        #expect(environment.store === cache)
+        #expect(harness.status.hasSuffix(" activationRefused=false"))
+        await Self.cleanUp(harness, suite: suite)
     }
 }
 

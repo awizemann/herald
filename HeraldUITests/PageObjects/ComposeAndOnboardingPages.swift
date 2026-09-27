@@ -55,6 +55,19 @@ struct ComposePage {
         send.waitAndClick(file: file, line: line)
     }
 
+    /// Waits for the error bar offering Sign In (a dead session, no attempt
+    /// running).
+    @discardableResult
+    func waitForSignInOffered(timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        Wait.until(timeout: timeout) { errorMessage.exists && errorSignIn.exists && errorSignIn.isEnabled }
+    }
+
+    /// Waits until the error bar says `text` (e.g. a sign-in failure reason).
+    @discardableResult
+    func waitForError(containing text: String, timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        errorMessage.waitForLabel(timeout: timeout) { $0.contains(text) }
+    }
+
     /// Waits for the error bar and returns its label ("" on timeout).
     @discardableResult
     func waitForError(timeout: TimeInterval = HeraldApp.defaultTimeout) -> String {
@@ -77,6 +90,12 @@ struct OnboardingPage {
     /// The fake server the harness serves (`UITestOrigins.primary`).
     static let primaryOrigin = "https://hqbase.uitest.invalid"
     static let secondaryOrigin = "https://second.uitest.invalid"
+
+    /// Waits until the inline error says `text`.
+    @discardableResult
+    func waitForError(containing text: String, timeout: TimeInterval = HeraldApp.defaultTimeout) -> Bool {
+        error.waitForLabel(timeout: timeout) { $0.contains(text) }
+    }
 
     /// Waits for the screen (its origin field).
     @discardableResult
@@ -191,6 +210,20 @@ struct TestControlsPage {
         choose(id: "uitest.presenter.completePending", title: "Sign-in: complete pending", file: file, line: line)
     }
 
+    /// `true` makes every account activation fail after consent (Add
+    /// Account's "could not bring the account up").
+    func setActivationRefused(_ refused: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        if refused {
+            choose(id: "uitest.activation.refuse", title: "Activation: refuse", file: file, line: line)
+        } else {
+            choose(id: "uitest.activation.healthy", title: "Activation: healthy", file: file, line: line)
+        }
+        XCTAssertNotNil(
+            waitForStatus { $0.activationRefused == refused },
+            "activation never switched to refused=\(refused)", file: file, line: line
+        )
+    }
+
     func setAccountStoreRefusesList(_ refuses: Bool, file: StaticString = #filePath, line: UInt = #line) {
         if refuses {
             choose(id: "uitest.store.refuseList", title: "Account store: refuse account list", file: file, line: line)
@@ -203,7 +236,12 @@ struct TestControlsPage {
         )
     }
 
+    /// Zeroes the counters and waits until the status shows it.
     func resetCounters(file: StaticString = #filePath, line: UInt = #line) {
         choose(id: "uitest.resetCounters", title: "Reset counters", file: file, line: line)
+        XCTAssertNotNil(
+            waitForStatus { $0.sends == 0 && $0.sendRequests == 0 && $0.refreshes == 0 && $0.signIns == 0 },
+            "the counters never reset", file: file, line: line
+        )
     }
 }

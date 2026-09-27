@@ -24,6 +24,8 @@ nonisolated struct UITestLaunchConfiguration: Sendable, Equatable {
         /// No accounts: the onboarding screen.
         case signedOut
         /// One account on ``UITestOrigins/primary`` with a handful of Inbox messages.
+        /// ``UITestOrigins/secondary`` is served too, with no account: Add
+        /// Account's target.
         case oneAccount
         /// Two accounts on two DIFFERENT origins (identity is origin-keyed).
         case twoAccounts

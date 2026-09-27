@@ -5,7 +5,7 @@ import HeraldKit
 /// Settings — pure derivation from a domain name, with clash resolution across
 /// every domain in one account and a user override that always wins.
 ///
-/// Pure and `nonisolated` for the same reason as ``MailboxColorAssignment``: the
+/// Pure and `nonisolated` for the same reason as ``AccountTintAssignment``: the
 /// assignment must be identical every launch, which is only assertable
 /// off-screen.
 nonisolated enum DomainMonogram {

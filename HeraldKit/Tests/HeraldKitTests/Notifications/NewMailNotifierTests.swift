@@ -33,6 +33,7 @@ private struct StubLookup: NewMailMessageLookup {
 private func makeMessage(
     id: String,
     thread: String = "thr_1",
+    mailbox: String? = "mbx",
     direction: MessageDirection = .inbound,
     folder: MailFolder = .inbox,
     read: Bool = false,
@@ -44,7 +45,7 @@ private func makeMessage(
     MessageSummary(
         id: id,
         threadID: thread,
-        mailboxID: "mbx",
+        mailboxID: mailbox,
         direction: direction,
         folder: folder,
         fromAddress: from,
@@ -241,5 +242,36 @@ struct NewMailNotifierTests {
         #expect(posted.count == 1)
         #expect(posted.first?.body == "4+ new messages")
         #expect(posted.first?.title == "Work")
+    }
+
+    /// Redesign R3b: per-domain switches reach the notifier as a set of
+    /// silenced mailboxes. Fails if a silenced mailbox's arrival posts or
+    /// counts toward a burst, if a mailbox-less message is silenced (it follows
+    /// the global setting), or if a silenced arrival is forgotten and announced
+    /// once the domain is un-silenced and a later pass re-upserts it.
+    @Test func silencedMailboxesStayQuiet() async {
+        let center = RecordingCenter()
+        let lookup = StubLookup(messages: [
+            "m1": makeMessage(id: "m1", thread: "t1", mailbox: "mbx_quiet"),
+            "m2": makeMessage(id: "m2", thread: "t2", mailbox: "mbx_loud"),
+            "m3": makeMessage(id: "m3", thread: "t3", mailbox: nil),
+            "m4": makeMessage(id: "m4", thread: "t4", mailbox: "mbx_quiet"),
+            "m5": makeMessage(id: "m5", thread: "t5", mailbox: "mbx_quiet"),
+        ])
+        // Threshold 2: had the three silenced arrivals counted, this pass
+        // would have coalesced into one burst banner.
+        let notifier = NewMailNotifier(center: center, lookup: lookup, coalesceThreshold: 2)
+
+        await notifier.handle(
+            ChangeSet(inserted: ["m1", "m2", "m3", "m4", "m5"]),
+            accountID: "acc", accountLabel: "Work", silencedMailboxIDs: ["mbx_quiet"]
+        )
+        #expect(Set(await center.posted.compactMap(\.messageID)) == ["m2", "m3"])
+
+        await notifier.handle(ChangeSet(inserted: ["m1"]), accountID: "acc", accountLabel: "Work")
+        #expect(await center.posted.count == 2, "mail that arrived while silenced is not announced later")
+
+        #expect(NewMailNotifier.isSilenced(makeMessage(id: "x", mailbox: "mbx_quiet"), silencedMailboxIDs: ["mbx_quiet"]))
+        #expect(!NewMailNotifier.isSilenced(makeMessage(id: "x", mailbox: nil), silencedMailboxIDs: ["mbx_quiet"]))
     }
 }

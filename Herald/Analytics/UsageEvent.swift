@@ -292,6 +292,10 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case accountRemoved
     case accountSwitched(accounts: UsageBucket)
     case notificationsToggled(enabled: Bool)
+    /// NO LONGER EMITTED: per-mailbox colours were removed in the redesign
+    /// (R3b). Kept because `mailbox_color_changed` is part of the approved,
+    /// fixture-pinned wire vocabulary — dropping the case is a vocabulary
+    /// change, which belongs with the rest of the vocabulary's next revision.
     case mailboxColorChanged
     case updateCheckRequested
     case launchFailed(kind: UsageLaunchFailureKind)

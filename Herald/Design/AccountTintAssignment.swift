@@ -1,15 +1,13 @@
 import Foundation
 
 /// Which account-tint token an account is drawn in — the redesign's replacement
-/// for the per-mailbox colour palette (`MailboxColorAssignment`, still in place
-/// until R3b removes it).
+/// for the per-mailbox colour palette (removed in R3b: an account is the only
+/// thing that gets its own hue).
 ///
-/// Deliberately independent of `MailTheme`: the tint *colours* for these eight
-/// names are defined by the parallel R1 (tokens) phase, not here. This type only
-/// resolves which NAME an account gets; the view layer (R4+) looks that name up
-/// in `MailTheme` once R1 has landed. Reuses `MailboxColorAssignment.stableHash`
-/// — the same FNV-1a hash, not a second implementation of it — keyed on the
-/// account id instead of a mailbox address.
+/// Deliberately independent of `MailTheme`: this type only resolves which NAME
+/// an account gets; the view layer looks that name up with
+/// `MailTheme.accountTint(named:)`. Pure and `nonisolated` so the assignment is
+/// assertable off-screen — it has to be identical on every launch and machine.
 nonisolated enum AccountTintAssignment {
     /// Fixed contract with R1's `MailTheme` account-tint colours: this exact
     /// order. Appending a new name is safe (existing hashes are unaffected
@@ -19,16 +17,15 @@ nonisolated enum AccountTintAssignment {
     static let tokenNames = ["clay", "ochre", "moss", "sage", "slate", "dusk", "plum", "rose"]
 
     /// The tint an account gets when nobody has overridden it. Stable forever
-    /// for a given account id, the same reasoning as
-    /// `MailboxColorAssignment.defaultToken(forAddress:)`: `Hasher` is
-    /// per-process-seeded and unusable here.
+    /// for a given account id: Swift's `Hasher` is seeded per process, so it
+    /// would repaint every account on relaunch — ``stableHash(_:)`` is not.
     ///
-    /// Unlike the mailbox hash, the account id is NOT lowercased first: an
+    /// The account id is NOT lowercased first: an
     /// `accountID` is `Account.normalize(origin).absoluteString` (see "Herald
     /// Architecture"), already a single canonical casing, not a user-typed
     /// email address that could vary.
     static func defaultToken(forAccountID accountID: String) -> String {
-        let index = Int(MailboxColorAssignment.stableHash(accountID) % UInt64(tokenNames.count))
+        let index = Int(stableHash(accountID) % UInt64(tokenNames.count))
         return tokenNames[index]
     }
 
@@ -48,5 +45,24 @@ nonisolated enum AccountTintAssignment {
     /// another's collision `DomainPreferences` had to escape against.
     static func storageKey(accountID: String) -> String {
         "account.\(accountID).tint"
+    }
+
+    /// FNV-1a-shaped, 64-bit, over the UTF-8 bytes. Stable forever — the reason
+    /// it exists instead of `hashValue`. Moved here from the removed
+    /// per-mailbox `MailboxColorAssignment` unchanged, so every account keeps
+    /// the default tint it had.
+    ///
+    /// NOTE the multiplier is `0x1000_0000_01b3` (= 0x1000000001b3), not the
+    /// FNV prime 0x100000001b3 — a digit-grouping slip from the start. It still
+    /// spreads well (the tests check it) and it is what every stored default
+    /// was derived under, so it is kept; "fixing" it would repaint every
+    /// account that has no override.
+    static func stableHash(_ string: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x1000_0000_01b3
+        }
+        return hash
     }
 }

@@ -36,11 +36,13 @@ extension MailViewModel {
     /// It is a TOTAL rather than an unread count, and it counts threads the
     /// by-label listing can RESOLVE rather than assignment rows, which is the
     /// rule `MailStore.replaceAssignments` sets out. See
-    /// `MailStore.labelIndex(accountID:)` for how the two are reconciled.
+    /// `MailStore.labelIndex(accountID:folder:mailboxIDs:)` for how the two are
+    /// reconciled.
     ///
-    /// Still counted across EVERY folder and mailbox, while the listing it
-    /// opens is now label ∩ folder ∩ scope — so the badge can exceed what the
-    /// listing shows. Per-folder counts are the redesign's next step (R3b).
+    /// Counted within the CURRENT folder and scope (``labelCountLocation``) —
+    /// the same label ∩ folder ∩ scope set opening the label lists, so the badge
+    /// never promises rows the listing then hides. It follows every navigation,
+    /// because ``reloadConversations()`` rebuilds the index.
     func threadCount(forLabel labelID: String) -> Int {
         labelThreadCounts[labelID] ?? 0
     }
@@ -108,14 +110,28 @@ extension MailViewModel {
     /// pass over the assignment rows, so the badges cost the view nothing.
     func reloadLabelIndex() async {
         labelIndexReloadCount += 1
+        let counted = labelCountLocation
         do {
-            let index = try await store.labelIndex(accountID: accountID)
+            let index = try await store.labelIndex(
+                accountID: accountID, folder: counted.folder, mailboxIDs: counted.mailboxIDs
+            )
             guard !Task.isCancelled else { return }
             labelIDsByThread = index.idsByThread
             labelThreadCounts = index.threadCounts
         } catch {
             logger.error("Label index load failed: \(error.localizedDescription, privacy: .private)")
         }
+    }
+
+    /// The folder and mailbox set the sidebar's label badges count within: the
+    /// current conversation folder and scope.
+    ///
+    /// Under Drafts — which no label narrows — the badges count the Inbox,
+    /// because that is where opening a label from Drafts lands
+    /// (``openLabel(_:)``): the number beside a label is always what clicking
+    /// it would list.
+    var labelCountLocation: (folder: ConversationFolder, mailboxIDs: Set<String>?) {
+        (location.folder.conversationFolder ?? .inbox, mailboxIDs(for: location.scope))
     }
 
     /// Tells the sync engine whether anything on screen is showing labels, which

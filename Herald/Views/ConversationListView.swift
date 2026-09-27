@@ -53,6 +53,8 @@ struct ConversationListView: View {
     @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
+        // Once per pass, not per row: every attributed row draws the same tint.
+        let accountTint = model.accountTint
         List(model.presentedConversations, selection: $model.selectedThreadID) { row in
             ConversationRow(
                 row: row,
@@ -65,9 +67,7 @@ struct ConversationListView: View {
                 mailboxName: model.attributesRowsToMailbox
                     ? model.mailboxName(for: row.latest.mailboxID)
                     : nil,
-                mailboxTint: model.attributesRowsToMailbox
-                    ? model.mailboxTint(for: row.latest.mailboxID)
-                    : nil,
+                mailboxTint: model.attributesRowsToMailbox ? accountTint : nil,
                 labels: model.labels(forThread: row.id),
                 toggleStar: { Task { await model.toggleStar(row) } },
                 archive: model.offersArchiveAction
@@ -348,9 +348,7 @@ struct ThreadMessageListView: View {
                     mailboxName: model.attributesRowsToMailbox
                         ? model.mailboxName(for: message.mailboxID)
                         : nil,
-                    mailboxTint: model.attributesRowsToMailbox
-                        ? model.mailboxTint(for: message.mailboxID)
-                        : nil,
+                    mailboxTint: model.attributesRowsToMailbox ? model.accountTint : nil,
                     toggleStar: {
                         Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id) }
                     }
@@ -410,7 +408,7 @@ struct ThreadMessageListView: View {
 struct ThreadMessageRow: View {
     let message: MessageSummary
     let mailboxName: String?
-    let mailboxTint: MailboxTint?
+    let mailboxTint: MailTheme.AccountTint?
     let toggleStar: () -> Void
 
     private var fromLabel: some View {
@@ -495,23 +493,25 @@ struct ThreadMessageRow: View {
 /// Which mailbox a row belongs to, shown only in the all-mailboxes scope, where
 /// it is the row's PRIMARY label — the sender reads as secondary next to it.
 ///
-/// Tinted per mailbox, but the name is always drawn: the colour is a second cue
-/// on top of text, never the attribution itself, so the chip survives greyscale
-/// and Increase Contrast. VoiceOver reads it from the row's own combined label,
+/// Washed in the ACCOUNT's tint — every chip of one account shares it, so the
+/// NAME is the attribution and the colour only says which account (handoff §2:
+/// mailboxes carry no colour of their own). The name is always drawn, so the
+/// chip survives greyscale and Increase Contrast. The redesign's row rebuild
+/// (R5) replaces this chip with the domain badge + mailbox name. VoiceOver reads it from the row's own combined label,
 /// hence `accessibilityHidden`.
 struct MailboxChip: View {
     let name: String
-    /// `nil` falls back to the neutral chip surface — an override naming a token
-    /// this build no longer ships must still render a readable chip.
-    let tint: MailboxTint?
+    /// `nil` falls back to the neutral chip surface — a tint name this build no
+    /// longer ships must still render a readable chip.
+    let tint: MailTheme.AccountTint?
 
     var body: some View {
         Text(name)
             .font(.caption2)
             .fontWeight(.medium)
             // A tinted chip draws its name in the text colour, not in the tint:
-            // caption2 systemYellow/orange/teal over an 18% wash of itself misses
-            // AA in light mode. The tint lives on the fill and the border. The
+            // a caption2 name in a mid-lightness tint over an 18% wash of itself
+            // misses AA in light mode. The tint lives on the fill and the border. The
             // untinted fallback keeps the neutral attribution colour, which is
             // already contrast-safe on the neutral chip surface.
             .foregroundStyle(tint == nil ? MailTheme.attributionForeground : MailTheme.chipLabelForeground)
@@ -521,7 +521,7 @@ struct MailboxChip: View {
             .background(background, in: Capsule())
             .overlay {
                 if let tint {
-                    Capsule().strokeBorder(tint.color.opacity(MailTheme.chipBorderOpacity))
+                    Capsule().strokeBorder(tint.solid.opacity(MailTheme.chipBorderOpacity))
                 }
             }
             .accessibilityHidden(true)
@@ -529,7 +529,7 @@ struct MailboxChip: View {
 
     private var background: AnyShapeStyle {
         guard let tint else { return MailTheme.chipBackground }
-        return AnyShapeStyle(tint.color.opacity(MailTheme.mailboxChipFillOpacity))
+        return AnyShapeStyle(tint.solid.opacity(MailTheme.mailboxChipFillOpacity))
     }
 }
 
@@ -560,8 +560,9 @@ struct ConversationRow: View {
     var highlight: String = ""
     /// Non-nil only in the all-mailboxes scope.
     let mailboxName: String?
-    /// The mailbox's resolved palette tint, resolved by the view-model.
-    let mailboxTint: MailboxTint?
+    /// The chip's wash: the ACCOUNT's tint (mailboxes have no colour of their
+    /// own since the redesign), resolved by the view-model.
+    let mailboxTint: MailTheme.AccountTint?
     /// The labels on ANY message of the thread, in sidebar order. Empty for most
     /// rows, and the chip row renders nothing at all then.
     var labels: [MailLabel] = []

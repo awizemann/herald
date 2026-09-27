@@ -743,6 +743,43 @@ struct LabelCacheTests {
         #expect(listed.count == index.threadCounts["lbl_1"], "the badge and the listing agree")
     }
 
+    /// Redesign R3b: the badge counts conversations in the CURRENT folder and
+    /// scope. Fails if the folder or mailbox narrowing is dropped (the old
+    /// every-folder count is 3), if a thread listed under two mailboxes of the
+    /// scope counts twice, if an empty scope counts anything, or if the chips
+    /// index is narrowed along with the counts.
+    @Test("Label counts narrow to one folder and one mailbox set")
+    func countsNarrowToFolderAndScope() async throws {
+        let store = try MailStore.inMemory()
+        let inboxA = SyncFixtures.conversation(threadID: "thr_a")
+        let inboxB = SyncFixtures.conversation(threadID: "thr_b")
+        let archived = SyncFixtures.conversation(threadID: "thr_arch")
+        try await store.upsertConversations([inboxA], accountID: Self.account, mailboxID: "mbx_a", folder: .inbox)
+        // The same thread listed under a second mailbox of the same scope.
+        try await store.upsertConversations([inboxA], accountID: Self.account, mailboxID: "mbx_c", folder: .inbox)
+        try await store.upsertConversations([inboxB], accountID: Self.account, mailboxID: "mbx_b", folder: .inbox)
+        try await store.upsertConversations([archived], accountID: Self.account, mailboxID: "mbx_a", folder: .archived)
+        try await store.replaceLabels([LabelSyncTests.label("lbl_1", name: "Billing")], accountID: Self.account)
+        try await store.replaceAssignments(
+            labelID: "lbl_1",
+            messages: ["thr_a", "thr_b", "thr_arch"].map { LabelRowKey(messageID: "msg_\($0)", threadID: $0) },
+            accountID: Self.account
+        )
+
+        #expect(try await store.labelIndex(accountID: Self.account).threadCounts["lbl_1"] == 3)
+        #expect(try await store.labelIndex(accountID: Self.account, folder: .inbox).threadCounts["lbl_1"] == 2)
+        #expect(try await store.labelIndex(accountID: Self.account, folder: .archived).threadCounts["lbl_1"] == 1)
+        let scoped = try await store.labelIndex(accountID: Self.account, folder: .inbox, mailboxIDs: ["mbx_a", "mbx_c"])
+        #expect(scoped.threadCounts["lbl_1"] == 1, "thr_a once, though it has a row per mailbox")
+        #expect(scoped.idsByThread.keys.sorted() == ["thr_a", "thr_arch", "thr_b"], "the chips index is account-wide")
+        let listed = try await store.conversations(
+            withLabel: "lbl_1", accountID: Self.account, folder: .inbox, mailboxIDs: ["mbx_a", "mbx_c"]
+        )
+        #expect(listed.count == scoped.threadCounts["lbl_1"], "the badge and the listing agree")
+        let empty = try await store.labelIndex(accountID: Self.account, folder: .inbox, mailboxIDs: [])
+        #expect(empty.threadCounts.isEmpty)
+    }
+
     /// Fails if a label with no assignments reports a count. `nil` and `0` reach
     /// the badge the same way, but an index that returns `.empty` early must not
     /// skip labels that legitimately have zero.

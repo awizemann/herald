@@ -142,10 +142,17 @@ nonisolated enum UsageAnalytics {
 
     /// Launch arguments that force the no-op tracker.
     ///
-    /// **Empty on purpose.** Herald has no demo, mock, screenshot or UI-test launch
-    /// flag today (`CommandLine`/`launchArguments` appear nowhere in the app). The
-    /// check is wired up so that adding one here is the whole job.
-    static let disablingArguments: Set<String> = []
+    /// The Debug-only UI-test mode's flag, and nothing in Release (which has no
+    /// demo, mock or test launch flag at all). Belt and braces: the UI-test
+    /// harness hands `AppEnvironment` a `NoopUsageTracker` itself and never
+    /// calls ``makeTracker(environment:arguments:writeKey:)``.
+    static let disablingArguments: Set<String> = {
+        #if DEBUG
+        [UITestLaunchConfiguration.scenarioArgument]
+        #else
+        []
+        #endif
+    }()
 
     /// Environment variables whose mere presence means "a test harness is running".
     /// The same set ``ProcessInfo/isRunningUnderTests`` uses: `XCTestConfigurationFilePath`

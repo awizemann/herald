@@ -215,7 +215,7 @@ final class AppEnvironment {
     private var activityTask: Task<Void, Never>?
 
     let auth: AuthCoordinator
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     /// Whether Herald is the frontmost app. Injected so a test can drive the
     /// automatic re-auth gate without an `NSApplication` it cannot activate.
     let isApplicationActive: @MainActor @Sendable () -> Bool
@@ -282,18 +282,46 @@ final class AppEnvironment {
     /// launched Herald), replayed once that account installs.
     private var pendingRoute: NewMailRoute?
 
+    /// Opens the mail cache. Runs OFF the main actor (it is file I/O). The
+    /// default is the on-disk store at ``MailStoreContainer/defaultStoreURL``;
+    /// the Debug-only UI-test harness injects an in-memory one.
+    let makeMailContainer: @Sendable () throws -> ModelContainer
+    /// The session every account's REST client talks through. `URLSession.shared`
+    /// in the shipping app (unchanged); the UI-test harness injects one whose
+    /// only protocol class is its in-process fake server.
+    let apiSession: URLSession
+    /// Builds an account's `GET /events` opener. The UI-test harness injects one
+    /// that refuses the upgrade (a WebSocket never goes through `URLProtocol`).
+    let makeEventChannels: @Sendable (URL) -> any MailEventChannelOpening
+    /// Whether ``start()`` makes itself `UNUserNotificationCenter`'s delegate.
+    /// `false` only under the UI-test harness, which must not touch the system
+    /// notification centre at all.
+    let routesNotificationClicks: Bool
+
     init(
         auth: AuthCoordinator = AuthCoordinator(),
         defaults: UserDefaults = .standard,
         notificationPoster: any NewMailNotificationPosting = UserNotificationCenterAdapter(),
         usage: any UsageTracking = NoopUsageTracker(),
-        isApplicationActive: @escaping @MainActor @Sendable () -> Bool = { NSApplication.shared.isActive }
+        isApplicationActive: @escaping @MainActor @Sendable () -> Bool = { NSApplication.shared.isActive },
+        makeMailContainer: @escaping @Sendable () throws -> ModelContainer = {
+            try MailStoreContainer.make(url: MailStoreContainer.defaultStoreURL)
+        },
+        apiSession: URLSession = .shared,
+        makeEventChannels: @escaping @Sendable (URL) -> any MailEventChannelOpening = {
+            URLSessionMailEventChannels(origin: $0)
+        },
+        routesNotificationClicks: Bool = true
     ) {
         self.auth = auth
         self.defaults = defaults
         self.notificationPoster = notificationPoster
         self.usage = usage
         self.isApplicationActive = isApplicationActive
+        self.makeMailContainer = makeMailContainer
+        self.apiSession = apiSession
+        self.makeEventChannels = makeEventChannels
+        self.routesNotificationClicks = routesNotificationClicks
     }
 
     // MARK: - Usage analytics
@@ -427,14 +455,14 @@ final class AppEnvironment {
 
     func start() async {
         observeActivation()
-        installNotificationRouter()
+        if routesNotificationClicks { installNotificationRouter() }
         phase = .openingCache
-        let url = MailStoreContainer.defaultStoreURL
+        let makeMailContainer = self.makeMailContainer
         do {
             // Opening a SwiftData store is file I/O; `make(url:)` is nonisolated
             // precisely so it can run off the main actor.
             let container = try await Task.detached(priority: .userInitiated) { @Sendable in
-                try MailStoreContainer.make(url: url)
+                try makeMailContainer()
             }.value
             self.container = container
             self.store = MailStore(modelContainer: container)
@@ -615,13 +643,13 @@ final class AppEnvironment {
                 // arrives as `MessageSummary.labels == nil` — "said nothing" — and
                 // leaves the per-label sweep as the membership source. So this is
                 // safe to send unconditionally and Herald never probes a version.
-                api: HQBaseAPIClient(origin: account.origin, tokens: tokens, includeLabels: true),
+                api: HQBaseAPIClient(origin: account.origin, tokens: tokens, session: apiSession, includeLabels: true),
                 store: store,
                 select: select,
                 // The wake socket authenticates with the SAME provider as the
                 // REST client, so one refresh serves both and the two can never
                 // race each other into spending the rotating grant twice.
-                wake: (channels: URLSessionMailEventChannels(origin: account.origin), tokens: tokens),
+                wake: (channels: makeEventChannels(account.origin), tokens: tokens),
                 // Every REST surface and the socket share this provider, so its
                 // dead-session hook (wired above) is the one signal for all of
                 // them. Kept on the graph.

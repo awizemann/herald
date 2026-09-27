@@ -27,7 +27,25 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 @MainActor
 @Observable
 final class UpdateService {
-    static let shared = UpdateService()
+    static let shared = UpdateService(startsUpdater: UpdateService.startsUpdaterInThisProcess)
+
+    /// Whether this process may start Sparkle: never under a test host, and
+    /// never in the Debug-only UI-test mode (`-HeraldUITest`), which must not
+    /// reach the network or write Sparkle's defaults.
+    nonisolated static var startsUpdaterInThisProcess: Bool {
+        startsUpdater(
+            arguments: ProcessInfo.processInfo.arguments,
+            isRunningUnderTests: ProcessInfo.processInfo.isRunningUnderTests
+        )
+    }
+
+    nonisolated static func startsUpdater(arguments: [String], isRunningUnderTests: Bool) -> Bool {
+        if isRunningUnderTests { return false }
+        #if DEBUG
+        if UITestLaunchConfiguration.isRequested(in: arguments) { return false }
+        #endif
+        return true
+    }
 
     /// The Info.plist key carrying the EdDSA public half that verifies update signatures.
     nonisolated static let publicKeyInfoKey = "SUPublicEDKey"

@@ -11,6 +11,10 @@ struct ComposeScene: Scene {
         WindowGroup("New Message", for: ComposeRequest.ID.self) { $requestID in
             ComposeWindowRoot(requestID: requestID)
                 .environment(environment)
+                #if DEBUG
+                // UI-test mode's throwaway defaults, like the other scenes.
+                .defaultAppStorage(UITestHarness.launched?.defaults ?? .standard)
+                #endif
         }
         .defaultSize(width: 680, height: 520)
         // NOT `.commandsRemoved()`: that also removes the scene from the Window

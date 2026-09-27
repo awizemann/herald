@@ -1,10 +1,13 @@
+#if DEBUG
 import Foundation
 import HeraldKit
 import os
 
 /// An ``AccountStore`` that never touches the Keychain, so the app-hosted suites
 /// can drive `AuthCoordinator.signOut` without a real signed-in account (and
-/// without the login-keychain prompt a test run must never provoke).
+/// without the login-keychain prompt a test run must never provoke). Also the
+/// UI-test harness's account store — which is why it lives in the app target,
+/// Debug-only, rather than in HeraldTests.
 ///
 /// `os_unfair_lock` rather than an actor, for the reason recorded in "Herald
 /// Concurrency Rules": `AccountStore` is a deliberately synchronous `nonisolated
@@ -16,6 +19,7 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         var clientIDs: [String: String] = [:]
         var configurations: [String: OAuthConfiguration] = [:]
         var configurationReads: [String] = []
+        var refusesAccountList = false
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -24,10 +28,24 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         state.withLock { $0.accounts = accounts }
     }
 
-    func accounts() throws -> [Account] { state.withLock { $0.accounts } }
+    func accounts() throws -> [Account] {
+        try state.withLock { state in
+            if state.refusesAccountList { throw AccountStoreError.indexUnreadable }
+            return state.accounts
+        }
+    }
+
+    /// Fault injection: while `true`, ``accounts()``, ``add(_:)`` and
+    /// ``remove(_:)`` throw `AccountStoreError.indexUnreadable` — the
+    /// unreadable-index shape that makes a sign-out unable to finish.
+    var refusesAccountList: Bool {
+        get { state.withLock { $0.refusesAccountList } }
+        set { state.withLock { $0.refusesAccountList = newValue } }
+    }
 
     func add(_ account: Account) throws {
-        state.withLock { state in
+        try state.withLock { state in
+            if state.refusesAccountList { throw AccountStoreError.indexUnreadable }
             // Merged in place, like the Keychain store.
             if let index = state.accounts.firstIndex(where: { $0.id == account.id }) {
                 state.accounts[index] = account.merging(over: state.accounts[index])
@@ -38,7 +56,8 @@ nonisolated final class InMemoryAccountStore: AccountStore {
     }
 
     func remove(_ accountID: Account.ID) throws {
-        state.withLock { state in
+        try state.withLock { state in
+            if state.refusesAccountList { throw AccountStoreError.indexUnreadable }
             state.accounts.removeAll { $0.id == accountID }
             state.tokens[accountID] = nil
         }
@@ -85,3 +104,4 @@ nonisolated final class InMemoryAccountStore: AccountStore {
     /// found no live discovery, so it doubles as "was this account activated".
     var configurationReads: [String] { state.withLock { $0.configurationReads } }
 }
+#endif

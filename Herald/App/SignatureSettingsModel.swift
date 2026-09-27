@@ -234,19 +234,11 @@ final class SignatureSettingsModel {
             options.append(
                 SignatureScopeOption(
                     ref: SignatureScopeRef(type: .domain, id: address.mailDomainID),
-                    label: Self.domainName(of: address.address) ?? address.mailDomainID
+                    label: MailDomain.domainName(of: address.address) ?? address.mailDomainID
                 )
             )
         }
         return options
-    }
-
-    /// The part after the `@`, for labelling a domain scope. `nil` when the
-    /// address has no usable domain part, which falls back to the raw id.
-    static func domainName(of address: String) -> String? {
-        guard let at = address.lastIndex(of: "@") else { return nil }
-        let domain = String(address[address.index(after: at)...])
-        return domain.isEmpty ? nil : domain
     }
 
     // MARK: - Editing

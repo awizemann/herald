@@ -6,34 +6,52 @@ import SwiftUI
 /// The old shape was "All Mailboxes" plus a section per mailbox, which grew a
 /// full folder list per mailbox and pushed everything below the fold on an
 /// account with more than two or three of them.
+///
+/// An INTERIM adapter onto the view-model's scope / folder / label axes until
+/// the redesigned sidebar lands: the picker sets the scope (All mailboxes →
+/// All domains), and the one `List` selection covers folders, Drafts and
+/// labels — so a folder row also closes an open label, the single-selection
+/// behaviour this sidebar has always had. Where the user was is persisted and
+/// restored by the view-model, not here.
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
     @Bindable var model: MailViewModel
 
-    /// The picked mailbox, per account, so relaunch comes back to where the user
-    /// was. `""` means "All mailboxes" — `AppStorage` has no optional String and
-    /// a sentinel beats a second "did the user ever pick one" flag.
-    @AppStorage private var storedMailboxID: String
-
-    init(model: MailViewModel) {
-        self.model = model
-        _storedMailboxID = AppStorage(wrappedValue: "", Self.storageKey(accountID: model.accountID))
+    /// What one row of this sidebar's `List` selects.
+    enum Row: Hashable {
+        case folder(MailViewModel.Folder)
+        case label(String)
     }
 
-    static func storageKey(accountID: String) -> String { "sidebar.mailbox.\(accountID)" }
+    /// The `List` selection, read off and written through the view-model's
+    /// intents. Every write comes from a click in the list.
+    private var selectedRow: Binding<Row?> {
+        Binding(
+            get: {
+                // Drafts carry no label, so the Drafts row stays highlighted
+                // even while a label is kept open behind it.
+                if let labelID = model.selectedLabelID, !model.isShowingDrafts { return .label(labelID) }
+                return .folder(model.folder)
+            },
+            set: { row in
+                guard let row else { return }
+                model.pendingNavigationSource = .sidebar
+                switch row {
+                case .folder(let folder):
+                    // One selection for folders and labels: picking a folder
+                    // row is picking it INSTEAD of the label.
+                    model.selectFolder(folder, clearingLabel: true)
+                case .label(let labelID):
+                    model.openLabel(labelID)
+                }
+            }
+        )
+    }
 
     var body: some View {
-        // Selected by `SidebarItem`, not by `FolderSelection`: Drafts is not a
-        // conversation folder and cannot be expressed as one (see MailTheme.sidebarFolders).
-        List(selection: Bindable(model).sidebarItem) {
+        List(selection: selectedRow) {
             ForEach(MailTheme.sidebarFolders, id: \.self) { folder in
-                FolderRow(
-                    scope: MailViewModel.FolderSelection(
-                        mailboxID: model.selection.mailboxID,
-                        folder: folder
-                    ),
-                    unread: model.unreadCounts
-                )
+                FolderRow(folder: folder, unread: model.folderUnreadCounts[folder] ?? 0)
             }
             DraftsRow(count: model.draftCount)
             // Only when the workspace HAS labels: an empty section is a header
@@ -59,26 +77,25 @@ struct SidebarView: View {
                 Divider()
             }
         }
-        // Restore once the mailbox list is known; a mailbox that no longer exists
-        // falls back to "All mailboxes" rather than an empty scope forever.
-        .task(id: model.mailboxes.map(\.id)) { restorePickedMailbox() }
     }
 
     // MARK: Picker
 
-    /// Reads the model, writes BOTH the model and the store. The folder is
-    /// preserved deliberately: picking a mailbox changes the scope, it is not a
-    /// jump back to the inbox.
+    /// The picker's tag for the scope: a mailbox id, or `""` for All mailboxes
+    /// (a `Picker` tag cannot be optional). A domain scope has no entry in this
+    /// picker and reads as All mailboxes.
+    ///
+    /// The folder and the label are kept deliberately: picking a mailbox
+    /// changes the scope, it is not a jump back to the inbox.
     private var pickedMailboxID: Binding<String> {
         Binding(
-            get: { model.selection.mailboxID ?? "" },
+            get: {
+                if case .mailbox(let id) = model.scope { return id }
+                return ""
+            },
             set: { newValue in
-                storedMailboxID = newValue
                 model.pendingNavigationSource = .sidebar
-                model.selection = MailViewModel.FolderSelection(
-                    mailboxID: newValue.isEmpty ? nil : newValue,
-                    folder: model.selection.folder
-                )
+                model.selectScope(newValue.isEmpty ? .allDomains : .mailbox(newValue))
             }
         )
     }
@@ -109,25 +126,6 @@ struct SidebarView: View {
         .accessibilityIdentifier(AccessibilityID.Sidebar.mailboxPicker)
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.bottom, MailTheme.Spacing.sm)
-    }
-
-    private func restorePickedMailbox() {
-        guard !storedMailboxID.isEmpty else { return }
-        guard model.mailboxes.contains(where: { $0.id == storedMailboxID }) else {
-            // Access was revoked, or this is a different account's leftover key:
-            // don't strand the user on a scope the store can never fill.
-            if !model.mailboxes.isEmpty { storedMailboxID = "" }
-            return
-        }
-        guard model.selection.mailboxID != storedMailboxID else { return }
-        // Nobody clicked anything: this is the launch restoring the scope the
-        // window was last showing. Routed through the model rather than assigned
-        // here, because the launch view is reported exactly once and this path
-        // races `start()` for the right to report it.
-        model.restoreSelection(MailViewModel.FolderSelection(
-            mailboxID: storedMailboxID,
-            folder: model.selection.folder
-        ))
     }
 
     // MARK: Header
@@ -328,16 +326,15 @@ private struct DraftsRow: View {
     var body: some View {
         Label(MailTheme.draftsTitle, systemImage: MailTheme.draftsSymbol)
             .badge(count)
-            .tag(MailViewModel.SidebarItem.drafts)
+            .tag(SidebarView.Row.folder(.drafts))
             .accessibilityLabel(
                 count > 0 ? "\(MailTheme.draftsTitle), \(count) drafts" : MailTheme.draftsTitle
             )
     }
 }
 
-/// One workspace label. It lists across folders, so it carries no unread badge:
-/// the counts the sidebar shows are per (mailbox, folder) scope and a label is
-/// neither.
+/// One workspace label. Opening it narrows the current folder and scope to the
+/// threads carrying it; its badge is a total, not an unread count.
 ///
 /// The tag glyph is drawn in the label's colour, and the NAME is always there —
 /// the colour is never the only way to tell two labels apart.
@@ -356,7 +353,7 @@ private struct LabelRow: View {
                 .foregroundStyle(MailTheme.labelTint(for: label.color))
         }
         .badge(count)
-        .tag(MailViewModel.SidebarItem.label(label.id))
+        .tag(SidebarView.Row.label(label.id))
         .accessibilityLabel(
             count > 0 ? "\(label.name) label, \(count) conversations" : "\(label.name) label"
         )
@@ -364,18 +361,18 @@ private struct LabelRow: View {
 }
 
 private struct FolderRow: View {
-    let scope: MailViewModel.FolderSelection
-    let unread: [MailViewModel.FolderSelection: Int]
+    let folder: ConversationFolder
+    /// Unread in this folder for the current scope.
+    let unread: Int
 
     var body: some View {
-        let count = unread[scope] ?? 0
-        Label(MailTheme.title(for: scope.folder), systemImage: MailTheme.symbol(for: scope.folder))
-            .badge(count)
-            .tag(MailViewModel.SidebarItem.folder(scope))
+        Label(MailTheme.title(for: folder), systemImage: MailTheme.symbol(for: folder))
+            .badge(unread)
+            .tag(SidebarView.Row.folder(.conversation(folder)))
             .accessibilityLabel(
-                count > 0
-                    ? "\(MailTheme.title(for: scope.folder)), \(count) unread"
-                    : MailTheme.title(for: scope.folder)
+                unread > 0
+                    ? "\(MailTheme.title(for: folder)), \(unread) unread"
+                    : MailTheme.title(for: folder)
             )
     }
 }

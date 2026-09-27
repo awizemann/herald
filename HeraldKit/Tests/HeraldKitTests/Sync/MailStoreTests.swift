@@ -265,7 +265,7 @@ struct MailStoreTests {
         _ = try await store.upsertMessages([SyncFixtures.message("m1")], accountID: account)
         #expect(try await store.message(id: "m1", accountID: account) != nil, "Recovered container must be usable")
         // The foreign entity must not be reachable through our schema at all.
-        #expect(try await store.conversations(accountID: account, mailboxID: nil, folder: .inbox).isEmpty)
+        #expect(try await store.conversations(accountID: account, mailboxIDs: nil, folder: .inbox).isEmpty)
     }
 
     /// Fails if bodies are written into the hot message row or re-written on
@@ -367,12 +367,12 @@ struct MailStoreTests {
             [otherMailbox], accountID: account, mailboxID: "mbx_b", folder: .inbox
         )
 
-        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a") == 1)
-        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_b") == 1)
-        #expect(try await store.unreadCount(accountID: account, mailboxID: nil) == 2)
+        #expect(try await store.unreadCount(accountID: account, mailboxIDs: ["mbx_a"]) == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxIDs: ["mbx_b"]) == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxIDs: nil) == 2)
         // The same row IS counted in the scope that does show it.
-        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a", folder: .archived) == 1)
-        #expect(try await store.unreadCount(accountID: "other_account", mailboxID: nil) == 0)
+        #expect(try await store.unreadCount(accountID: account, mailboxIDs: ["mbx_a"], folder: .archived) == 1)
+        #expect(try await store.unreadCount(accountID: "other_account", mailboxIDs: nil) == 0)
     }
 
     /// The Starred sidebar folder reads the same `conversations(folder:)` path as
@@ -398,13 +398,13 @@ struct MailStoreTests {
             [plain], accountID: account, mailboxID: "mbx_a", folder: .inbox
         )
 
-        let starredScope = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .starred)
+        let starredScope = try await store.conversations(accountID: account, mailboxIDs: ["mbx_a"], folder: .starred)
         #expect(starredScope.map(\.id) == ["thr_star"])
         // …and it did NOT leak into the inbox scope.
-        let inboxScope = try await store.conversations(accountID: account, mailboxID: "mbx_a", folder: .inbox)
+        let inboxScope = try await store.conversations(accountID: account, mailboxIDs: ["mbx_a"], folder: .inbox)
         #expect(inboxScope.map(\.id) == ["thr_plain"])
         // The all-mailboxes Starred scope resolves too, and the badge counts it.
-        #expect(try await store.conversations(accountID: account, mailboxID: nil, folder: .starred).count == 1)
-        #expect(try await store.unreadCount(accountID: account, mailboxID: "mbx_a", folder: .starred) == 1)
+        #expect(try await store.conversations(accountID: account, mailboxIDs: nil, folder: .starred).count == 1)
+        #expect(try await store.unreadCount(accountID: account, mailboxIDs: ["mbx_a"], folder: .starred) == 1)
     }
 }

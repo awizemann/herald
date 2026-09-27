@@ -33,11 +33,14 @@ extension MailViewModel {
     /// label per render pass and this used to be a scan of every indexed thread
     /// each time, inside the view body.
     ///
-    /// It is a TOTAL rather than an unread count — a label spans folders, where
-    /// every other sidebar badge counts one (mailbox, folder) scope — and it
-    /// counts threads the by-label listing can RESOLVE rather than assignment
-    /// rows, which is the rule `MailStore.replaceAssignments` sets out. See
+    /// It is a TOTAL rather than an unread count, and it counts threads the
+    /// by-label listing can RESOLVE rather than assignment rows, which is the
+    /// rule `MailStore.replaceAssignments` sets out. See
     /// `MailStore.labelIndex(accountID:)` for how the two are reconciled.
+    ///
+    /// Still counted across EVERY folder and mailbox, while the listing it
+    /// opens is now label ∩ folder ∩ scope — so the badge can exceed what the
+    /// listing shows. Per-folder counts are the redesign's next step (R3b).
     func threadCount(forLabel labelID: String) -> Int {
         labelThreadCounts[labelID] ?? 0
     }
@@ -67,7 +70,7 @@ extension MailViewModel {
         // A label that was deleted in the web app must not strand the user in a
         // listing that can never be filled again.
         if let selectedLabelID, !labels.contains(where: { $0.id == selectedLabelID }) {
-            showLabel(nil)
+            clearLabel()
         }
         // An account whose workspace has no labels draws no chips and no badges,
         // so nothing on screen is waiting on the sweep.
@@ -181,47 +184,6 @@ extension MailViewModel {
             await reloadLabelIndex()
         }
         await reloadSelectedMessageLabels()
-    }
-
-    // MARK: - Navigation
-
-    /// Enters (or, with `nil`, leaves) a label listing.
-    ///
-    /// Entering asks the engine for a fresh reconciliation, for the same reason
-    /// opening Drafts asks for a fresh drafts poll: it runs on a deliberately slow
-    /// interval precisely because nobody is usually looking at it — and it is the
-    /// only thing that can bring in assignments for messages in folders this cache
-    /// has never listed, which a label listing is exactly where you notice.
-    func showLabel(_ labelID: String?) {
-        guard labelID != selectedLabelID else { return }
-        selectedLabelID = labelID
-        // Both live in the middle column; a drilled-in thread would otherwise be
-        // drawn over the listing the user just asked for.
-        leaveThreadSilently()
-        showDrafts(false, silently: true)
-        selectedThreadID = nil
-        // The rows a server search matched answer a folder's question, not this
-        // label's.
-        cancelServerSearch()
-        // Deliberately NOT reported: the usage vocabulary (`UsageViewKind`) has no
-        // label view, and inventing one means a new wire name and a new fixture id
-        // — an analytics change that belongs with the rest of the vocabulary, not
-        // smuggled in with a feature. The pending source is still CONSUMED, so a
-        // sidebar click cannot leave a stale `via` for the next real navigation.
-        _ = takeNavigationSource()
-        // The presentation rule just changed, so the visible list is wrong until
-        // it is recomputed — don't wait for the store round trip.
-        refilter()
-        reloadTask?.cancel()
-        reloadTask = Task { [weak self] in
-            await self?.reloadConversations()
-            // Entering a listing turns the fast sweep cadence on; leaving one may
-            // turn it off again (only may — the sidebar's badges keep it on while
-            // the app is frontmost).
-            await self?.updateLabelSurfaceVisibility()
-            guard labelID != nil else { return }
-            await self?.sync?.refreshLabelsNow()
-        }
     }
 
     // MARK: - Assignment

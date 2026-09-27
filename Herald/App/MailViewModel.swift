@@ -77,28 +77,7 @@ final class MailViewModel {
         case needsReauth
     }
 
-    /// A mailbox + folder pair, i.e. one conversation-list scope.
-    nonisolated struct FolderSelection: Hashable, Sendable {
-        var mailboxID: String?
-        var folder: ConversationFolder
-    }
-
-    /// What the sidebar's list is selecting.
-    ///
-    /// Drafts is NOT a ``ConversationFolder``: the server has no drafts
-    /// conversation folder (the conversation enum swaps `drafts` for `starred`),
-    /// drafts are not messages, and `GET /messages?folder=drafts` is dead. So it
-    /// is a special sidebar item wrapping the folder scope rather than a member
-    /// of it — which also keeps ``selection`` typed as the conversation scope
-    /// everything else already reads.
-    nonisolated enum SidebarItem: Hashable, Sendable {
-        case folder(FolderSelection)
-        case drafts
-        /// One workspace label, by id. Also not a ``ConversationFolder``: a label
-        /// spans every folder at once (a labelled thread stays in its inbox, its
-        /// archive or its trash), so it is a listing of its own.
-        case label(String)
-    }
+    // Scope, Folder and Location live in `MailNavigation.swift`.
 
     // MARK: Dependencies
 
@@ -121,13 +100,19 @@ final class MailViewModel {
     /// How long a message must stay selected before it is marked read. Injected
     /// so tests can drive both sides of the rule without real waiting.
     private let markReadDelay: Duration
-    /// Where per-mailbox colour overrides and the alert switches live. Injected
-    /// so a test drives a throwaway suite instead of the user's real preferences.
-    /// Internal, like ``store``/``actions``, so a view can resolve a
-    /// Herald-only preference (the reading pane's domain badge reads
-    /// `DomainPreferences`/`AccountTintAssignment` through it) without this
-    /// type growing new stored state of its own — see ``DomainBadgeResolver``.
+    /// Where per-mailbox colour overrides, the alert switches and the domain
+    /// preferences live. Injected so a test drives a throwaway suite instead of
+    /// the user's real preferences. Internal, like ``store``/``actions``, so a
+    /// view can resolve a Herald-only preference (the reading pane's domain
+    /// badge reads `DomainPreferences`/`AccountTintAssignment` through it)
+    /// without this type growing new stored state — see ``DomainBadgeResolver``.
     let defaults: UserDefaults
+    /// Whether ``location`` is restored from and written to ``defaults``
+    /// (``NavigationPersistence``). On for the real app and the UI-test
+    /// harness; off by default so the many view-model tests that share
+    /// `UserDefaults.standard` and an account id cannot restore each other's
+    /// navigation.
+    private let persistsNavigation: Bool
     /// Posts new-mail banners for this account. `nil` in tests that are not about
     /// notifications, and in any build where the user turned them off.
     private let notifier: NewMailNotifier?
@@ -175,55 +160,32 @@ final class MailViewModel {
         }
     }
 
-    /// The view the middle column is showing right now.
-    private var currentViewKind: UsageViewKind {
-        if isShowingThread { return .thread }
-        if isShowingDrafts { return .drafts }
-        return Self.viewKind(for: selection.folder)
-    }
-
-    /// Raised around an assignment that changes the scope WITHOUT being a view the
-    /// user reached — today only the launch restore correcting the mailbox behind
-    /// a launch view that has already been reported. Only ever set for the
-    /// duration of one synchronous assignment, so nothing can observe it down
-    /// across a suspension.
-    @ObservationIgnored private var suppressesViewShown = false
-
-    /// Records one `view_shown`. Internal so the drafts extension can call it.
-    func recordViewShown(_ view: UsageViewKind, via: UsageViewTrigger) {
-        guard !suppressesViewShown else { return }
-        record(.viewShown(view: view, via: via))
-    }
-
-    /// The sidebar restoring the mailbox scope the window was last showing.
-    ///
-    /// This races ``start()``: SwiftUI runs the restore task whenever the mailbox
-    /// list first arrives, which can be before or after the view-model started.
-    /// Whichever gets here first reports THE launch view; the other stays silent,
-    /// so a launch is exactly one `view_shown` either way.
-    func restoreSelection(_ scope: FolderSelection) {
-        guard scope != selection else { return }
-        if didRecordLaunchView {
-            // The launch view is already out; this only corrects which mailbox
-            // it was showing, and is not a second view.
-            suppressesViewShown = true
-            defer { suppressesViewShown = false }
-            pendingNavigationSource = nil
-            selection = scope
-        } else {
-            didRecordLaunchView = true
-            pendingNavigationSource = .launch
-            selection = scope
+    /// The event vocabulary's name for a list folder.
+    nonisolated static func viewKind(for folder: Folder) -> UsageViewKind {
+        switch folder {
+        case .conversation(let folder): viewKind(for: folder)
+        case .drafts: .drafts
         }
     }
 
-    /// Consumes the pending source even when nothing changed — see
-    /// ``pendingNavigationSource``. Internal for the drafts extension.
-    func takeNavigationSource() -> UsageViewTrigger { consumeNavigationSource() }
+    /// The view the middle column is showing right now.
+    private var currentViewKind: UsageViewKind {
+        if isShowingThread { return .thread }
+        return Self.viewKind(for: location.folder)
+    }
+
+    /// Records one `view_shown`. Internal so the extensions can call it.
+    func recordViewShown(_ view: UsageViewKind, via: UsageViewTrigger) {
+        record(.viewShown(view: view, via: via))
+    }
 
     // MARK: Published state
 
     private(set) var mailboxes: [Mailbox] = []
+    /// The account's domains, derived from ``mailboxes`` on every mailbox
+    /// reload (``MailDomain/domains(from:)``) — a domain scope is the set of
+    /// its mailboxes' ids, and nothing about it lives on the server.
+    private(set) var domains: [MailDomain] = []
     /// mailbox id → the name a row should attribute a message to. Built once per
     /// mailbox reload: the "All Mailboxes" list draws this on EVERY row, and a
     /// `mailboxes.first(where:)` per row is a linear scan per row per render.
@@ -235,42 +197,235 @@ final class MailViewModel {
     /// change in Settings repaints the open list without a reload; only ids with
     /// an override appear.
     private(set) var mailboxColorOverrides: [String: String] = [:]
-    /// Unread conversation counts per (mailbox, folder) scope.
-    private(set) var unreadCounts: [FolderSelection: Int] = [:]
+    /// Unread conversations per sidebar folder, for the CURRENT scope — the
+    /// folder rows' badges.
+    private(set) var folderUnreadCounts: [ConversationFolder: Int] = [:]
+    /// Inbox unread per mailbox — the mailbox picker's labels, and the input a
+    /// per-domain total is summed from.
+    private(set) var inboxUnreadByMailbox: [Mailbox.ID: Int] = [:]
+    /// Inbox unread across EVERY mailbox of the account, exclusions or not —
+    /// the Dock badge's input and the picker's "All mailboxes" label.
+    private(set) var allMailboxesInboxUnread = 0
 
-    var selection: FolderSelection {
-        didSet {
-            // Consumed BEFORE the guard: re-picking the folder that is already
-            // showing is a navigation that happened, and leaving its `via` behind
-            // would mislabel whatever the user does next.
-            let via = consumeNavigationSource()
-            // A folder was chosen, so a label listing is no longer what the
-            // middle column is showing. Cleared HERE rather than only in the
-            // sidebar's setter, because `reloadConversations` branches on it
-            // first: any other writer of `selection` (the launch restore, a
-            // reveal) would otherwise leave label rows under a folder that
-            // changed underneath them.
-            //
-            // Leaving a label for the folder that was ALREADY selected changes
-            // nothing about `selection`, so the guard below would return before
-            // reloading and the label's rows would stay on screen under a folder
-            // row. Dropping the listing counts as a change in its own right.
-            let leftLabelListing = selectedLabelID != nil
-            selectedLabelID = nil
-            guard selection != oldValue || leftLabelListing else { return }
-            recordViewShown(Self.viewKind(for: selection.folder), via: via)
-            selectedThreadID = nil
-            // Server search is scoped to (mailbox, folder): its rows answer the
-            // OLD scope's question and would leak into the new folder's list.
-            cancelServerSearch()
-            // The folder is half of the presentation rule, so the visible list is
-            // wrong until it is recomputed — don't wait for the store round trip.
-            refilter()
-            // Cancel first: replacing a running task leaves the older, slower
-            // reload alive to finish last and overwrite the newer scope's rows.
-            reloadTask?.cancel()
-            reloadTask = Task { await reloadConversations() }
+    // MARK: Navigation
+    //
+    // Three independent axes — scope, folder, label — held as ONE value and
+    // changed only through ``navigate(to:reportsView:)`` and the intent methods
+    // built on it, so each axis's side effects (the `view_shown`, leaving a
+    // drilled-in thread, cancelling the server search, the reload, persisting)
+    // happen in one place whichever axis moved.
+
+    /// Where the middle column is looking. See ``Location``.
+    private(set) var location: Location = .launchDefault
+
+    /// Which mail the list is drawn from.
+    var scope: Scope { location.scope }
+    /// Which folder the list shows.
+    var folder: Folder { location.folder }
+    /// The open label, or `nil`. It narrows the folder listing (label ∩ folder
+    /// ∩ scope); it no longer spans folders on its own.
+    var selectedLabelID: String? { location.labelID }
+    /// Whether the middle column is showing the Drafts list instead of
+    /// conversations.
+    var isShowingDrafts: Bool { location.folder == .drafts }
+
+    /// THE navigation step. Every intent method lands here.
+    ///
+    /// - Parameter reportsView: `false` for a correction nobody asked for (a
+    ///   stale scope falling back once the mailbox list arrives): it records no
+    ///   `view_shown` and leaves the pending navigation source for whatever the
+    ///   user does next.
+    func navigate(to target: Location, reportsView: Bool = true) {
+        // Consumed BEFORE the no-op guard: re-picking what is already showing
+        // is a navigation that happened, and leaving its `via` behind would
+        // mislabel whatever the user does next.
+        let via = reportsView ? consumeNavigationSource() : nil
+        let old = location
+        guard target != old else { return }
+        location = target
+        persistLocation()
+        // A label-only change is deliberately NOT reported: the usage
+        // vocabulary (`UsageViewKind`) has no label view, and inventing one
+        // means a new wire name and a new fixture id — an analytics change that
+        // belongs with the rest of the vocabulary. Its source is still consumed
+        // above, so a click cannot leave a stale `via` behind.
+        if let via, target.scope != old.scope || target.folder != old.folder {
+            recordViewShown(Self.viewKind(for: target.folder), via: via)
         }
+        // The rows under the selection are about to be replaced; nil-ing it is
+        // also what drops a drilled-in thread (its `didSet` turns the pane off
+        // without reporting anything — whatever caused this reported its view).
+        selectedThreadID = nil
+        leaveThreadSilently()
+        let entersDrafts = target.folder == .drafts && old.folder != .drafts
+        if entersDrafts { selectedDraftID = nil }
+        // Server search answers a (scope, folder) question; its rows answer the
+        // OLD location's question and would leak into the new list.
+        cancelServerSearch()
+        // The folder and the label are the presentation rule, so the visible
+        // list is wrong until it is recomputed — don't wait for the store.
+        refilter()
+        // Cancel first: replacing a running task leaves the older, slower
+        // reload alive to finish last and overwrite the newer location's rows.
+        reloadTask?.cancel()
+        let opensLabel = target.labelID != nil && target.labelID != old.labelID
+        let labelChanged = target.labelID != old.labelID
+        reloadTask = Task { [weak self] in
+            await self?.reloadConversations()
+            // Entering a listing turns the fast sweep cadence on; leaving one
+            // may turn it off again (only may — the sidebar's badges keep it on
+            // while the app is frontmost).
+            if labelChanged { await self?.updateLabelSurfaceVisibility() }
+            // Same reason opening Drafts asks for a drafts poll: the
+            // reconciliation runs on a slow interval precisely because nobody is
+            // usually looking, and it is the only thing that brings in
+            // assignments for folders this cache never listed.
+            if opensLabel { await self?.sync?.refreshLabelsNow() }
+        }
+        // Drafts are scoped too, so a scope change re-reads them (and their
+        // badge) even when the Drafts list is not on screen.
+        if entersDrafts || target.scope != old.scope {
+            // Owned, and cancelled by `stop()`: an unstructured `Task` here
+            // outlives the account graph that spawned it.
+            draftTask?.cancel()
+            draftTask = Task { [weak self] in
+                await self?.reloadDrafts()
+                // Entering asks the engine for a fresh drafts list: the drafts
+                // poll runs on its own slow interval precisely because nobody
+                // is usually looking, and this is the moment somebody is.
+                if entersDrafts { await self?.sync?.refreshDraftsNow() }
+            }
+        }
+    }
+
+    // MARK: Navigation intents
+    //
+    // What the sidebar, the menus and a notification click ask for. Views call
+    // these rather than composing a ``Location`` themselves, so the redesign's
+    // rules live here once: the folder survives a scope change, the label
+    // survives both and narrows with the scope, and only an explicit clear or
+    // the "All domains" row drops it.
+
+    /// Moves the scope, keeping the folder and the open label.
+    func selectScope(_ scope: Scope) {
+        var target = location
+        target.scope = scope
+        navigate(to: target)
+    }
+
+    /// The sidebar's "All domains" row: the widest scope, and it closes an open
+    /// label (the design's second way to clear one, beside the chip's ×).
+    func selectAllDomains() {
+        var target = location
+        target.scope = .allDomains
+        target.labelID = nil
+        navigate(to: target)
+    }
+
+    /// Moves the folder, keeping the scope — and the label unless asked not to.
+    /// - Parameter clearingLabel: for a control that picks a folder INSTEAD of
+    ///   a label (today's sidebar, which has one selection for both); dropped in
+    ///   the same step, so it is one navigation and one `view_shown`.
+    func selectFolder(_ folder: Folder, clearingLabel: Bool = false) {
+        var target = location
+        target.folder = folder
+        if clearingLabel { target.labelID = nil }
+        navigate(to: target)
+    }
+
+    /// A label row was clicked: opens the label, or closes it when it is the
+    /// one already open. Keeps scope and folder — except Drafts, which carry no
+    /// label Herald can read, so opening one from there lands on the Inbox.
+    func openLabel(_ labelID: String) {
+        var target = location
+        if target.folder == .drafts {
+            // Kept open behind Drafts it narrows nothing on screen, so clicking
+            // it is asking to SEE it, never to close it.
+            target.folder = .inbox
+            target.labelID = labelID
+        } else {
+            target.labelID = target.labelID == labelID ? nil : labelID
+        }
+        navigate(to: target)
+    }
+
+    /// The label chip's ×, and the fallback when the open label no longer exists.
+    func clearLabel() {
+        var target = location
+        target.labelID = nil
+        navigate(to: target)
+    }
+
+    // MARK: Scope resolution
+
+    /// The mailbox ids a scope lists, or `nil` for "every mailbox" — the ONE
+    /// place a ``Scope`` becomes the set every store query takes.
+    ///
+    /// `.allDomains` leaves out the domains the user hid or took out of "All
+    /// domains"; when none is, the answer is `nil` rather than the full set, so
+    /// the store keeps its unfiltered fast path. A domain that no longer exists
+    /// resolves to the EMPTY set (lists nothing) rather than to everything.
+    func mailboxIDs(for scope: Scope) -> Set<String>? {
+        switch scope {
+        case .mailbox(let id):
+            return [id]
+        case .domain(let id):
+            return Set(domains.first { $0.id == id }?.mailboxIDs ?? [])
+        case .allDomains:
+            let excluded = domains.filter(isExcludedFromAllDomains)
+            guard !excluded.isEmpty else { return nil }
+            return Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
+        }
+    }
+
+    /// Whether rows say which mailbox they came from — everywhere the scope has
+    /// not already fixed it. (The redesign refines this per level in R5.)
+    var attributesRowsToMailbox: Bool {
+        if case .mailbox = scope { return false }
+        return true
+    }
+
+    /// Whether a domain stays out of the `.allDomains` listing on this Mac.
+    func isExcludedFromAllDomains(_ domain: MailDomain) -> Bool {
+        DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
+            || !DomainPreferences.includeInAll(accountID: accountID, domainID: domain.id, in: defaults)
+    }
+
+    /// Whether a message's mailbox is inside a resolved scope set.
+    nonisolated static func mailboxIDs(_ ids: Set<String>?, contain mailboxID: String?) -> Bool {
+        guard let ids else { return true }
+        return mailboxID.map(ids.contains) ?? false
+    }
+
+    /// `location` with any part that no longer exists replaced — the scope by
+    /// All domains, the label by none.
+    ///
+    /// The scope is only judged once mailboxes are loaded: on a cold cache the
+    /// list is empty until the first sync, and dropping a perfectly good scope
+    /// then would lose it for good. The label IS judged against an empty list,
+    /// the same rule ``reloadLabels()`` applies: a workspace whose last label was
+    /// deleted must not keep an invisible filter on the list.
+    func validatedLocation(_ location: Location) -> Location {
+        var result = location
+        if !mailboxes.isEmpty {
+            switch location.scope {
+            case .allDomains:
+                break
+            case .domain(let id):
+                if !domains.contains(where: { $0.id == id }) { result.scope = .allDomains }
+            case .mailbox(let id):
+                if !mailboxes.contains(where: { $0.id == id }) { result.scope = .allDomains }
+            }
+        }
+        if let labelID = location.labelID, !labels.contains(where: { $0.id == labelID }) {
+            result.labelID = nil
+        }
+        return result
+    }
+
+    private func persistLocation() {
+        guard persistsNavigation else { return }
+        NavigationPersistence.save(location, accountID: accountID, to: defaults)
     }
 
     // MARK: Drafts
@@ -280,13 +435,11 @@ final class MailViewModel {
     // `private(set)` because `private` in Swift does not reach an extension in
     // another file, and the alternative was to inline the whole feature here.
 
-    /// Whether the middle column is showing the Drafts folder instead of a
-    /// conversation list. Written only through ``showDrafts(_:)``.
-    var isShowingDrafts = false
-    /// The drafts list, newest edit first. Sendable DTOs — the list never sees a
-    /// `@Model` and never holds a draft body.
+    /// The drafts list for the current scope, newest edit first. Sendable DTOs
+    /// — the list never sees a `@Model` and never holds a draft body.
     var drafts: [DraftSummary] = []
-    /// The sidebar badge. Counted in the store (`fetchCount`), never by loading rows.
+    /// The Drafts badge for the current scope. Counted in the store
+    /// (`fetchCount`), never by loading rows.
     var draftCount = 0
     var selectedDraftID: String?
 
@@ -318,10 +471,6 @@ final class MailViewModel {
     var labelThreadCounts: [String: Int] = [:]
     /// The label ids on the message the reading pane is showing.
     var selectedMessageLabelIDs: [String] = []
-    /// The label the middle column is listing, or `nil` when it is showing a
-    /// folder. A label listing crosses folders, which is exactly why it cannot be
-    /// expressed as a ``FolderSelection``.
-    var selectedLabelID: String?
     /// Whether the app is frontmost, as ``setActive(_:)`` last saw it. Kept
     /// because the label surface signal needs it and the cadence it drives is
     /// write-only from here.
@@ -543,11 +692,13 @@ final class MailViewModel {
         events: AsyncStream<SyncEvent>,
         markReadDelay: Duration = .seconds(1),
         defaults: UserDefaults = .standard,
+        persistsNavigation: Bool = false,
         notifier: NewMailNotifier? = nil,
         record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in }
     ) {
         self.record = record
         self.defaults = defaults
+        self.persistsNavigation = persistsNavigation
         self.notifier = notifier
         self.accountID = accountID
         self.accountLabel = accountLabel
@@ -557,7 +708,6 @@ final class MailViewModel {
         self.sync = sync
         self.events = events
         self.markReadDelay = markReadDelay
-        self.selection = FolderSelection(mailboxID: nil, folder: .inbox)
     }
 
     /// Stops consuming sync events. Called when the account is torn down —
@@ -578,17 +728,20 @@ final class MailViewModel {
 
     /// Recomputes ``presentedConversations``. The ONLY writer of it, called from
     /// the `didSet` of each of the three inputs the filter depends on.
-    /// Internal, not private: the labels extension changes the presentation rule
-    /// (a label listing is not folder-filtered) and has to recompute it.
+    /// Internal, not private: the labels extension recomputes it after a label
+    /// write moves the index a server row is filtered by.
     func refilter() {
         filterCount += 1
-        let folder = selection.folder
-        // A label listing is NOT a folder listing: its rows legitimately sit in
-        // the inbox, the archive and the trash at once, so the folder rule that
-        // makes a locally-archived row vanish would empty most of it.
-        let inScope = selectedLabelID == nil
-            ? allConversations.filter { Self.belongs($0, to: folder) }
-            : allConversations
+        // Drafts are not conversations: that list is `drafts`, and nothing here
+        // is on screen while it is.
+        guard let folder = location.folder.conversationFolder else {
+            presentedConversations = []
+            return
+        }
+        // A label listing is a FOLDER listing narrowed by the label, so the same
+        // folder rule applies: a row a local archive just moved out of the inbox
+        // leaves the Inbox ∩ label list too.
+        let inScope = allConversations.filter { Self.belongs($0, to: folder) }
         // Trimmed, and trimmed HERE as well as on the wire: the local tier and
         // the server tier must agree on what the needle is, or a trailing space
         // silently empties the list while the server still finds rows.
@@ -601,12 +754,16 @@ final class MailViewModel {
         // Union with whatever the server matched that the cache does not hold.
         // Local rows win on identity: they carry any optimistic action the user
         // just took, where the server's copy predates it.
-        // Server search answers a (mailbox, folder) question; inside a label
-        // listing its rows would arrive unfiltered by the label and read as hits
-        // that do not carry it.
-        if !serverResults.isEmpty, selectedLabelID == nil {
+        if !serverResults.isEmpty {
+            let labelID = location.labelID
             var seen = Set(rows.map(\.id))
             for row in serverResults where Self.belongs(row, to: folder) && seen.insert(row.id).inserted {
+                // Server search cannot filter by label, so inside a label only
+                // the rows the label index says carry it are hits — a row that
+                // does not would read as one that does. The index holds
+                // assignments for uncached messages too (the reconciliation
+                // stores them), which is what makes this more than a guess.
+                if let labelID, labelIDsByThread[row.id]?.contains(labelID) != true { continue }
                 rows.append(row)
             }
             rows.sort { $0.latest.displayDate > $1.latest.displayDate }
@@ -781,7 +938,9 @@ final class MailViewModel {
     func runServerSearch() {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard query.count >= Self.minimumServerSearchLength else { return }
-        let scope = selection
+        // Drafts have no server search route; that list only filters locally.
+        guard location.folder.conversationFolder != nil else { return }
+        let scope = location
         serverSearchTask?.cancel()
         serverSearchCount += 1
         serverSearchState = .searching
@@ -815,7 +974,17 @@ final class MailViewModel {
         serverSearchState = .idle
     }
 
-    private func performServerSearch(_ query: String, scope: FolderSelection) async {
+    /// The request for one scope. The API filters by at most ONE mailbox, so a
+    /// mailbox scope is asked exactly and every wider scope asks for all
+    /// mailboxes — its answer is then narrowed client-side to the scope's set
+    /// (a domain's mailboxes; All domains minus the excluded ones).
+    private func performServerSearch(_ query: String, scope: Location) async {
+        guard let folder = scope.folder.conversationFolder else { return }
+        let requestMailboxID: String? = if case .mailbox(let id) = scope.scope { id } else { nil }
+        // Resolved once, up front: a wider scope's answer is filtered by the set
+        // the question was asked about, not whatever the mailbox list says by
+        // the time the last page lands.
+        let allowed = requestMailboxID == nil ? mailboxIDs(for: scope.scope) : nil
         var collected: [ConversationSummary] = []
         var seen: Set<String> = []
         var cursor: String?
@@ -825,8 +994,8 @@ final class MailViewModel {
             let result: ConversationPage
             do {
                 result = try await api.listConversations(
-                    folder: scope.folder,
-                    mailboxID: scope.mailboxID,
+                    folder: folder,
+                    mailboxID: requestMailboxID,
                     search: query,
                     cursor: cursor
                 )
@@ -845,7 +1014,8 @@ final class MailViewModel {
             }
             // The needle or the folder moved while the page was in flight.
             guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
-            for row in result.conversations where seen.insert(row.id).inserted {
+            for row in result.conversations
+            where Self.mailboxIDs(allowed, contain: row.latest.mailboxID) && seen.insert(row.id).inserted {
                 collected.append(row)
             }
             page += 1
@@ -863,8 +1033,8 @@ final class MailViewModel {
     /// Whether the pass that is finishing still answers what is on screen. The
     /// scope AND the needle both have to still hold: `searchQuery` is compared
     /// trimmed because that is the form the request was built from.
-    private func isCurrentSearch(_ query: String, _ scope: FolderSelection) -> Bool {
-        selection == scope
+    private func isCurrentSearch(_ query: String, _ scope: Location) -> Bool {
+        location == scope
             && searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query
     }
 
@@ -1048,9 +1218,10 @@ final class MailViewModel {
     }
 
     /// Unread count behind one picker entry (`nil` = every mailbox). Inbox only:
-    /// that is the scope ``unreadCounts`` carries per mailbox.
+    /// that is what is counted per mailbox.
     func pickerUnread(forMailbox id: String?) -> Int {
-        unreadCounts[FolderSelection(mailboxID: id, folder: .inbox)] ?? 0
+        guard let id else { return allMailboxesInboxUnread }
+        return inboxUnreadByMailbox[id] ?? 0
     }
 
     /// One line of the mailbox picker. Pure and static so the label the popup
@@ -1105,13 +1276,18 @@ final class MailViewModel {
         eventTask?.cancel()
         eventTask = Task { [weak self] in await self?.consumeEvents() }
         await reloadMailboxes()
+        // Before the restore, so a persisted label can be judged against them.
+        await reloadLabels()
+        restoreLocation()
         await reloadConversations()
         await reloadDrafts()
-        await reloadLabels()
-        // The launch view has to be said out loud: `selection` is assigned in
-        // `init`, where a `didSet` does not fire, so nothing else reports the
-        // folder the window comes up on. Once per view-model — a re-`start()`
-        // (there is none today) must not double-count a launch.
+        // The restored label (if any) is a label surface the engine has not
+        // been told about yet.
+        await updateLabelSurfaceVisibility()
+        // The launch view has to be said out loud: the restore above assigns
+        // `location` directly, not through `navigate`, so nothing else reports
+        // the folder the window comes up on. Once per view-model — a
+        // re-`start()` (there is none today) must not double-count a launch.
         guard !didRecordLaunchView else { return }
         didRecordLaunchView = true
         pendingNavigationSource = nil
@@ -1119,6 +1295,40 @@ final class MailViewModel {
     }
 
     @ObservationIgnored private var didRecordLaunchView = false
+
+    /// Puts back the location this account was last showing, once, at launch.
+    ///
+    /// Assigned DIRECTLY, not through ``navigate(to:reportsView:)``: nothing is
+    /// loaded yet (``start()`` loads right after), and the launch view is
+    /// reported by ``start()`` exactly once, whatever was restored. The restore
+    /// used to live in the sidebar and race `start()` for the right to report
+    /// the launch view; owning it here removes the race by construction.
+    ///
+    /// A scope whose domain or mailbox is gone, or a label that is, falls back
+    /// (``validatedLocation(_:)``). A scope that cannot be judged yet — a cold
+    /// cache with no mailboxes — is kept, and corrected silently by
+    /// ``correctStaleScope()`` once the mailbox list arrives.
+    private func restoreLocation() {
+        guard persistsNavigation, !didRestoreLocation else { return }
+        didRestoreLocation = true
+        let stored = NavigationPersistence.load(accountID: accountID, from: defaults)
+        location = validatedLocation(stored)
+        if location != stored { persistLocation() }
+    }
+
+    @ObservationIgnored private var didRestoreLocation = false
+
+    /// Falls back to All domains when the scope's domain or mailbox stopped
+    /// existing (access revoked, a restore that ran before the first sync).
+    /// Silent: nobody navigated, and the view on screen was already reported.
+    private func correctStaleScope() {
+        var target = validatedLocation(location)
+        // The label is ``reloadLabels()``'s to judge, against the label list —
+        // this runs on a MAILBOX reload, whatever the labels are doing.
+        target.labelID = location.labelID
+        guard target != location else { return }
+        navigate(to: target, reportsView: false)
+    }
 
     /// Set by ``refresh()``, consumed by the next `.finished` event.
     @ObservationIgnored private var reloadsWhenPassFinishes = false
@@ -1335,43 +1545,41 @@ final class MailViewModel {
 
     /// Shows the conversation a clicked notification names.
     ///
-    /// The banner may be minutes old and about a thread the current scope does
-    /// not show (another mailbox picked, a search typed, archived since), so this
-    /// resets to the all-mailboxes inbox and clears the search before selecting.
-    /// A thread that is genuinely gone leaves the UI on the inbox rather than
-    /// selecting nothing in a mystery scope.
+    /// The banner may be minutes old and about a thread the current location
+    /// does not show (another mailbox picked, a label open, a search typed,
+    /// archived since), so this resets to All domains › Inbox with no label and
+    /// clears the search before selecting. A thread that is genuinely gone
+    /// leaves the UI on the inbox rather than selecting nothing in a mystery
+    /// scope.
     func revealConversation(threadID: String) async {
-        // The Drafts folder occupies the SAME middle column as the conversation
-        // list, so a banner clicked while it is open would select the thread
-        // behind a drafts list that never went away — the reading pane would
-        // change and nothing else would, with the sidebar still on Drafts.
         // How this reveal was reached is the CALLER's to say — the notification
         // router sets `.notification` before calling — so an unattributed reveal
         // is `other` like every other unlabelled navigation, rather than being
         // silently credited to a banner nobody clicked.
         let via = pendingNavigationSource ?? .other
         pendingNavigationSource = nil
-        let wasShowingDrafts = isShowingDrafts
         let wasShowingLabel = selectedLabelID != nil
-        // Silent: the view this lands on is the inbox, reported once below —
-        // never a drafts→inbox→inbox trail for one click.
-        showDrafts(false, silently: true)
-        // A label listing occupies the SAME middle column, and its rows are
-        // fetched by membership: leaving it set would have the reload below fetch
-        // the label again, never find the inbox thread, and silently do nothing —
-        // the drafts bug this function already guards against.
-        showLabel(nil)
         searchQuery = ""
-        let inbox = FolderSelection(mailboxID: nil, folder: .inbox)
-        if selection != inbox {
+        // ONE navigation for all three axes, so a click from Drafts or from
+        // inside a label is one `view_shown`, never a drafts→inbox trail. The
+        // label goes too: its rows are fetched by membership, and leaving it set
+        // would have the reload fetch the label again, never find an unlabelled
+        // inbox thread, and silently do nothing.
+        let inbox = Location.launchDefault
+        if location != inbox {
+            let changesView = location.scope != inbox.scope || location.folder != inbox.folder
             pendingNavigationSource = via
-            selection = inbox
-            // The `didSet` starts the reload; awaiting it is what makes the row
+            navigate(to: inbox)
+            // Leaving a label for the inbox that was already under it changes
+            // neither scope nor folder, so `navigate` reports nothing; the click
+            // still moved the user onto a different list.
+            if !changesView, wasShowingLabel { recordViewShown(.inbox, via: via) }
+            // `navigate` starts the reload; awaiting it is what makes the row
             // available to select below.
             await reloadTask?.value
-        } else if wasShowingDrafts || wasShowingLabel || isShowingThread {
-            // Already on the inbox scope, but not looking at it: the click still
-            // moved the user back to the conversation list.
+        } else if isShowingThread {
+            // Already on the inbox, but inside a thread: the click still moved
+            // the user back to the conversation list.
             recordViewShown(.inbox, via: via)
         }
         leaveThreadSilently()
@@ -1466,12 +1674,13 @@ final class MailViewModel {
     /// Whether an unresolvable change id names a conversation row that now sits
     /// in the scope on screen.
     private func conversationEnteredScope(_ threadID: String) async -> Bool {
+        guard let folder = location.folder.conversationFolder else { return false }
         do {
             return try await store.hasConversation(
                 threadID: threadID,
                 accountID: accountID,
-                mailboxID: selection.mailboxID,
-                folder: selection.folder
+                mailboxIDs: mailboxIDs(for: location.scope),
+                folder: folder
             )
         } catch {
             logger.warning("Conversation scope check failed: \(error.localizedDescription, privacy: .private)")
@@ -1479,9 +1688,15 @@ final class MailViewModel {
         }
     }
 
+    /// Whether a changed message belongs to the list on screen. Deliberately
+    /// NOT narrowed by the open label: a message can gain or lose the label in
+    /// the very change being resolved, and a spare reload is cheap where a
+    /// missed one leaves a row stranded.
     private func inScope(_ message: MessageSummary) -> Bool {
-        guard selection.mailboxID == nil || message.mailboxID == selection.mailboxID else { return false }
-        return Self.conversationFolder(for: message.folder) == selection.folder
+        guard let folder = location.folder.conversationFolder,
+              Self.mailboxIDs(mailboxIDs(for: location.scope), contain: message.mailboxID)
+        else { return false }
+        return Self.conversationFolder(for: message.folder) == folder
     }
 
     nonisolated static func conversationFolder(for folder: MailFolder) -> ConversationFolder? {
@@ -1501,11 +1716,13 @@ final class MailViewModel {
         do {
             let loaded = try await store.mailboxes(accountID: accountID)
             mailboxes = loaded
+            domains = MailDomain.domains(from: loaded)
             mailboxNames = Self.makeMailboxNames(loaded)
             mailboxAddresses = Dictionary(
                 loaded.map { ($0.id, $0.address) }, uniquingKeysWith: { first, _ in first }
             )
             loadMailboxColorOverrides(for: loaded)
+            correctStaleScope()
         } catch {
             logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .private)")
         }
@@ -1514,21 +1731,29 @@ final class MailViewModel {
 
     func reloadConversations() async {
         conversationReloadCount += 1
-        // The scope is captured BEFORE the await: two selection flips in a row
-        // otherwise race, and whichever store read finishes last wins — showing
-        // the previous folder's rows under the current selection.
-        let scope = selection
-        let labelID = selectedLabelID
+        // Captured BEFORE the await: two navigations in a row otherwise race,
+        // and whichever store read finishes last wins — showing the previous
+        // location's rows under the current one.
+        let location = self.location
+        let mailboxIDs = mailboxIDs(for: location.scope)
         do {
             let rows: [ConversationSummary]
-            if let labelID {
-                rows = try await store.conversations(withLabel: labelID, accountID: accountID)
+            if let folder = location.folder.conversationFolder {
+                if let labelID = location.labelID {
+                    // Label ∩ folder ∩ scope — the label narrows the folder
+                    // listing, it no longer spans every folder on its own.
+                    rows = try await store.conversations(
+                        withLabel: labelID, accountID: accountID, folder: folder, mailboxIDs: mailboxIDs
+                    )
+                } else {
+                    rows = try await store.conversations(
+                        accountID: accountID, mailboxIDs: mailboxIDs, folder: folder
+                    )
+                }
             } else {
-                rows = try await store.conversations(
-                    accountID: accountID,
-                    mailboxID: scope.mailboxID,
-                    folder: scope.folder
-                )
+                // Drafts are listed by `reloadDrafts`; there are no conversation
+                // rows under them. The index and the counts below still reload.
+                rows = []
             }
             // BEFORE the rows are published, not after: macOS `List` caches a
             // measured height per row identity, so a row that first renders
@@ -1536,11 +1761,11 @@ final class MailViewModel {
             // at the height it was measured at (the same trap the mailbox chip
             // has — see the design-system note).
             await reloadLabelIndex()
-            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
+            guard location == self.location, !Task.isCancelled else { return }
             allConversations = rows
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
-            guard scope == selection, labelID == selectedLabelID, !Task.isCancelled else { return }
+            guard location == self.location, !Task.isCancelled else { return }
             allConversations = []
         }
         // A server-search hit is by construction NOT in `allConversations`; the
@@ -1554,51 +1779,60 @@ final class MailViewModel {
         await reloadUnreadCounts()
     }
 
-    /// Inbox unread badges only — the other folders do not carry a count in the
-    /// sidebar, so fetching them would be work nobody reads.
+    /// The unread badges — only the counts something draws.
     ///
     /// Each badge is a `fetchCount` in the store. Fetching and mapping up to 100
     /// whole rows per mailbox to count them is the same query with every row
     /// materialised, and it ran on every conversation reload.
+    ///
+    /// Three kinds of count, each drawn somewhere:
+    /// - every sidebar folder of the CURRENT scope (the folder rows), including
+    ///   Starred;
+    /// - the inbox of every mailbox (the picker's labels; a domain's total is
+    ///   their sum);
+    /// - the inbox of every mailbox at once — its own count rather than the sum
+    ///   of the others, because the unfiltered listing shows every row,
+    ///   including any whose mailbox the picker does not list.
     private func reloadUnreadCounts() async {
-        var counts: [FolderSelection: Int] = [:]
-        for scope in unreadBadgeScopes {
-            do {
-                let unread = try await store.unreadCount(
-                    accountID: accountID,
-                    mailboxID: scope.mailboxID,
-                    folder: scope.folder
-                )
-                if unread > 0 { counts[scope] = unread }
-            } catch {
-                logger.error("Unread count failed: \(error.localizedDescription, privacy: .private)")
+        let scopeIDs = mailboxIDs(for: location.scope)
+        var byFolder: [ConversationFolder: Int] = [:]
+        for folder in MailTheme.sidebarFolders {
+            if let unread = await unreadCount(mailboxIDs: scopeIDs, folder: folder), unread > 0 {
+                byFolder[folder] = unread
             }
         }
-        unreadCounts = counts
+        // The current scope's inbox is one of the counts below whenever the
+        // scope is one mailbox or every mailbox; asking twice is one wasted
+        // fetchCount per reload.
+        let scopeInbox = byFolder[.inbox] ?? 0
+        var byMailbox: [Mailbox.ID: Int] = [:]
+        for mailbox in mailboxes {
+            let unread: Int?
+            if case .mailbox(let id) = location.scope, id == mailbox.id {
+                unread = scopeInbox
+            } else {
+                unread = await unreadCount(mailboxIDs: [mailbox.id], folder: .inbox)
+            }
+            if let unread, unread > 0 { byMailbox[mailbox.id] = unread }
+        }
+        var allInbox = scopeInbox
+        if scopeIDs != nil { allInbox = await unreadCount(mailboxIDs: nil, folder: .inbox) ?? 0 }
+        folderUnreadCounts = byFolder
+        inboxUnreadByMailbox = byMailbox
+        allMailboxesInboxUnread = allInbox
         // The all-mailboxes inbox count — the same number the account picker
         // shows, so the Dock badge and the switcher can never disagree.
-        unreadCountDidChange?(pickerUnread(forMailbox: nil))
+        unreadCountDidChange?(allInbox)
     }
 
-    /// The scopes a badge is actually drawn for:
-    /// - every folder of the PICKED mailbox (the one folder list the sidebar now
-    ///   shows), including Starred;
-    /// - the inbox of every mailbox plus the all-mailboxes inbox, which is what
-    ///   the picker's own labels read.
-    ///
-    /// "All Mailboxes" is its own count rather than the sum of the others: the
-    /// nil-mailbox listing shows every row, including any whose mailbox the
-    /// picker does not list.
-    private var unreadBadgeScopes: [FolderSelection] {
-        var scopes = MailTheme.sidebarFolders.map {
-            FolderSelection(mailboxID: selection.mailboxID, folder: $0)
+    /// One badge count, or `nil` (logged) when the store could not answer.
+    private func unreadCount(mailboxIDs: Set<String>?, folder: ConversationFolder) async -> Int? {
+        do {
+            return try await store.unreadCount(accountID: accountID, mailboxIDs: mailboxIDs, folder: folder)
+        } catch {
+            logger.error("Unread count failed: \(error.localizedDescription, privacy: .private)")
+            return nil
         }
-        scopes.append(FolderSelection(mailboxID: nil, folder: .inbox))
-        scopes.append(contentsOf: mailboxes.map { FolderSelection(mailboxID: $0.id, folder: .inbox) })
-        // The picked mailbox is in both halves; counting it twice is one wasted
-        // fetchCount per reload.
-        var seen: Set<FolderSelection> = []
-        return scopes.filter { seen.insert($0).inserted }
     }
 
     private nonisolated static func makeMailboxNames(_ mailboxes: [Mailbox]) -> [String: String] {

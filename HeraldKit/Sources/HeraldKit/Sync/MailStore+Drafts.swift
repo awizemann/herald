@@ -16,10 +16,27 @@ nonisolated struct DraftKey: Sendable, Hashable {
 extension MailStore {
     // MARK: - Reads
 
-    /// Every cached draft for the account, newest edit first.
-    public func drafts(accountID: String) throws -> [DraftSummary] {
+    /// Cached drafts for the account, newest edit first.
+    ///
+    /// - Parameters:
+    ///   - mailboxIDs: only drafts tied to one of these mailboxes; `nil` = every
+    ///     mailbox.
+    ///   - includingUnassigned: also drafts tied to NO mailbox (`mailboxID ==
+    ///     nil`). Only the widest scope lists those — nothing narrower can claim
+    ///     them — so the caller decides, not the id set.
+    ///
+    /// The defaults are "every draft", which is what the account-wide callers
+    /// (and every pre-scope caller) mean.
+    public func drafts(
+        accountID: String,
+        mailboxIDs: Set<String>? = nil,
+        includingUnassigned: Bool = true
+    ) throws -> [DraftSummary] {
+        guard let predicate = Self.draftScopePredicate(
+            accountID: accountID, mailboxIDs: mailboxIDs, includingUnassigned: includingUnassigned
+        ) else { return [] }
         let descriptor = FetchDescriptor<CachedDraft>(
-            predicate: #Predicate { $0.accountID == accountID },
+            predicate: predicate,
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
         do {
@@ -30,16 +47,51 @@ extension MailStore {
         }
     }
 
-    /// How many drafts the account has — the sidebar badge. `fetchCount`, so no
-    /// row (and no body) is materialised to answer it.
-    public func draftCount(accountID: String) throws -> Int {
+    /// How many drafts the scope has — the Drafts badge. `fetchCount`, so no
+    /// row (and no body) is materialised to answer it. Same scope arguments as
+    /// ``drafts(accountID:mailboxIDs:includingUnassigned:)``.
+    public func draftCount(
+        accountID: String,
+        mailboxIDs: Set<String>? = nil,
+        includingUnassigned: Bool = true
+    ) throws -> Int {
+        guard let predicate = Self.draftScopePredicate(
+            accountID: accountID, mailboxIDs: mailboxIDs, includingUnassigned: includingUnassigned
+        ) else { return 0 }
         do {
-            return try modelContext.fetchCount(
-                FetchDescriptor<CachedDraft>(predicate: #Predicate { $0.accountID == accountID })
-            )
+            return try modelContext.fetchCount(FetchDescriptor<CachedDraft>(predicate: predicate))
         } catch {
             logger.error("Draft count failed: \(error.localizedDescription, privacy: .private)")
             throw error
+        }
+    }
+
+    /// The drafts scope as a predicate, or `nil` when it can match nothing (no
+    /// mailboxes and no unassigned drafts) — answered without a fetch.
+    ///
+    /// `mailboxKey` is `mailboxID ?? ""` for the same reason the conversation
+    /// key is: optional equality in `#Predicate` is unreliable, so "no mailbox"
+    /// is the empty key.
+    private nonisolated static func draftScopePredicate(
+        accountID: String,
+        mailboxIDs: Set<String>?,
+        includingUnassigned: Bool
+    ) -> Predicate<CachedDraft>? {
+        guard let mailboxIDs else {
+            if includingUnassigned { return #Predicate { $0.accountID == accountID } }
+            return #Predicate { $0.accountID == accountID && $0.mailboxKey != "" }
+        }
+        switch (mailboxIDs.isEmpty, includingUnassigned) {
+        case (true, false):
+            return nil
+        case (true, true):
+            return #Predicate { $0.accountID == accountID && $0.mailboxKey == "" }
+        case (false, false):
+            return #Predicate { $0.accountID == accountID && mailboxIDs.contains($0.mailboxKey) }
+        case (false, true):
+            return #Predicate {
+                $0.accountID == accountID && ($0.mailboxKey == "" || mailboxIDs.contains($0.mailboxKey))
+            }
         }
     }
 

@@ -721,6 +721,10 @@ final class AppEnvironment {
             sync: engine,
             events: engine.events,
             defaults: defaults,
+            // The one production construction site, so the one that restores
+            // where each account was left (the UI-test harness comes through
+            // here too, with its own throwaway suite).
+            persistsNavigation: true,
             notifier: notifier,
             record: recordUsage
         )

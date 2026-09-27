@@ -209,7 +209,7 @@ func wait(
     @Test func changeInAnotherMailboxDoesNotReloadTheSelectedList() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         let baseline = harness.model.conversationReloadCount
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
@@ -253,7 +253,7 @@ func wait(
     @Test func changeInSelectedThreadReloadsTheThread() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t1"
         try await wait("the thread to load") { harness.model.threadMessages.count == 1 }
@@ -279,7 +279,7 @@ func wait(
     @Test func archiveHidesTheRowAndAFailedArchiveRestoresIt() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
@@ -317,13 +317,13 @@ func wait(
     @Test func aJustDeletedThreadShowsUpInTheTrashList() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         await harness.model.perform(.trash, onThread: "t1")
         #expect(harness.model.presentedConversations.isEmpty, "the row must leave the inbox")
 
-        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await (try #require(harness.model.reloadTask)).value
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
     }
@@ -333,14 +333,14 @@ func wait(
     @Test func aRejectedDeleteLeavesNoRowInTheTrashList() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         await harness.api.setActionError(.server(code: "boom", message: "nope"))
         await harness.model.perform(.trash, onThread: "t1")
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"], "the inbox row must come back")
 
-        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await (try #require(harness.model.reloadTask)).value
         #expect(harness.model.presentedConversations.isEmpty)
     }
@@ -353,7 +353,7 @@ func wait(
     @Test func refreshReloadsThePresentedScopeWhenThePassFinishes() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
@@ -375,7 +375,7 @@ func wait(
         }
         // The badges come from the same reload, one store round trip later.
         try await wait("the unread badges to be recounted") {
-            harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .inbox)] == 2
+            harness.model.folderUnreadCounts[.inbox] == 2
         }
     }
 
@@ -385,7 +385,7 @@ func wait(
     @Test func aRoutinePassDoesNotReloadThePresentedScope() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         let baseline = harness.model.conversationReloadCount
 
@@ -402,7 +402,7 @@ func wait(
     @Test func aNewConversationRowInTheOpenScopeReloadsTheList() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await harness.model.start()
         #expect(harness.model.presentedConversations.isEmpty)
 
@@ -427,7 +427,7 @@ func wait(
     @Test func aNewMessageInAnUnlistedMailboxReloadsTheMailboxes() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: nil, folder: .inbox)
+        harness.model.showListing(mailboxID: nil, folder: .inbox)
         await harness.model.start()
         #expect(harness.model.mailboxName(for: "mbC") == nil)
 
@@ -504,7 +504,7 @@ func wait(
     @Test func putBackFromTheTrashIsOneConversationRestore() async throws {
         let harness = try await Harness.make()
         try await harness.seedTrashedThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
         #expect(harness.model.restoreAction == .restore)
@@ -527,7 +527,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedArchivedThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
         await harness.model.start()
         #expect(harness.model.restoreAction == .unarchive)
         #expect(harness.model.restoreActionTitle == "Move to Inbox")
@@ -549,7 +549,7 @@ func wait(
     @Test func archiveOutsideTheTrashStaysAConversationCall() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         await harness.model.perform(.archive, onThread: "t1")
@@ -563,7 +563,7 @@ func wait(
     @Test func trashInTheTrashIsNotSentAtAll() async throws {
         let harness = try await Harness.make()
         try await harness.seedTrashedThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .trash)
+        harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await harness.model.start()
 
         await harness.model.perform(.trash, onThread: "t7")
@@ -583,7 +583,7 @@ func wait(
     @Test func aConversationActionThatAffectedNothingRevertsImmediately() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         await harness.api.setConversationAffected(0)
 
@@ -605,14 +605,14 @@ func wait(
         try await harness.seedTwoMailboxes()
         try await harness.seedArchivedThread()
 
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         let superseded = try #require(harness.model.reloadTask)
-        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
         #expect(superseded.isCancelled, "The superseded reload was left running to finish last")
 
         await (try #require(harness.model.reloadTask)).value
         // Selection survives, and the list is the one the selection asks for.
-        #expect(harness.model.selection.folder == .archived)
+        #expect(harness.model.listFolder == .archived)
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
     }
 
@@ -623,7 +623,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedArchivedThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
 
@@ -678,7 +678,7 @@ func wait(
     @Test func archivingTheSelectedRowSelectsTheNextOne() async throws {
         let harness = try await Harness.make()
         try await harness.seedThreeInboxThreads()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t3", "t2", "t1"])
 
@@ -694,7 +694,7 @@ func wait(
     @Test func archivingTheLastRowSelectsThePreviousOne() async throws {
         let harness = try await Harness.make()
         try await harness.seedThreeInboxThreads()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         harness.model.selectedThreadID = "t1" // Oldest, so last in the list.
@@ -711,7 +711,7 @@ func wait(
     @Test func advancingPastADeletedRowSelectsTheThreadWithoutOpeningIt() async throws {
         let harness = try await Harness.make()
         try await harness.seedSinglesAboveAThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t1", "t2", "t3", "t9"])
 
@@ -732,7 +732,7 @@ func wait(
     @Test func aUserSelectionStillDrillsAfterAnAdvance() async throws {
         let harness = try await Harness.make()
         try await harness.seedSinglesAboveAThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t3"
         await harness.model.perform(.archive, onThread: "t3")
@@ -748,7 +748,7 @@ func wait(
     @Test func markingReadLeavesTheSelectionAlone() async throws {
         let harness = try await Harness.make()
         try await harness.seedThreeInboxThreads()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         harness.model.selectedThreadID = "t2"
@@ -768,7 +768,7 @@ func wait(
     @Test func onlyTheFiltersOwnInputsRecomputeTheList() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         let baseline = harness.model.filterCount
 
@@ -829,7 +829,7 @@ func wait(
     @Test func searchDoesNotDropTheSelectedConversation() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t1"
 
@@ -888,12 +888,12 @@ func wait(
         try await harness.seedTwoMailboxes()
         try await harness.seedArchivedThread()
         await harness.model.start()
-        harness.model.selection = .init(mailboxID: nil, folder: .archived)
+        harness.model.showListing(mailboxID: nil, folder: .archived)
 
         // Exactly what the picker's binding does.
-        harness.model.selection = .init(mailboxID: "mbA", folder: harness.model.selection.folder)
+        harness.model.selectScope(.mailbox("mbA"))
 
-        #expect(harness.model.selection.folder == .archived)
+        #expect(harness.model.listFolder == .archived)
         await (try #require(harness.model.reloadTask)).value
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
     }
@@ -916,11 +916,11 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedStarredThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
-        #expect(harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .starred)] == 1)
-        #expect(harness.model.unreadCounts[.init(mailboxID: "mbA", folder: .inbox)] == 1)
+        #expect(harness.model.folderUnreadCounts[.starred] == 1)
+        #expect(harness.model.folderUnreadCounts[.inbox] == 1)
     }
 
     /// Starred is a real listing scope on the server, so selecting it has to
@@ -930,7 +930,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedStarredThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .starred)
+        harness.model.showListing(mailboxID: "mbA", folder: .starred)
         await harness.model.start()
 
         #expect(harness.model.presentedConversations.map(\.id) == ["t4"])
@@ -947,7 +947,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         // Selecting a two-message thread drills in and loads it.
@@ -978,7 +978,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()   // m9a at epoch, m9b at epoch+120s
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         // Conversation list: t9's latest (epoch+120) is newer than t1's (epoch) → t9 first.
@@ -997,7 +997,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         harness.model.openThread("t9")
@@ -1018,7 +1018,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t9"
         try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
@@ -1040,7 +1040,7 @@ func wait(
     @Test func returnDoesNotDrillIntoASingleMessageConversation() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t1"
 
@@ -1056,12 +1056,12 @@ func wait(
         try await harness.seedTwoMailboxes()
         try await harness.seedArchivedThread()
         try await harness.seedMultiMessageThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.openThread("t9")
         #expect(harness.model.isShowingThread)
 
-        harness.model.selection = .init(mailboxID: "mbA", folder: .archived)
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
         #expect(harness.model.isShowingThread == false)
         #expect(harness.model.selectedThreadID == nil)
     }
@@ -1073,7 +1073,7 @@ func wait(
         let harness = try await Harness.make(markReadDelay: .zero)
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.openThread("t9")
         try await wait("the thread to load") { harness.model.threadMessages.count == 2 }
@@ -1137,7 +1137,7 @@ func wait(
     @Test func newMessageRequestsABlankCompose() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         #expect(harness.model.composeRequest == nil)
@@ -1157,7 +1157,7 @@ func wait(
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
         try await harness.seedMultiMessageThread()   // t9: m9a, then m9b (newest)
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         // A DIFFERENT thread is selected, so "the selection" and "the row" differ.
@@ -1180,7 +1180,7 @@ func wait(
     @Test func replyingToAnUnknownThreadOpensNothing() async throws {
         let harness = try await Harness.make()
         try await harness.seedTwoMailboxes()
-        harness.model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
         harness.model.requestCompose(.reply, onThread: "no-such-thread")

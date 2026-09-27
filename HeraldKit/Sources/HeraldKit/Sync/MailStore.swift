@@ -153,19 +153,23 @@ public actor MailStore {
 
     /// Newest-first page of cached conversations for a listing scope.
     ///
-    /// `mailboxID == nil` means "every mailbox"; otherwise the scope is exact.
+    /// `mailboxIDs == nil` means "every mailbox" — and is the fast path, one
+    /// equality test fewer per row; otherwise only rows listed under one of the
+    /// ids. An EMPTY set is a scope with no mailboxes in it (a domain whose
+    /// mailboxes all went away) and answers nothing without asking the store.
     public func conversations(
         accountID: String,
-        mailboxID: String?,
+        mailboxIDs: Set<String>?,
         folder: ConversationFolder,
         limit: Int = 100,
         offset: Int = 0
     ) throws -> [ConversationSummary] {
         let listFolder = folder.rawValue
         let predicate: Predicate<CachedConversation>
-        if let mailboxID {
+        if let mailboxIDs {
+            guard !mailboxIDs.isEmpty else { return [] }
             predicate = #Predicate {
-                $0.accountID == accountID && $0.listFolder == listFolder && $0.mailboxKey == mailboxID
+                $0.accountID == accountID && $0.listFolder == listFolder && mailboxIDs.contains($0.mailboxKey)
             }
         } else {
             predicate = #Predicate { $0.accountID == accountID && $0.listFolder == listFolder }
@@ -189,23 +193,29 @@ public actor MailStore {
     /// The change feed reports bare ids: a thread id that resolves to no cached
     /// message is only worth a list reload if the row it names landed in the
     /// scope on screen. `fetchCount`, so nothing is materialised to answer it.
+    /// `mailboxIDs` reads like ``conversations(accountID:mailboxIDs:folder:limit:offset:)``'s.
     public func hasConversation(
         threadID: String,
         accountID: String,
-        mailboxID: String?,
+        mailboxIDs: Set<String>?,
         folder: ConversationFolder
     ) throws -> Bool {
         let listFolder = folder.rawValue
-        let anyMailbox = mailboxID == nil
-        let mailboxKey = mailboxID ?? ""
-        let descriptor = FetchDescriptor<CachedConversation>(
-            predicate: #Predicate {
+        let predicate: Predicate<CachedConversation>
+        if let mailboxIDs {
+            guard !mailboxIDs.isEmpty else { return false }
+            predicate = #Predicate {
                 $0.accountID == accountID
                     && $0.threadID == threadID
                     && $0.listFolder == listFolder
-                    && (anyMailbox || $0.mailboxKey == mailboxKey)
+                    && mailboxIDs.contains($0.mailboxKey)
             }
-        )
+        } else {
+            predicate = #Predicate {
+                $0.accountID == accountID && $0.threadID == threadID && $0.listFolder == listFolder
+            }
+        }
+        let descriptor = FetchDescriptor<CachedConversation>(predicate: predicate)
         do {
             return try modelContext.fetchCount(descriptor) > 0
         } catch {
@@ -225,28 +235,38 @@ public actor MailStore {
     /// non-optional thread-level mirror the list already renders from.
     /// The folder test mirrors the presentation rule — a row a local archive moved
     /// out of the inbox must stop being counted there immediately.
+    /// `mailboxIDs` reads like ``conversations(accountID:mailboxIDs:folder:limit:offset:)``'s.
     public func unreadCount(
         accountID: String,
-        mailboxID: String?,
+        mailboxIDs: Set<String>?,
         folder: ConversationFolder = .inbox
     ) throws -> Int {
         let listFolder = folder.rawValue
         let archived = MailFolder.archived.rawValue
         let trash = MailFolder.trash.rawValue
-        let anyMailbox = mailboxID == nil
-        let mailboxKey = mailboxID ?? ""
         let wantsExactFolder = folder == .archived || folder == .trash
         let exactFolder = folder == .archived ? archived : trash
-        let descriptor = FetchDescriptor<CachedConversation>(
-            predicate: #Predicate {
+        let predicate: Predicate<CachedConversation>
+        if let mailboxIDs {
+            guard !mailboxIDs.isEmpty else { return 0 }
+            predicate = #Predicate {
                 $0.accountID == accountID
                     && $0.listFolder == listFolder
                     && $0.unreadCount > 0
-                    && (anyMailbox || $0.mailboxKey == mailboxKey)
+                    && mailboxIDs.contains($0.mailboxKey)
                     && ((wantsExactFolder && $0.folderRaw == exactFolder)
                         || (!wantsExactFolder && $0.folderRaw != archived && $0.folderRaw != trash))
             }
-        )
+        } else {
+            predicate = #Predicate {
+                $0.accountID == accountID
+                    && $0.listFolder == listFolder
+                    && $0.unreadCount > 0
+                    && ((wantsExactFolder && $0.folderRaw == exactFolder)
+                        || (!wantsExactFolder && $0.folderRaw != archived && $0.folderRaw != trash))
+            }
+        }
+        let descriptor = FetchDescriptor<CachedConversation>(predicate: predicate)
         do {
             return try modelContext.fetchCount(descriptor)
         } catch {
@@ -271,16 +291,18 @@ public actor MailStore {
         }
     }
 
-    /// Newest-first page of cached messages in a folder scope.
+    /// Newest-first page of cached messages in a folder scope. `mailboxIDs`
+    /// reads like ``conversations(accountID:mailboxIDs:folder:limit:offset:)``'s.
     public func messages(
         accountID: String,
-        mailboxID: String?,
+        mailboxIDs: Set<String>?,
         folder: MailFolder,
         limit: Int = 100,
         offset: Int = 0
     ) throws -> [MessageSummary] {
+        if let mailboxIDs, mailboxIDs.isEmpty { return [] }
         var descriptor = FetchDescriptor<CachedMessage>(
-            predicate: Self.messageScopePredicate(accountID: accountID, mailboxID: mailboxID, folder: folder),
+            predicate: Self.messageScopePredicate(accountID: accountID, mailboxIDs: mailboxIDs, folder: folder),
             sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
         )
         descriptor.fetchLimit = limit
@@ -1101,17 +1123,19 @@ public actor MailStore {
         row.sortDate = source.sortDate
     }
 
+    /// `nil` = every mailbox. An empty set matches nothing; callers that can
+    /// hold one return early rather than hand the store an empty `IN ()`.
     nonisolated static func messageScopePredicate(
         accountID: String,
-        mailboxID: String?,
+        mailboxIDs: Set<String>?,
         folder: MailFolder
     ) -> Predicate<CachedMessage> {
         let folderRaw = folder.rawValue
-        guard let mailboxID else {
+        guard let mailboxIDs else {
             return #Predicate { $0.accountID == accountID && $0.folderRaw == folderRaw }
         }
         return #Predicate {
-            $0.accountID == accountID && $0.folderRaw == folderRaw && $0.mailboxKey == mailboxID
+            $0.accountID == accountID && $0.folderRaw == folderRaw && mailboxIDs.contains($0.mailboxKey)
         }
     }
 }

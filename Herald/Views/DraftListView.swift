@@ -18,10 +18,10 @@ struct DraftListView: View {
                 draft: draft,
                 // Same rule as a conversation row: attribute the mailbox only
                 // where the scope leaves it ambiguous.
-                mailboxName: model.selection.mailboxID == nil
+                mailboxName: model.attributesRowsToMailbox
                     ? model.mailboxName(for: draft.mailboxID)
                     : nil,
-                mailboxTint: model.selection.mailboxID == nil
+                mailboxTint: model.attributesRowsToMailbox
                     ? model.mailboxTint(for: draft.mailboxID)
                     : nil,
                 open: { model.openDraft(draft.id) },

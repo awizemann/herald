@@ -112,8 +112,8 @@ import Testing
         #expect(remaining == [a.id])
 
         // Scoped purge: B's rows are gone, A's — in the same container — are not.
-        let purged = try await store.unreadCount(accountID: b.id, mailboxID: nil, folder: .inbox)
-        let kept = try await store.unreadCount(accountID: a.id, mailboxID: nil, folder: .inbox)
+        let purged = try await store.unreadCount(accountID: b.id, mailboxIDs: nil, folder: .inbox)
+        let kept = try await store.unreadCount(accountID: a.id, mailboxIDs: nil, folder: .inbox)
         #expect(purged == 0)
         #expect(kept == 1)
 

@@ -229,7 +229,7 @@ struct OfflineAttachmentTests {
 
         // No detail was seeded on the fake, so `GET /messages/{id}` fails —
         // exactly the offline case.
-        model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        model.showListing(mailboxID: "mbA", folder: .inbox)
         await model.start()
         model.selectedThreadID = "t1"
 
@@ -272,7 +272,7 @@ struct OfflineAttachmentTests {
         )
         await api.setDetailError(.decoding)
 
-        model.selection = .init(mailboxID: "mbA", folder: .inbox)
+        model.showListing(mailboxID: "mbA", folder: .inbox)
         await model.start()
         model.selectedThreadID = "t1"
 

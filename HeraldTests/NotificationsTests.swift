@@ -162,13 +162,13 @@ struct NewMailWiringTests {
 
         // Put the UI as far from the banner's thread as the user can: another
         // folder, and a search that matches nothing.
-        model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .archived)
+        model.showListing(mailboxID: "mbA", folder: .archived)
         model.searchQuery = "zzz"
-        model.showDrafts(true)
+        model.selectFolder(.drafts)
 
         await model.revealConversation(threadID: "t1")
 
-        #expect(model.selection == MailViewModel.FolderSelection(mailboxID: nil, folder: .inbox))
+        #expect(model.location == .launchDefault)
         #expect(model.searchQuery.isEmpty)
         #expect(!model.isShowingDrafts)
         #expect(model.selectedThreadID == "t1")

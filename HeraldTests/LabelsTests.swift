@@ -78,46 +78,60 @@ private struct LabelHarness {
 
 @Suite @MainActor
 struct LabelsTests {
-    /// Fails if a label is modelled as a folder selection. It cannot be: a label
-    /// spans every folder at once, so `ConversationFolder` has nowhere to put it
-    /// and the sidebar item has to carry the label id itself.
-    @Test("The sidebar's label item maps onto the label listing, not onto a folder")
-    func sidebarItemRoundTrips() async throws {
+    /// Fails if opening a label moves the folder or the scope (it is a third,
+    /// independent axis), or if clicking the open label again does not close it
+    /// — the design's "reselect clears".
+    @Test("Opening a label keeps the folder; opening it again closes it")
+    func openingALabelIsItsOwnAxis() async throws {
         let harness = try await LabelHarness.make()
         try await harness.seed()
         await harness.model.reloadLabels()
+        harness.model.showListing(mailboxID: "mbA", folder: .archived)
 
-        harness.model.sidebarItem = .label("lbl_1")
+        harness.model.openLabel("lbl_1")
         #expect(harness.model.selectedLabelID == "lbl_1")
-        #expect(harness.model.sidebarItem == .label("lbl_1"))
+        #expect(harness.model.folder == .conversation(.archived))
+        #expect(harness.model.scope == .mailbox("mbA"))
         #expect(harness.model.scopeTitle == "Billing")
 
-        harness.model.sidebarItem = .folder(.init(mailboxID: nil, folder: .inbox))
+        harness.model.openLabel("lbl_1")
         #expect(harness.model.selectedLabelID == nil)
-        #expect(harness.model.sidebarItem == .folder(.init(mailboxID: nil, folder: .inbox)))
+        #expect(harness.model.folder == .conversation(.archived))
+
+        // Today's sidebar: a folder row is picked INSTEAD of the label.
+        harness.model.openLabel("lbl_1")
+        harness.model.selectFolder(.inbox, clearingLabel: true)
+        #expect(harness.model.selectedLabelID == nil)
+        #expect(harness.model.folder == .inbox)
     }
 
-    /// Fails if the folder presentation rule is applied to a label listing: the
-    /// rule hides archived and trashed rows outside their own folders, which is
-    /// most of what a label listing is for.
-    @Test("A label lists across folders; the folder filter does not apply to it")
-    func labelListingIsNotFolderFiltered() async throws {
+    /// Fails if a label still lists across every folder (the pre-redesign
+    /// behaviour) or if changing folder drops the label: the list is folder ∩
+    /// label, and the label survives the folder change.
+    @Test("A label narrows the folder listing, and survives a folder change")
+    func labelListingIsFolderIntersectLabel() async throws {
         let harness = try await LabelHarness.make()
         try await harness.seed()
         await harness.model.reloadLabels()
 
-        // The inbox does NOT show the archived thread…
         await harness.model.reloadConversations()
         #expect(harness.model.presentedConversations.map(\.id) == ["thr_inbox"])
 
-        // …but the label it carries does.
-        harness.model.showLabel("lbl_1")
+        // lbl_1 is only on the ARCHIVED thread, so Inbox ∩ lbl_1 is empty…
+        harness.model.openLabel("lbl_1")
         await harness.model.reloadTask?.value
-        #expect(harness.model.presentedConversations.map(\.id) == ["thr_archived"])
+        #expect(harness.model.presentedConversations.isEmpty)
         #expect(
             await harness.sync.labelRefreshCount == 1,
             "opening a label asks for a fresh sweep, like opening Drafts asks for drafts"
         )
+
+        // …and Archived ∩ lbl_1 is the archived thread, with the label kept.
+        harness.model.selectFolder(.conversation(.archived))
+        await harness.model.reloadTask?.value
+        #expect(harness.model.selectedLabelID == "lbl_1")
+        #expect(harness.model.presentedConversations.map(\.id) == ["thr_archived"])
+        #expect(await harness.sync.labelRefreshCount == 1, "a folder change inside a label is not a new label")
     }
 
     /// Fails if the chips are read per row from the store, or if two rows with
@@ -200,7 +214,7 @@ struct LabelsTests {
         let harness = try await LabelHarness.make()
         try await harness.seed()
         await harness.model.reloadLabels()
-        harness.model.showLabel("lbl_1")
+        harness.model.openLabel("lbl_1")
         await harness.model.reloadTask?.value
 
         try await harness.store.replaceLabels(
@@ -287,7 +301,7 @@ struct LabelsTests {
 
         // Inside one: the rows ARE the membership, so the listing reloads — and
         // that reload is the index rebuild, not an extra one on top of it.
-        harness.model.showLabel("lbl_1")
+        harness.model.openLabel("lbl_1")
         await harness.model.reloadTask?.value
         indexBaseline = harness.model.labelIndexReloadCount
         rowBaseline = harness.model.conversationReloadCount
@@ -298,8 +312,8 @@ struct LabelsTests {
             "the listing reload IS the index rebuild; a second one is wasted work"
         )
         #expect(
-            harness.model.presentedConversations.map(\.id).sorted() == ["thr_archived", "thr_inbox"],
-            "and the thread that just gained the label appears in it"
+            harness.model.presentedConversations.map(\.id) == ["thr_inbox"],
+            "and the inbox thread that just gained the label appears in Inbox ∩ label"
         )
     }
 
@@ -328,12 +342,12 @@ struct LabelsTests {
 
         // …but a label LISTING open outranks that: the rows on screen ARE the
         // membership, so it stays visible even while the app is not frontmost.
-        harness.model.showLabel("lbl_1")
+        harness.model.openLabel("lbl_1")
         await harness.model.reloadTask?.value
         #expect(await harness.sync.labelSurfaceVisibility == [true, false, true])
 
         // Leaving the listing while still backgrounded turns it off again.
-        harness.model.showLabel(nil)
+        harness.model.clearLabel()
         await harness.model.reloadTask?.value
         #expect(await harness.sync.labelSurfaceVisibility == [true, false, true, false])
 
@@ -455,7 +469,7 @@ struct LabelsTests {
             [MailFixtures.detail(latest), MailFixtures.detail(older)], forMessage: "m9"
         )
 
-        harness.model.selection = MailViewModel.FolderSelection(mailboxID: "mbA", folder: .inbox)
+        harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         harness.model.searchQuery = "zulu"
         harness.model.submitSearch()
         await harness.model.serverSearchTask?.value

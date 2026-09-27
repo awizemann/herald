@@ -23,92 +23,35 @@ extension MailViewModel {
     var scopeTitle: String {
         if isShowingDrafts { return MailTheme.draftsTitle }
         if let label = selectedLabel { return label.name }
-        return MailTheme.title(for: selection.folder)
+        return location.folder.conversationFolder.map(MailTheme.title(for:)) ?? MailTheme.draftsTitle
     }
 
-    /// The sidebar's selection, mapped onto the two pieces of state that actually
-    /// drive the UI. A computed binding rather than a stored `SidebarItem`, so
-    /// ``selection`` stays the single source of the conversation scope and nothing
-    /// downstream has to learn about drafts.
-    var sidebarItem: SidebarItem {
-        get {
-            if isShowingDrafts { return .drafts }
-            if let selectedLabelID { return .label(selectedLabelID) }
-            return .folder(selection)
-        }
-        set {
-            // Every write to this comes from the sidebar's `List(selection:)`.
-            pendingNavigationSource = .sidebar
-            switch newValue {
-            case .drafts:
-                showLabel(nil)
-                pendingNavigationSource = .sidebar
-                showDrafts(true)
-            case .label(let labelID):
-                showLabel(labelID)
-            case .folder(let scope):
-                // FIRST, and unconditionally: leaving a label listing for the
-                // folder that is ALREADY in `selection` changes nothing below —
-                // the `didSet` sees no change and never reloads — so the label's
-                // rows would stay on screen under a folder row. `showLabel(nil)`
-                // reloads the folder scope itself, and is a no-op otherwise.
-                showLabel(nil)
-                pendingNavigationSource = .sidebar
-                // Leaving Drafts for the folder that is ALREADY selected is a
-                // real navigation and reports itself here; `selection` then sees
-                // no change and stays quiet. Leaving it for a DIFFERENT folder
-                // must stay silent, or the old folder — the one being left — is
-                // reported as a view that was never shown, ahead of the real
-                // destination `selection` is about to report.
-                showDrafts(false, silently: scope != selection)
-                pendingNavigationSource = .sidebar
-                selection = scope
-                pendingNavigationSource = nil
-            }
-        }
-    }
-
-    /// Enters or leaves the Drafts folder.
-    ///
-    /// Entering asks the engine for a fresh drafts list: the drafts poll runs on
-    /// its own slow interval precisely because nobody is usually looking, and
-    /// this is the moment somebody is.
-    /// - Parameter silently: suppresses the `view_shown` event, for callers that
-    ///   are only passing THROUGH the drafts flag on their way somewhere they
-    ///   report themselves (``revealConversation(threadID:)``).
-    func showDrafts(_ showing: Bool, silently: Bool = false) {
-        guard showing != isShowingDrafts else { return }
-        isShowingDrafts = showing
-        if !silently {
-            recordViewShown(
-                showing ? .drafts : Self.viewKind(for: selection.folder),
-                via: takeNavigationSource()
-            )
-        }
-        guard showing else { return }
-        // Leaving a drilled-in thread behind would draw the thread pane over the
-        // drafts list, since both live in the middle column. Silently: the view
-        // being shown is the drafts list, already reported above.
-        leaveThreadSilently()
-        selectedDraftID = nil
-        // Owned, and cancelled by `stop()`: an unstructured `Task` here outlives
-        // the account graph that spawned it, and a signed-out account's view-model
-        // must not be still loading rows behind the purge.
-        draftTask?.cancel()
-        draftTask = Task { [weak self] in
-            await self?.reloadDrafts()
-            await self?.sync?.refreshDraftsNow()
-        }
-    }
+    // Entering and leaving Drafts is a folder change like any other — see
+    // `navigate(to:reportsView:)`, which also asks the engine for a fresh
+    // drafts list on the way in.
 
     // MARK: - Loads
 
+    /// Reloads the drafts list and its badge for the CURRENT scope.
+    ///
+    /// Only the widest scope, All domains, lists drafts tied to no mailbox:
+    /// nothing narrower can claim them. A domain or a mailbox lists only its
+    /// own mailboxes' drafts.
     func reloadDrafts() async {
         draftReloadCount += 1
+        let scope = location.scope
+        let mailboxIDs = mailboxIDs(for: scope)
+        let includingUnassigned = scope == .allDomains
         do {
-            let rows = try await store.drafts(accountID: accountID)
-            let count = try await store.draftCount(accountID: accountID)
-            guard !Task.isCancelled else { return }
+            let rows = try await store.drafts(
+                accountID: accountID, mailboxIDs: mailboxIDs, includingUnassigned: includingUnassigned
+            )
+            let count = try await store.draftCount(
+                accountID: accountID, mailboxIDs: mailboxIDs, includingUnassigned: includingUnassigned
+            )
+            // The scope moved while this was in flight; the newer reload owns
+            // the list.
+            guard !Task.isCancelled, scope == location.scope else { return }
             drafts = rows
             draftCount = count
         } catch {

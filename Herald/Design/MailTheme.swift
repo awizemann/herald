@@ -48,7 +48,7 @@ enum MailTheme {
     /// Drafts is NOT here and cannot be: it is not a `ConversationFolder` at all
     /// (the conversation enum has `starred` where the message enum has `drafts`)
     /// and drafts are not messages. It is a special sidebar item — see
-    /// `MailViewModel.SidebarItem` — drawn from the two tokens below.
+    /// `MailViewModel.Folder.drafts` — drawn from the two tokens below.
     static let sidebarFolders: [ConversationFolder] = [.inbox, .starred, .sent, .archived, .trash]
 
     /// The Drafts sidebar item. Its own tokens rather than a `title(for:)` case,

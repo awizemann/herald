@@ -33,8 +33,11 @@ nonisolated enum MailboxColorAssignment {
         "mailboxColor.\(accountID).\(mailboxID)"
     }
 
-    /// FNV-1a, 64-bit.
-    private static func stableHash(_ string: String) -> UInt64 {
+    /// FNV-1a, 64-bit. Internal (not `private`) so ``AccountTintAssignment``
+    /// reuses this exact implementation for account tints rather than forking
+    /// a second copy — the hash must produce identical results wherever it is
+    /// used, on every launch and every machine.
+    static func stableHash(_ string: String) -> UInt64 {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in string.utf8 {
             hash ^= UInt64(byte)

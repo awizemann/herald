@@ -141,6 +141,27 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Herald.app/Contents/MacOS/Herald"
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: YES
+  # XCUITest bundle for the Debug-only UI-test mode (`-HeraldUITest <scenario>`, see
+  # Herald/UITestSupport). Runs ONLY from its own `HeraldUITests` scheme (scripts/ui-tests.sh):
+  # it drives the real mouse/keyboard, so it must never ride along with `-scheme Herald test`.
+  # `AccessibilityID.swift` is compiled into both targets — a UI-test bundle cannot import
+  # the app module, and one file keeps the identifier strings in sync.
+  HeraldUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: HeraldUITests
+      - path: Herald/Support/AccessibilityID.swift
+    dependencies:
+      - target: Herald
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wizemann.herald.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Herald
+        # XCTest's overridable lifecycle is nonisolated; the test classes opt into
+        # @MainActor explicitly instead of inheriting the app's default isolation.
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
 
 schemes:
   Herald:
@@ -155,3 +176,14 @@ schemes:
       targets:
         - HeraldTests
         - package: HeraldKit/HeraldKitTests
+  # UI tests only — kept out of the `Herald` scheme so `xcodebuild -scheme Herald test`
+  # stays fast and never takes over the screen. Run with scripts/ui-tests.sh.
+  HeraldUITests:
+    build:
+      targets:
+        Herald: [test]
+        HeraldUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - HeraldUITests

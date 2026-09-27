@@ -102,6 +102,7 @@ struct MailWindow: View {
             isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })
         ) {
             Button("OK") { model.actionError = nil }
+                .accessibilityIdentifier(AccessibilityID.Alert.actionErrorOK)
         } message: {
             Text(model.actionError ?? "")
         }
@@ -117,6 +118,7 @@ struct MailWindow: View {
             )
         ) {
             Button("OK") { environment.signOutError = nil }
+                .accessibilityIdentifier(AccessibilityID.Alert.signOutFailedOK)
         } message: {
             Text(environment.signOutError ?? "")
         }
@@ -148,6 +150,7 @@ struct MailWindow: View {
                 Image(systemName: "square.and.pencil")
                     .iconButtonStyle("New Message")
             }
+            .accessibilityIdentifier(AccessibilityID.Toolbar.compose)
 
             // No keyboard shortcuts on these: Mail's muscle-memory `e` lives on
             // the conversation list, where it is scoped to that list's focus. As
@@ -164,6 +167,7 @@ struct MailWindow: View {
                 Image(systemName: "arrow.clockwise")
                     .iconButtonStyle("Refresh")
             }
+            .accessibilityIdentifier(AccessibilityID.Toolbar.refresh)
         }
     }
 
@@ -177,9 +181,11 @@ struct MailWindow: View {
             BannerView(
                 systemImage: "exclamationmark.triangle.fill",
                 tint: MailTheme.failure,
-                text: "Sync problem: \(message)"
+                text: "Sync problem: \(message)",
+                identifiers: (AccessibilityID.SyncFailedBanner.container, AccessibilityID.SyncFailedBanner.message)
             ) {
                 Button("Retry") { Task { await model.refresh() } }
+                    .accessibilityIdentifier(AccessibilityID.SyncFailedBanner.retry)
             }
         case .idle, .syncing:
             EmptyView()
@@ -212,7 +218,8 @@ struct ReauthBanner: View {
             systemImage: "lock.fill",
             tint: MailTheme.failure,
             text: Self.message(isReauthenticating: isReauthenticating),
-            detail: failureReason.map(Self.failureDetail)
+            detail: failureReason.map(Self.failureDetail),
+            identifiers: (AccessibilityID.ReauthBanner.container, AccessibilityID.ReauthBanner.message)
         ) {
             if isReauthenticating {
                 ProgressView()
@@ -230,8 +237,10 @@ struct ReauthBanner: View {
                 }
                 .accessibilityLabel("Cancel sign-in")
                 .accessibilityHint("Stops signing in. The Sign In button comes back.")
+                .accessibilityIdentifier(AccessibilityID.ReauthBanner.cancel)
             } else {
                 Button("Sign In") { Task { await environment.reauthenticate(accountID: accountID) } }
+                    .accessibilityIdentifier(AccessibilityID.ReauthBanner.signIn)
             }
         }
         // The banner appears BELOW the toolbar without taking focus, and an
@@ -327,6 +336,9 @@ struct BannerView<Actions: View>: View {
     /// An optional secondary line under ``text`` (the re-auth banner's reason
     /// the last attempt failed). Read together with the text as one element.
     var detail: String?
+    /// Accessibility identifiers for the banner (container) and its combined
+    /// text element — identifiers only, never spoken. See `AccessibilityID`.
+    var identifiers: (container: String, message: String)?
     @ViewBuilder var actions: Actions
 
     var body: some View {
@@ -350,6 +362,7 @@ struct BannerView<Actions: View>: View {
                 }
             }
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(identifiers?.message ?? "")
             Spacer()
             actions
         }
@@ -358,5 +371,6 @@ struct BannerView<Actions: View>: View {
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(identifiers?.container ?? "")
     }
 }

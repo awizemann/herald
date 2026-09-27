@@ -634,6 +634,7 @@ struct ConversationRow: View {
             )
             // The full date, not the "Tue" on screen: the short form is not a date.
             .accessibilityValue(RowDateFormatter.full(row.latest.displayDate))
+            .accessibilityIdentifier(AccessibilityID.MailList.rowPrefix + row.id)
 
             // Trailing column: star (and the open-thread chevron) on top, the
             // message count beneath — off the crowded first line, where it can

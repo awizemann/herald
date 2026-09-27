@@ -31,12 +31,14 @@ struct OnboardingView: View {
                 .focused($originFocused)
                 .onSubmit { signIn() }
                 .accessibilityLabel("Server address")
+                .accessibilityIdentifier(AccessibilityID.Onboarding.origin)
 
             if let message = environment.signInError {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(MailTheme.failure)
                     .frame(maxWidth: 380)
+                    .accessibilityIdentifier(AccessibilityID.Onboarding.error)
             }
 
             // Names the step a slow sign-in is on. A spinner alone cannot say
@@ -52,6 +54,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: 380)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Signing in. \(stage.message)")
+                .accessibilityIdentifier(AccessibilityID.Onboarding.progress)
             }
 
             HStack {
@@ -68,9 +71,11 @@ struct OnboardingView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityLabel("Cancel sign-in")
+                    .accessibilityIdentifier(AccessibilityID.Onboarding.cancel)
                 } else if isSheet {
                     Button("Cancel") { dismiss() }
                         .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier(AccessibilityID.Onboarding.cancel)
                 }
                 Button {
                     signIn()
@@ -84,6 +89,7 @@ struct OnboardingView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(origin == nil || environment.isSigningIn)
                 .accessibilityLabel(environment.isSigningIn ? "Signing in" : "Sign In")
+                .accessibilityIdentifier(AccessibilityID.Onboarding.signIn)
             }
         }
         .padding(MailTheme.Spacing.xxxl)

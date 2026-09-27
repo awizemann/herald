@@ -95,6 +95,7 @@ struct ComposeView: View {
                 .padding(MailTheme.Spacing.sm)
                 .frame(minHeight: 200)
                 .accessibilityLabel("Message body")
+                .accessibilityIdentifier(AccessibilityID.Compose.body)
             if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
             if model.showsSignaturePicker { signatureSection }
             if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
@@ -178,12 +179,14 @@ struct ComposeView: View {
             // went. The shortcut is deliberately NOT here — see `sendShortcut`.
             .help(model.sendHelp)
             .accessibilityHint(model.sendHoldReason ?? "")
+            .accessibilityIdentifier(AccessibilityID.Compose.send)
 
             Button { Task { await model.addAttachments() } } label: {
                 Image(systemName: "paperclip")
                     .iconButtonStyle("Attach File")
             }
             .buttonStyle(.borderless)
+            .accessibilityIdentifier(AccessibilityID.Compose.attach)
             .disabled(model.isBusy)
 
             Button { Task { await model.discard() } } label: {
@@ -191,6 +194,7 @@ struct ComposeView: View {
                     .iconButtonStyle("Delete Draft")
             }
             .buttonStyle(.borderless)
+            .accessibilityIdentifier(AccessibilityID.Compose.deleteDraft)
 
             Spacer()
 
@@ -200,6 +204,7 @@ struct ComposeView: View {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(model.busyDescription)
+                    .accessibilityIdentifier(AccessibilityID.Compose.busy)
             }
         }
         .padding(.horizontal, MailTheme.Spacing.md)
@@ -208,16 +213,17 @@ struct ComposeView: View {
 
     private var fields: some View {
         VStack(spacing: 0) {
-            addressField("To", text: $model.toText, field: .to)
+            addressField("To", text: $model.toText, field: .to, identifier: AccessibilityID.Compose.to)
             Divider()
-            addressField("Cc", text: $model.ccText, field: .cc)
+            addressField("Cc", text: $model.ccText, field: .cc, identifier: AccessibilityID.Compose.cc)
             Divider()
-            addressField("Bcc", text: $model.bccText, field: .bcc)
+            addressField("Bcc", text: $model.bccText, field: .bcc, identifier: AccessibilityID.Compose.bcc)
             Divider()
             LabeledField(label: "Subject") {
                 TextField("Subject", text: $model.subject)
                     .textFieldStyle(.plain)
                     .accessibilityLabel("Subject")
+                    .accessibilityIdentifier(AccessibilityID.Compose.subject)
             }
         }
     }
@@ -225,7 +231,8 @@ struct ComposeView: View {
     private func addressField(
         _ label: String,
         text: Binding<String>,
-        field: ComposeViewModel.Field
+        field: ComposeViewModel.Field,
+        identifier: String
     ) -> some View {
         let hint = model.hint(for: field)
         return LabeledField(label: label) {
@@ -237,6 +244,7 @@ struct ComposeView: View {
                     // separate element the user only met after leaving the field
                     // they had to go back and fix.
                     .accessibilityHint(hint ?? "")
+                    .accessibilityIdentifier(identifier)
                 if let hint {
                     Text(hint)
                         .font(.caption)
@@ -378,6 +386,7 @@ struct ComposeView: View {
                 }
             }
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(AccessibilityID.Compose.errorMessage)
             Spacer()
             signInControl
         }
@@ -397,6 +406,7 @@ struct ComposeView: View {
             Button("Sign In") { Task { await model.signIn() } }
                 .help("Sign in to this message’s account again")
                 .accessibilityHint("Opens the sign-in window. Your message stays here; press Send again afterwards.")
+                .accessibilityIdentifier(AccessibilityID.Compose.errorSignIn)
         case .inProgress:
             HStack(spacing: MailTheme.Spacing.xs) {
                 ProgressView().controlSize(.small).accessibilityHidden(true)
@@ -404,6 +414,7 @@ struct ComposeView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Signing in to this message’s account")
+            .accessibilityIdentifier(AccessibilityID.Compose.errorSigningIn)
         }
     }
 

@@ -106,6 +106,7 @@ struct SidebarView: View {
         // Voice Control nothing to say.
         .help("Choose which mailbox the folder list shows")
         .accessibilityLabel("Mailbox")
+        .accessibilityIdentifier(AccessibilityID.Sidebar.mailboxPicker)
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.bottom, MailTheme.Spacing.sm)
     }
@@ -140,6 +141,7 @@ struct SidebarView: View {
                 Text(model.accountLabel)
                     .font(.headline)
                     .lineLimit(1)
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.accountName)
                 SyncStatusLabel(
                     status: model.status,
                     lastSyncedAt: model.lastSyncedAt,
@@ -156,10 +158,12 @@ struct SidebarView: View {
             // button and Voice Control with nothing to say.
             Menu {
                 Button("Add Account…") { environment.presentsAddAccount = true }
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.addAccount)
                 Button("Sign Out", role: .destructive) {
                     // This account only — the others keep syncing.
                     Task { await environment.signOut(accountID: model.accountID) }
                 }
+                .accessibilityIdentifier(AccessibilityID.Sidebar.signOut)
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
@@ -169,6 +173,7 @@ struct SidebarView: View {
             .fixedSize()
             .help("Account options")
             .accessibilityLabel("Account options")
+            .accessibilityIdentifier(AccessibilityID.Sidebar.accountOptions)
         }
         .padding(.horizontal, MailTheme.Spacing.md)
         .padding(.vertical, MailTheme.Spacing.sm)
@@ -207,6 +212,7 @@ private struct AccountSwitcher: View {
             // pop-up button with nothing to announce.
             .help("Choose which account this window shows")
             .accessibilityLabel("Account")
+            .accessibilityIdentifier(AccessibilityID.Sidebar.accountSwitcher)
             .padding(.horizontal, MailTheme.Spacing.md)
             .padding(.bottom, MailTheme.Spacing.sm)
         }
@@ -285,6 +291,7 @@ struct SyncStatusLabel: View {
                             ? "Signing in is already in progress."
                             : "Opens the sign-in window for this account."
                     )
+                    .accessibilityIdentifier(AccessibilityID.Sidebar.statusSignIn)
             }
         }
         // The slot, not the text, owns the height: whatever is inside it, nothing
@@ -293,6 +300,7 @@ struct SyncStatusLabel: View {
         // Combined into one element while it is only text; a button stays its
         // own element so VoiceOver can find and press it.
         .accessibilityElement(children: affordance == .none ? .combine : .contain)
+        .accessibilityIdentifier(AccessibilityID.Sidebar.status)
     }
 
     private var statusText: some View {

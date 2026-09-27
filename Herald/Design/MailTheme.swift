@@ -2,18 +2,6 @@ import AppKit
 import HeraldKit
 import SwiftUI
 
-/// One entry of the mailbox colour palette: the token NAME is what is persisted
-/// and what VoiceOver says, the `Color` is only how it draws.
-nonisolated struct MailboxTint: Sendable, Hashable, Identifiable {
-    let name: String
-    let color: Color
-
-    var id: String { name }
-
-    /// Title-cased for the swatch's accessibility label and the picker row.
-    var displayName: String { name.capitalized }
-}
-
 /// The single source for folder symbols, colour tokens, type and the few
 /// shared metrics. Views never hardcode an SF Symbol name, a colour or a font.
 enum MailTheme {
@@ -208,35 +196,7 @@ enum MailTheme {
         static let chipBorder: Double = 0.55
     }
 
-    // MARK: Mailbox tints
-
-    /// The fixed mailbox palette, in assignment order. `NSColor.system*` rather
-    /// than `.blue`/`.teal`: the AppKit system colours are the ones that adapt to
-    /// dark mode and to Increase Contrast, which a chip drawn at 18% opacity
-    /// needs badly.
-    ///
-    /// Slated for removal in redesign phase R3b (per-mailbox colour is replaced
-    /// by the per-ACCOUNT ``accountTints``).
-    ///
-    /// ORDER IS PART OF THE CONTRACT: ``MailboxColorAssignment`` indexes into it
-    /// with a stable hash, so reordering repaints every mailbox that never got an
-    /// explicit override.
-    nonisolated static let mailboxPalette: [MailboxTint] = [
-        MailboxTint(name: "blue", color: SwiftUI.Color(nsColor: .systemBlue)),
-        MailboxTint(name: "teal", color: SwiftUI.Color(nsColor: .systemTeal)),
-        MailboxTint(name: "green", color: SwiftUI.Color(nsColor: .systemGreen)),
-        MailboxTint(name: "orange", color: SwiftUI.Color(nsColor: .systemOrange)),
-        MailboxTint(name: "pink", color: SwiftUI.Color(nsColor: .systemPink)),
-        MailboxTint(name: "purple", color: SwiftUI.Color(nsColor: .systemPurple)),
-        MailboxTint(name: "indigo", color: SwiftUI.Color(nsColor: .systemIndigo)),
-        MailboxTint(name: "brown", color: SwiftUI.Color(nsColor: .systemBrown)),
-    ]
-
-    /// The tint for a palette token name, or `nil` for a name outside the palette
-    /// (a stale override written by an older build).
-    nonisolated static func mailboxTint(named name: String) -> MailboxTint? {
-        mailboxPalette.first { $0.name == name }
-    }
+    // MARK: Chips
 
     /// How strongly a chip's tint fills its background (``Wash/chipFill``).
     nonisolated static let mailboxChipFillOpacity: Double = Wash.chipFill

@@ -21,6 +21,23 @@ import Testing
         #expect(first == second)
     }
 
+    /// Fails if the hash is swapped for `hashValue` (seeded per process, so
+    /// every account would repaint on relaunch) or changed in any way while
+    /// moving it (R3b moved it out of the retired mailbox-colour type): a
+    /// same-process comparison cannot catch either, pinned literals can.
+    ///
+    /// The "a" value is NOT the textbook FNV-1a vector (`0xaf63dc4c8601ec8c`):
+    /// the multiplier Herald has always used is `0x1000_0000_01b3`, one hex
+    /// digit longer than the FNV prime. Pinned as-is — it is the contract the
+    /// stored defaults were derived under (see ``AccountTintAssignment/stableHash(_:)``).
+    @Test("The FNV-1a hash and the defaults it picks are pinned to literals")
+    func hashIsPinned() {
+        #expect(AccountTintAssignment.stableHash("") == 0xcbf2_9ce4_8422_2325)
+        #expect(AccountTintAssignment.stableHash("a") == 0xaf74_d84c_8601_ec8c)
+        #expect(AccountTintAssignment.defaultToken(forAccountID: "https://hqbase.example.com") == "sage")
+        #expect(AccountTintAssignment.defaultToken(forAccountID: "https://mail.example") == "dusk")
+    }
+
     @Test("Different account ids can (and, over the fixed 8-token set, generally do) land on different defaults")
     func differentAccountsCanDifferentiate() {
         let tokens = Set((0..<32).map { AccountTintAssignment.defaultToken(forAccountID: "account-\($0)") })

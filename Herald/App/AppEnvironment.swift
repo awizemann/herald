@@ -397,15 +397,17 @@ final class AppEnvironment {
         return "Sign Out of \(label)"
     }
 
-    /// Inbox unread for one account, whether or not it is the selected one.
+    /// Inbox unread for one account, whether or not it is the selected one —
+    /// its "All domains" count, so the account list agrees with the sidebar.
     func unreadCount(forAccount id: Account.ID) -> Int {
-        graphs[id]?.mail.pickerUnread(forMailbox: nil) ?? 0
+        graphs[id]?.mail.allDomainsInboxUnread ?? 0
     }
 
-    /// Unread across ALL accounts — the inbox count of every signed-in account,
-    /// which is what a Dock badge would show.
+    /// The Dock badge's number: every signed-in account's badge share
+    /// (`MailViewModel.badgeInboxUnread` — Inbox unread minus the domains that
+    /// are hidden or switched out of the badge), summed.
     var totalUnreadCount: Int {
-        accountIDs.reduce(0) { $0 + (graphs[$1]?.mail.pickerUnread(forMailbox: nil) ?? 0) }
+        accountIDs.reduce(0) { $0 + (graphs[$1]?.mail.badgeInboxUnread ?? 0) }
     }
 
     // MARK: - Signature management
@@ -459,6 +461,9 @@ final class AppEnvironment {
     // MARK: - Launch
 
     func start() async {
+        // Per-mailbox colours are gone (redesign R3b); their stored overrides
+        // would otherwise sit in the defaults forever. Guarded to run once.
+        PreferenceHygiene.purgeLegacyMailboxColorsOnce(in: defaults)
         observeActivation()
         if routesNotificationClicks { installNotificationRouter() }
         phase = .openingCache

@@ -14,8 +14,10 @@ import Testing
 /// One inbox thread per mailbox (`t_sales`, `t_team`, `t_ops`), one archived
 /// thread in `mbSales` (`t_sales_arch`), and label `lbl_client` on `t_sales`,
 /// `t_ops` and `t_sales_arch`.
+///
+/// Internal, not private: `DomainEffectsTests` (R3b) reuses the same fixture.
 @MainActor
-private struct ScopeHarness {
+struct ScopeHarness {
     let store: MailStore
     let api: FakeMailAPIClient
     let defaults: UserDefaults
@@ -224,7 +226,8 @@ struct ScopeFolderLabelTests {
         await harness.model.reloadConversations()
         #expect(harness.listed == ["t_sales", "t_team"])
         #expect(harness.model.folderUnreadCounts[.inbox] == 2, "the folder badge counts the same set")
-        #expect(harness.model.pickerUnread(forMailbox: nil) == 3, "the account-wide total is not a scope")
+        #expect(harness.model.allDomainsInboxUnread == 2, "the All domains count leaves the excluded domain out")
+        #expect(harness.model.badgeInboxUnread == 3, "includeInAll does not touch the Dock badge")
         // The excluded domain is still reachable on its own.
         #expect(harness.model.mailboxIDs(for: .domain(ScopeHarness.north)) == ["mbOps"])
 

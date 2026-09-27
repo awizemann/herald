@@ -61,6 +61,18 @@ public actor NewMailNotifier {
         message.direction == .inbound && message.isUnread && message.folder == .inbox
     }
 
+    /// Whether the user silenced the mailbox a message landed in — a domain
+    /// they hid, or one whose own "Notify me about new mail" is off. The app
+    /// resolves which mailboxes those are (the per-domain preferences are
+    /// Herald-only, app-target state); this side only honours the answer.
+    ///
+    /// A message with no mailbox, or one the caller did not name, is NOT
+    /// silenced: it follows the global setting like every other arrival.
+    public nonisolated static func isSilenced(_ message: MessageSummary, silencedMailboxIDs: Set<String>) -> Bool {
+        guard let mailboxID = message.mailboxID else { return false }
+        return silencedMailboxIDs.contains(mailboxID)
+    }
+
     /// The pure half: candidates in, banners out. Empty means "say nothing".
     ///
     /// Up to `coalesceThreshold` arrivals each get their own banner (so a click
@@ -125,7 +137,17 @@ public actor NewMailNotifier {
     // MARK: - Driving
 
     /// Called for every `.changed` event of an account whose notifications are on.
-    public func handle(_ changes: ChangeSet, accountID: String, accountLabel: String) async {
+    ///
+    /// - Parameter silencedMailboxIDs: mailboxes whose arrivals must stay silent
+    ///   this pass (see ``isSilenced(_:silencedMailboxIDs:)``). Passed per pass,
+    ///   not held, so a preference flipped in Settings applies to the very next
+    ///   poll.
+    public func handle(
+        _ changes: ChangeSet,
+        accountID: String,
+        accountLabel: String,
+        silencedMailboxIDs: Set<String> = []
+    ) async {
         // A bootstrap reports the whole existing mailbox as inserted; an update is
         // a state change (read, starred, moved), never an arrival.
         guard !changes.isBootstrap, !changes.inserted.isEmpty else { return }
@@ -148,6 +170,13 @@ public actor NewMailNotifier {
             // Not a message id at all (a mailbox row, a conversation row) — the
             // ChangeSet mixes every kind of row it touched.
             guard let message, Self.isNotifiable(message) else { continue }
+            if Self.isSilenced(message, silencedMailboxIDs: silencedMailboxIDs) {
+                // Considered and deliberately silent: remembered, so turning the
+                // domain's notifications back on later cannot announce mail
+                // that arrived while it was off when a later pass re-upserts it.
+                remember(message.id)
+                continue
+            }
             candidates.append(message)
         }
         guard !candidates.isEmpty else { return }

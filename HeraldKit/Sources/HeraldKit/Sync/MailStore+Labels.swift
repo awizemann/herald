@@ -264,7 +264,7 @@ extension MailStore {
         /// thread id → the label ids on any of its messages.
         public let idsByThread: [String: Set<String>]
         /// label id → how many CACHED conversations carry it. See
-        /// ``MailStore/labelIndex(accountID:)`` for why it is not a row count.
+        /// ``MailStore/labelIndex(accountID:folder:mailboxIDs:)`` for why it is not a row count.
         public let threadCounts: [String: Int]
 
         public static let empty = LabelIndex(idsByThread: [:], threadCounts: [:])
@@ -298,7 +298,25 @@ extension MailStore {
     /// here touches a property outside the fetched set, which is the condition
     /// for a partially-materialised model to stay cheap: reading one that was NOT
     /// fetched faults the row in individually and turns the saving into an N+1.
-    public func labelIndex(accountID: String) throws -> LabelIndex {
+    ///
+    /// - Parameters:
+    ///   - folder: narrows the COUNTS (never `idsByThread`) to threads listed
+    ///     under one conversation folder — the redesign's "count = conversations
+    ///     in the current folder", matching the label ∩ folder listing. `nil`
+    ///     counts across every folder.
+    ///   - mailboxIDs: narrows the counts the same way to one scope's mailboxes;
+    ///     `nil` = every mailbox, an empty set = every count zero. Same contract
+    ///     as ``conversations(withLabel:accountID:folder:mailboxIDs:limit:)``.
+    ///
+    /// `idsByThread` stays account-wide on purpose: it feeds the row chips and
+    /// the server-search union, both of which can show a thread outside the
+    /// folder/scope the counts describe. The narrowing is a tighter predicate
+    /// on the SAME conversation walk, so it adds no query.
+    public func labelIndex(
+        accountID: String,
+        folder: ConversationFolder? = nil,
+        mailboxIDs: Set<String>? = nil
+    ) throws -> LabelIndex {
         do {
             var assignments = FetchDescriptor<CachedLabelAssignment>(
                 predicate: #Predicate { $0.accountID == accountID }
@@ -310,16 +328,20 @@ extension MailStore {
             }
             guard !idsByThread.isEmpty else { return .empty }
 
-            var conversations = FetchDescriptor<CachedConversation>(
-                predicate: #Predicate { $0.accountID == accountID }
-            )
-            conversations.propertiesToFetch = [\.threadID]
             // A thread legitimately has a row per listing scope, so this is a SET
             // of ids and the count below is per distinct thread, matching the
             // listing's own dedup.
             var cachedThreads: Set<String> = []
-            try modelContext.enumerate(conversations, batchSize: Self.labelFetchBatchSize) { row in
-                cachedThreads.insert(row.threadID)
+            if mailboxIDs?.isEmpty != true {
+                var conversations = FetchDescriptor<CachedConversation>(
+                    predicate: Self.labelCountPredicate(accountID: accountID, folder: folder, mailboxIDs: mailboxIDs)
+                )
+                // The predicate's columns are evaluated by the store; only the
+                // thread id is read back, so it is the only one fetched.
+                conversations.propertiesToFetch = [\.threadID]
+                try modelContext.enumerate(conversations, batchSize: Self.labelFetchBatchSize) { row in
+                    cachedThreads.insert(row.threadID)
+                }
             }
 
             var threadCounts: [String: Int] = [:]
@@ -330,6 +352,29 @@ extension MailStore {
         } catch {
             logger.error("Label index fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
+        }
+    }
+
+    /// The conversation walk's predicate for ``labelIndex(accountID:folder:mailboxIDs:)``.
+    /// Spelled out per case for the same reason as ``labelListingPredicate``: a
+    /// captured `contains` is only bound when there is a set to bind, and a
+    /// non-nil `mailboxIDs` is never empty here — the caller answers that first.
+    private nonisolated static func labelCountPredicate(
+        accountID: String,
+        folder: ConversationFolder?,
+        mailboxIDs: Set<String>?
+    ) -> Predicate<CachedConversation> {
+        switch (folder?.rawValue, mailboxIDs) {
+        case (nil, nil):
+            return #Predicate { $0.accountID == accountID }
+        case (let listFolder?, nil):
+            return #Predicate { $0.accountID == accountID && $0.listFolder == listFolder }
+        case (nil, let mailboxIDs?):
+            return #Predicate { $0.accountID == accountID && mailboxIDs.contains($0.mailboxKey) }
+        case (let listFolder?, let mailboxIDs?):
+            return #Predicate {
+                $0.accountID == accountID && $0.listFolder == listFolder && mailboxIDs.contains($0.mailboxKey)
+            }
         }
     }
 

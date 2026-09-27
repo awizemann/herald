@@ -13,6 +13,8 @@ struct DraftListView: View {
     @Bindable var model: MailViewModel
 
     var body: some View {
+        // Once per pass, not per row: every attributed row draws the same tint.
+        let accountTint = model.accountTint
         List(model.drafts, selection: $model.selectedDraftID) { draft in
             DraftRow(
                 draft: draft,
@@ -21,9 +23,7 @@ struct DraftListView: View {
                 mailboxName: model.attributesRowsToMailbox
                     ? model.mailboxName(for: draft.mailboxID)
                     : nil,
-                mailboxTint: model.attributesRowsToMailbox
-                    ? model.mailboxTint(for: draft.mailboxID)
-                    : nil,
+                mailboxTint: model.attributesRowsToMailbox ? accountTint : nil,
                 open: { model.openDraft(draft.id) },
                 delete: { Task { await model.deleteDraft(draft.id) } }
             )
@@ -72,7 +72,7 @@ struct DraftListView: View {
 struct DraftRow: View {
     let draft: DraftSummary
     let mailboxName: String?
-    let mailboxTint: MailboxTint?
+    let mailboxTint: MailTheme.AccountTint?
     let open: () -> Void
     let delete: () -> Void
 

@@ -760,7 +760,12 @@ extension AppEnvironment {
         }
         // Signing the same origin back in during the revoke round trip would
         // otherwise have its freshly synced rows deleted underneath it.
-        guard graphs[accountID] == nil, let store else { return }
+        guard graphs[accountID] == nil else { return }
+        // Same guard, same reason, for the Herald-only preferences (domain
+        // settings, saved navigation, tint): a sign-in that raced in keeps
+        // them; otherwise the next sign-in starts as clean as a first one.
+        PreferenceHygiene.purgeAccount(accountID, from: defaults)
+        guard let store else { return }
         do {
             // Scoped to this account: the other accounts' rows share the
             // container and must survive.

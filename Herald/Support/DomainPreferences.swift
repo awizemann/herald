@@ -2,7 +2,7 @@ import Foundation
 
 /// Herald-only, per-(account, domain) preferences — nothing here is server
 /// state, so it lives entirely in `UserDefaults`, following the same injected-
-/// `defaults` pattern as ``NotificationSettings``/``MailboxColorAssignment``
+/// `defaults` pattern as ``NotificationSettings``/``AccountTintAssignment``
 /// rather than reaching for `.standard` directly (tests use `ScratchDefaults`).
 ///
 /// A value-type API (read/write pairs of `static func`s, not a stored object)

@@ -244,9 +244,14 @@ struct LabelsTests {
         await harness.model.reloadLabels()
         await harness.model.reloadLabelIndex()
 
-        #expect(harness.model.labelThreadCounts == ["lbl_1": 1, "lbl_2": 2])
-        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1)
-        #expect(harness.model.threadCount(forLabel: "lbl_2") == 2)
+        // Counted within the current folder (R3b) — the model sits on Inbox,
+        // where only `thr_inbox` is listed.
+        #expect(harness.model.labelThreadCounts == ["lbl_2": 1])
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 0)
+        #expect(harness.model.threadCount(forLabel: "lbl_2") == 1)
+        harness.model.showListing(mailboxID: nil, folder: .archived)
+        await harness.model.reloadTask?.value
+        #expect(harness.model.labelThreadCounts == ["lbl_1": 1, "lbl_2": 1])
         // A label the workspace has but nobody has used reads zero, not nil.
         try await harness.store.replaceLabels(
             [
@@ -269,13 +274,14 @@ struct LabelsTests {
         try await harness.seed()
         await harness.model.reloadLabels()
         await harness.model.reloadLabelIndex()
-        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1)
+        // On Inbox: lbl_1 sits on the ARCHIVED thread only, so it counts 0 here.
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 0)
 
         await harness.model.setLabel("lbl_1", onThread: "thr_inbox", assigned: true)
-        #expect(harness.model.threadCount(forLabel: "lbl_1") == 2, "the added thread is counted")
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1, "the added thread is counted")
 
         await harness.model.setLabel("lbl_1", onThread: "thr_inbox", assigned: false)
-        #expect(harness.model.threadCount(forLabel: "lbl_1") == 1, "and uncounted again")
+        #expect(harness.model.threadCount(forLabel: "lbl_1") == 0, "and uncounted again")
         #expect(harness.model.labels(forThread: "thr_inbox").isEmpty)
     }
 

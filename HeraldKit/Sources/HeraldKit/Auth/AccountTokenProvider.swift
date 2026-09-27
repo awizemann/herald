@@ -101,7 +101,9 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// What a refresh produced, and whether THIS provider minted it (spent the
     /// refresh token at the token endpoint) rather than adopting a grant that
     /// was already in the store.
-    private typealias RefreshResult = (tokens: OAuthTokens, mintedHere: Bool)
+    /// `unpersistedOver`: set when the tokens were minted here but the store
+    /// refused them — the refresh token the store still holds (``unpersisted``).
+    private typealias RefreshResult = (tokens: OAuthTokens, mintedHere: Bool, unpersistedOver: String?)
 
     /// Grants this provider rotated by itself: old grant key → the key it was
     /// rotated to. What lets ``SessionDeath/isCurrent()`` tell this process's
@@ -159,6 +161,32 @@ public actor AccountTokenProvider: BearerTokenProvider {
     /// possible grant key: real refresh and access tokens are never empty.
     private static let emptyStoreKey = ""
 
+    /// A refresh this provider MINTED whose tokens the store refused to keep
+    /// (audit F1, residual): the token endpoint answered 200, so `spent` —
+    /// the refresh token the store still holds — is rotated away server-side,
+    /// and `fresh` is the only live copy of the grant.
+    ///
+    /// Held in memory rather than dropped, or the next call would re-read
+    /// `spent` and replay it (family invalidation past HQBase's reuse window —
+    /// a transient Keychain failure turned into a sign-in). Every call first
+    /// retries the write (compare-and-set against `spent`, so the multi-process
+    /// rule is unchanged: the store stays the arbiter); ``resolveStored(_:)``.
+    /// Dropped the moment the store holds anything but `spent` (another
+    /// process rotated, a sign-in or sign-out landed) — the store's word wins.
+    /// While the write keeps failing `fresh` is served as long as its access
+    /// token is valid, and NEVER refreshed: a refresh's result could not be
+    /// recorded either, and the loss would compound.
+    private var unpersisted: (spent: String, fresh: OAuthTokens)?
+
+    /// What ``resolveStored(_:)`` found.
+    private enum Resolved {
+        /// Act on the store's tokens, as always.
+        case stored(OAuthTokens?)
+        /// The store still cannot keep an unpersisted refresh: act on `fresh`
+        /// in memory, without refreshing.
+        case unpersisted(OAuthTokens)
+    }
+
     public init(
         accountID: Account.ID,
         store: any AccountStore,
@@ -213,7 +241,16 @@ public actor AccountTokenProvider: BearerTokenProvider {
     public func accessToken() async throws -> String {
         // This read and the `refreshTask` check below happen with no suspension in
         // between, so a caller either starts the refresh or joins the existing one.
-        let stored = try store.tokens(for: accountID)
+        let stored: OAuthTokens?
+        switch try resolveStored(store.tokens(for: accountID)) {
+        case .stored(let tokens):
+            stored = tokens
+        case .unpersisted(let fresh):
+            observe(fresh)
+            try await checkLatch(against: fresh)
+            guard fresh.isUsable(at: now(), leeway: 0) else { throw Self.unpersistedGrantExpired }
+            return fresh.accessToken
+        }
         observe(stored)
         try await checkLatch(against: stored)
         if let stored, stored.isUsable(at: now(), leeway: refreshLeeway) { return stored.accessToken }
@@ -221,7 +258,19 @@ public actor AccountTokenProvider: BearerTokenProvider {
     }
 
     public func refreshAccessToken(failedToken: String) async throws -> String {
-        let stored = try store.tokens(for: accountID)
+        let stored: OAuthTokens?
+        switch try resolveStored(store.tokens(for: accountID)) {
+        case .stored(let tokens):
+            stored = tokens
+        case .unpersisted(let fresh):
+            observe(fresh)
+            try await checkLatch(against: fresh)
+            if fresh.accessToken != failedToken, fresh.isUsable(at: now(), leeway: 0) { return fresh.accessToken }
+            // Refreshing would spend the only live copy of the grant with
+            // nowhere to record what comes back. Retryable: the next call
+            // retries the write first.
+            throw Self.unpersistedGrantExpired
+        }
         // Before the stale-401 shortcut too: a latched grant's access token is
         // dead however recently it was minted.
         observe(stored)
@@ -248,7 +297,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
     public func sessionRejected(token: String) async {
         let stored: OAuthTokens?
         do {
-            stored = try store.tokens(for: accountID)
+            stored = try effective(store.tokens(for: accountID))
         } catch {
             // Cannot tell which grant is live, so latch nothing. Not a storm
             // risk: an unreadable store also aborts every refresh.
@@ -317,7 +366,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
     public func deathOfStoredGrant() -> SessionDeath? {
         let stored: OAuthTokens?
         do {
-            stored = try store.tokens(for: accountID)
+            stored = try effective(store.tokens(for: accountID))
         } catch {
             logger.error("token store unreadable for \(self.accountID, privacy: .public); no grant marker")
             return nil
@@ -335,7 +384,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
     func isStillDead(grant: String?) -> Bool {
         let stored: OAuthTokens?
         do {
-            stored = try store.tokens(for: accountID)
+            stored = try effective(store.tokens(for: accountID))
         } catch {
             logger.error("token store unreadable for \(self.accountID, privacy: .public); treating the reported death as current")
             return true
@@ -387,6 +436,52 @@ public actor AccountTokenProvider: BearerTokenProvider {
         self.deadGrant = nil
     }
 
+    /// The grant this provider stands on, given a store read: the store's —
+    /// unless it still holds the refresh token an ``unpersisted`` refresh
+    /// spent, in which case the in-memory fresh tokens. Pure: for the paths
+    /// that only LOOK (latching, death markers); the request paths go through
+    /// ``resolveStored(_:)``, which also retries the write.
+    private func effective(_ stored: OAuthTokens?) -> OAuthTokens? {
+        guard let pending = unpersisted, let stored, stored.refreshToken == pending.spent else { return stored }
+        return pending.fresh
+    }
+
+    /// Settles an ``unpersisted`` refresh against a fresh store read: dropped
+    /// if the store has moved on, written (compare-and-set against the spent
+    /// token) if it has not. Synchronous — callers keep their "read, then
+    /// decide" free of suspensions.
+    private func resolveStored(_ stored: OAuthTokens?) throws -> Resolved {
+        guard let pending = unpersisted else { return .stored(stored) }
+        guard let stored, stored.refreshToken == pending.spent else {
+            // Another process rotated, a sign-in wrote a new grant, or the
+            // account was signed out / its grant cleared: the store is the arbiter.
+            logger.warning("the store moved past an unpersisted refresh for \(self.accountID, privacy: .public); dropping it")
+            unpersisted = nil
+            return .stored(stored)
+        }
+        do {
+            let written = try store.setTokens(pending.fresh, for: accountID, ifRefreshTokenIs: pending.spent)
+            unpersisted = nil
+            if written {
+                logger.info("persisted the refreshed tokens for \(self.accountID, privacy: .public) on retry")
+                return .stored(pending.fresh)
+            }
+            // Lost the compare-and-set between the read and the write.
+            return .stored(try store.tokens(for: accountID))
+        } catch {
+            logger.error("still cannot persist the refreshed tokens for \(self.accountID, privacy: .public); serving them from memory")
+            return .unpersisted(pending.fresh)
+        }
+    }
+
+    /// Thrown instead of refreshing an ``unpersisted`` grant: retryable
+    /// (`.transport`), because the grant itself is fine — only the store is not.
+    private static var unpersistedGrantExpired: OAuthError {
+        OAuthError.transport(MailAPIError.TransportFailure(UnpersistedGrant()))
+    }
+
+    private struct UnpersistedGrant: Error {}
+
     /// Identifies a grant. The refresh token is what rotates with it; an access
     /// token stands in only for a grant that never had one.
     private nonisolated static func grantKey(_ tokens: OAuthTokens) -> String {
@@ -423,6 +518,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
         do {
             let result = try await task.value
             if result.mintedHere { recordRotation(from: stale, to: result.tokens) }
+            if let spent = result.unpersistedOver { unpersisted = (spent, result.tokens) }
             return result.tokens
         } catch OAuthError.reauthenticationRequired {
             // `performRefresh` throws this for an `invalid_grant` that was NOT
@@ -481,7 +577,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
             // the refresh rather than be retried into spending the grant blind.
             if let rotated = try rotatedTokens(past: sending) {
                 logger.warning("adopting externally rotated tokens for \(self.accountID, privacy: .public); refresh skipped")
-                return (rotated, false)
+                return (rotated, false, nil)
             }
             guard let refreshToken = sending.refreshToken else {
                 logger.warning("no refresh token for account \(self.accountID, privacy: .public)")
@@ -506,15 +602,16 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // A store error here must never reach the generic catch below,
                 // which would call it transport and loop back to spend that
                 // token again: a replay of a rotated token invalidates the whole
-                // family (logout). Serve `fresh` for this request without
-                // persisting it, like ``adoptingStoredTokens(overDiscarded:)``'s
-                // unreadable-store case, and let the next call re-read the store.
+                // family (logout). Serve `fresh`, and have the provider keep it
+                // in memory and retry the write on the next call (``unpersisted``)
+                // — re-reading the store would find the spent token again.
+                // Minted here: it IS this provider's own rotation (P9b lineage).
                 let persisted: Bool
                 do {
                     persisted = try store.setTokens(fresh, for: accountID, ifRefreshTokenIs: refreshToken)
                 } catch {
-                    logger.error("could not persist refreshed tokens for \(self.accountID, privacy: .public); using them once without persisting")
-                    return (fresh, false)
+                    logger.error("could not persist refreshed tokens for \(self.accountID, privacy: .public); keeping them in memory until the store takes them")
+                    return (fresh, true, refreshToken)
                 }
                 guard persisted else {
                     return adoptingStoredTokens(overDiscarded: fresh)
@@ -529,9 +626,9 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // `currentTokens`.
                 if let newer = try? rotatedTokens(past: fresh) {
                     logger.warning("newer tokens landed for \(self.accountID, privacy: .public); adopting them over ours")
-                    return (newer, false)
+                    return (newer, false, nil)
                 }
-                return (fresh, true)
+                return (fresh, true, nil)
             } catch OAuthError.unknownAccount {
                 // The origin was signed out since this provider was built (the
                 // coordinator's sign-out generation refused to resolve its
@@ -558,7 +655,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
                 // acting on a guess strands the other process too.
                 if let rotated = try tokens(replacing: refreshToken) {
                     logger.warning("refresh refusal for \(self.accountID, privacy: .public) was about a superseded grant; adopting the stored tokens")
-                    return (rotated, false)
+                    return (rotated, false, nil)
                 }
                 // Same grant, but was it sent as the account's CURRENT client? A
                 // re-registration landed while we were in flight (or between our
@@ -585,7 +682,7 @@ public actor AccountTokenProvider: BearerTokenProvider {
                         if try !store.setTokens(nil, for: accountID, ifRefreshTokenIs: refreshToken),
                            let rotated = try? tokens(replacing: refreshToken) {
                             logger.warning("a new grant landed for \(self.accountID, privacy: .public) while its dead one was being cleared; adopting it")
-                            return (rotated, false)
+                            return (rotated, false, nil)
                         }
                     } catch {
                         // Not fatal — the caller is being sent to re-auth either way —
@@ -650,10 +747,10 @@ public actor AccountTokenProvider: BearerTokenProvider {
     private nonisolated func adoptingStoredTokens(overDiscarded discarded: OAuthTokens) -> RefreshResult {
         if let stored = try? currentTokens() {
             logger.warning("a new grant landed for \(self.accountID, privacy: .public) while its refresh was in flight; discarding ours and adopting it")
-            return (stored, false)
+            return (stored, false, nil)
         }
         logger.warning("token store for \(self.accountID, privacy: .public) empty or unreadable after a refresh; using the refreshed token once without persisting it")
-        return (discarded, false)
+        return (discarded, false, nil)
     }
 
     /// The `client_id` a refresh is sent as: the account record's, read NOW

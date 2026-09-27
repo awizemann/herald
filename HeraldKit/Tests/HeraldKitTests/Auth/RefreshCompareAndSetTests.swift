@@ -133,6 +133,87 @@ import Testing
         #expect(try keychain.store.tokens(for: Self.accountID)?.refreshToken == "old-refresh")
     }
 
+    /// F1 residual: the fresh tokens a failed write could not keep are kept in
+    /// memory and written on the NEXT call. Fails if the provider forgets
+    /// them: the second call re-reads `old-refresh` (spent) and replays it —
+    /// `RotatingRefresher` answers `invalid_grant` and the account needs a
+    /// sign-in for a transient Keychain error.
+    @Test("an unpersisted refresh is written on the next call, never re-spent")
+    func anUnpersistedRefreshIsPersistedOnTheNextCall() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(Self.grant("old", expiresIn: -10), for: Self.accountID)
+        let store = FailingWriteStore(keychain.store, failingCompareAndSets: 1)
+        let refresher = RotatingRefresher()
+        let provider = AccountTokenProvider(accountID: Self.accountID, store: store, refresher: refresher)
+
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(refresher.sentTokens == ["old-refresh"], "the spent refresh token was replayed")
+        #expect(try keychain.store.tokens(for: Self.accountID)?.refreshToken == "refresh-1", "the retry did not persist")
+        // Settled: served from the store from now on.
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(refresher.callCount == 1)
+    }
+
+    /// While the store keeps refusing, the in-memory tokens are served as long
+    /// as they are valid — no network, the store untouched.
+    @Test("an unpersisted refresh is served from memory while the store keeps failing")
+    func anUnpersistedRefreshIsServedWhileTheStoreFails() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(Self.grant("old", expiresIn: -10), for: Self.accountID)
+        let store = FailingWriteStore(keychain.store, failingCompareAndSets: 10)
+        let refresher = RotatingRefresher()
+        let provider = AccountTokenProvider(accountID: Self.accountID, store: store, refresher: refresher)
+
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(try await provider.accessToken() == "access-1")
+        #expect(try await provider.refreshAccessToken(failedToken: "old-access") == "access-1")
+        #expect(refresher.callCount == 1)
+        #expect(store.failedCompareAndSets == 3, "each call must retry the write")
+        #expect(try keychain.store.tokens(for: Self.accountID)?.refreshToken == "old-refresh")
+    }
+
+    /// Never refreshed while unpersisted: a second rotation could not be
+    /// recorded either. Past its expiry the caller gets a retryable error and
+    /// nothing is spent. Fails if the expired in-memory grant falls through to
+    /// the refresh path (a second token-endpoint request).
+    @Test("an expired unpersisted refresh fails retryably without spending anything")
+    func anExpiredUnpersistedRefreshIsNotRefreshed() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(Self.grant("old", expiresIn: -10), for: Self.accountID)
+        let store = FailingWriteStore(keychain.store, failingCompareAndSets: 10)
+        let refresher = RotatingRefresher()
+        // Two hours on: `access-1` (an hour's lifetime) is already expired.
+        let later = Date().addingTimeInterval(7200)
+        let provider = AccountTokenProvider(accountID: Self.accountID, store: store, refresher: refresher, now: { later })
+
+        #expect(try await provider.accessToken() == "access-1")
+        await #expect(throws: OAuthError.self) { _ = try await provider.accessToken() }
+        await #expect(throws: OAuthError.self) { _ = try await provider.refreshAccessToken(failedToken: "access-1") }
+        #expect(refresher.sentTokens == ["old-refresh"], "an unpersisted grant was refreshed")
+    }
+
+    /// The store stays the arbiter: once it holds anything but the spent token
+    /// (a sign-in here, another process's rotation), the in-memory tokens are
+    /// dropped and never written over it.
+    @Test("a new grant in the store supersedes an unpersisted refresh")
+    func theStoreMovingOnDropsAnUnpersistedRefresh() async throws {
+        let keychain = SharedKeychain()
+        try keychain.seed(Self.grant("old", expiresIn: -10), for: Self.accountID)
+        let store = FailingWriteStore(keychain.store, failingCompareAndSets: 1)
+        let refresher = RotatingRefresher()
+        let provider = AccountTokenProvider(accountID: Self.accountID, store: store, refresher: refresher)
+
+        #expect(try await provider.accessToken() == "access-1")
+        let signedIn = Self.grant("signin")
+        try keychain.store.setTokens(signedIn, for: Self.accountID)
+
+        #expect(try await provider.accessToken() == "signin-access")
+        #expect(try keychain.store.tokens(for: Self.accountID) == signedIn, "the unpersisted refresh overwrote the new grant")
+        #expect(try await provider.accessToken() == "signin-access")
+        #expect(refresher.callCount == 1)
+    }
+
     /// The Keychain store's compare-and-set is atomic with its plain writes: a
     /// sign-in's write issued between the compare's read and its write waits
     /// for the lock and lands AFTER it. Fails if `setTokens` bypasses the lock

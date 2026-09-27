@@ -119,6 +119,29 @@ final class AppEnvironment {
     /// ``signInError`` instead, on the onboarding screen that is then showing.
     var signOutError: String?
 
+    // MARK: Settings window state (driven from `AppEnvironment+Settings.swift`)
+
+    /// Which page the Settings window shows. Here, not in the view, so a deep
+    /// link can set it before opening the window (`openSettings` takes no
+    /// argument) — see ``showSettings(_:accountID:open:)``.
+    var settingsRoute: SettingsRoute = .general
+    /// Bumped by every account-tint write. ``accountTintName(for:)`` reads it,
+    /// which is what makes a tint read through `UserDefaults` observable: every
+    /// avatar drawn from it repaints the moment Settings › Account changes it.
+    var accountTintRevision = 0
+    /// The account Settings › Account's "Sign Out…" asked about. Captured when
+    /// the dialog opens and never cleared by the answer, so the dialog's title
+    /// cannot re-read an emptied value while it animates out, and a Confirm
+    /// signs out THIS account even if the selection moved meanwhile.
+    var settingsSignOutPrompt: SettingsSignOutPrompt?
+    /// Drives the confirmation dialog's presentation — and nothing else: the
+    /// gate is ``armedSettingsSignOutID``, because SwiftUI may flip this back
+    /// to `false` before or after running the dialog button's action.
+    var isConfirmingSettingsSignOut = false
+    /// The one prompt a confirm may act on. Set by a request, consumed by the
+    /// confirm (so a second confirm does nothing) and by Cancel.
+    @ObservationIgnored var armedSettingsSignOutID: UUID?
+
     /// The launch's explanation when the saved account list is damaged (not
     /// JSON) and so restores nothing: without it the user was dropped on the
     /// onboarding screen with no word about the accounts they had. Same voice

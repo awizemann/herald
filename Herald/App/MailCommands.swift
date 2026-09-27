@@ -84,6 +84,7 @@ struct MailCommands: Commands {
     @FocusedValue(\.selectedIsUnread) private var selectedIsUnread: Bool?
     @FocusedValue(\.selectedIsStarred) private var selectedIsStarred: Bool?
     @FocusedValue(\.selectionFolder) private var selectionFolder: ConversationFolder?
+    @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
         // App menu → "Check for Updates…" directly under "About Herald" (Sparkle, t-8a1c0026).
@@ -168,6 +169,12 @@ struct MailCommands: Commands {
         }
 
         CommandGroup(replacing: .appSettings) {
+            // Replacing `.appSettings` withdraws SwiftUI's own "Settings…" item
+            // along with its ⌘,, so the item is re-added here — opening the
+            // window on whatever page it was last showing.
+            Button("Settings…") { openSettings() }
+                .keyboardShortcut(",", modifiers: .command)
+            Divider()
             Button("Add Account…") { environment.presentsAddAccount = true }
             // Names the account: with several signed in, an unqualified "Sign
             // Out" is ambiguous about which server it burns.

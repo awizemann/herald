@@ -51,7 +51,8 @@ struct ReadingPaneView: View {
                 labels: model.selectedMessageLabels,
                 mailboxAddress: model.selectedMessage.map {
                     ReadingPaneMailboxAddress.resolve(
-                        for: $0, mailboxes: model.mailboxes, accountID: model.accountID, in: model.defaults
+                        for: $0, mailboxes: model.mailboxes, accountID: model.accountID,
+                        tintName: model.accountTint?.name, in: model.defaults
                     )
                 }
             )
@@ -164,10 +165,14 @@ nonisolated enum ReadingPaneMailboxAddress {
         folder == .sent || folder == .drafts ? "From" : "To"
     }
 
+    /// `tintName` is the account's OBSERVED tint (`MailViewModel.accountTint`),
+    /// so the badge repaints when Settings changes it; `nil` falls back to
+    /// reading the override from `defaults`.
     static func resolve(
         for message: MessageSummary,
         mailboxes: [Mailbox],
         accountID: String,
+        tintName: String? = nil,
         in defaults: UserDefaults
     ) -> Info {
         let word = word(for: message.folder)
@@ -179,7 +184,11 @@ nonisolated enum ReadingPaneMailboxAddress {
         else {
             return Info(word: word, address: "No mailbox", badge: nil)
         }
-        let badge = DomainBadgeResolver.resolve(
+        let badge = tintName.map {
+            DomainBadgeResolver.resolve(
+                mailboxID: mailboxID, mailboxes: mailboxes, accountID: accountID, tintName: $0, in: defaults
+            )
+        } ?? DomainBadgeResolver.resolve(
             mailboxID: mailboxID, mailboxes: mailboxes, accountID: accountID, in: defaults
         )
         return Info(word: word, address: mailbox.address, badge: badge)

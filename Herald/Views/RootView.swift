@@ -75,8 +75,8 @@ struct MailWindow: View {
     /// Ideal column widths. Plain constants: the `@AppStorage` keys they replace
     /// were never written by anything, so they persisted nothing and only made
     /// the split view look restorable.
-    private static let sidebarWidth: Double = 240
-    private static let listWidth: Double = 340
+    private static let sidebarWidth: Double = 252
+    private static let listWidth: Double = 344
 
     var body: some View {
         // The status banner sits ABOVE the split view, not in a

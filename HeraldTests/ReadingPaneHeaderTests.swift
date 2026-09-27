@@ -131,6 +131,22 @@ struct ReadingPaneHeaderTests {
         #expect(info.badge?.monogram == "AC")
     }
 
+    @Test("A passed (observed) tint wins over whatever the defaults hold")
+    func passedTintWinsOverDefaults() {
+        let defaults = ScratchDefaults.make()
+        let stored = AccountTintAssignment.tokenNames[0]
+        let observed = AccountTintAssignment.tokenNames[1]
+        defaults.set(stored, forKey: AccountTintAssignment.storageKey(accountID: "acct"))
+        let mailboxes = [Self.mailbox(id: "mbx1", address: "sales@acme.co", mailDomainID: "dom-acme")]
+        let message = Self.message(id: "m1", mailboxID: "mbx1", folder: .inbox)
+        let info = ReadingPaneMailboxAddress.resolve(
+            for: message, mailboxes: mailboxes, accountID: "acct", tintName: observed, in: defaults
+        )
+        #expect(info.badge?.tintName == observed)
+        let fallback = ReadingPaneMailboxAddress.resolve(for: message, mailboxes: mailboxes, accountID: "acct", in: defaults)
+        #expect(fallback.badge?.tintName == stored)
+    }
+
     @Test("A Sent message resolves 'From' with the same owning-mailbox address")
     func sentMessageShowsFrom() {
         let defaults = ScratchDefaults.make()

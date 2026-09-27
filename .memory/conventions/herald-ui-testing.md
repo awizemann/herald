@@ -5,11 +5,11 @@ permalink: hqbase-mac/conventions/herald-ui-testing
 tags: [testing, uitest, xcuitest]
 source_paths: [Herald/UITestSupport, HeraldUITests, scripts/ui-tests.sh, scripts/verify-release-identity.sh, Herald/Support/AccessibilityID.swift, project.yml, HeraldTests/UITestHarnessTests.swift, HeraldTests/DebugIdentityTests.swift]
 source_paths_inferred: false
-source_sha: ed2278edf6151b3ae922b22fdc4854a1ec668ab5
+source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-09-27
 updated: 2026-09-27
 reviewed: 2026-09-27
-reviewed_by: claude-opus-5-5
+reviewed_by: audit:claude-code (background)
 ---
 
 Current-state knowledge of Herald's XCUITest suite (scheme `HeraldUITests`) and the Debug-only UI-test harness it drives. General unit-test rules: [[Herald Testing Conventions]]. Build/bundle-id facts: [[Herald Build and Toolchain]].

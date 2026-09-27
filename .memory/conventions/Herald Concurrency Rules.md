@@ -5,10 +5,10 @@ permalink: hqbase-mac/conventions/herald-concurrency-rules
 tags: [swift6, concurrency]
 source_paths: [HeraldKit/Sources/HeraldKit/Sync/URLSessionMailEventChannel.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift]
 source_paths_inferred: false
-source_sha: 1d190bc82f9ecd25a63d948b9c4f628f7ee7c32b
+source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-08-16
 updated: 2026-09-19
-reviewed: 2026-09-19
+reviewed: 2026-09-27
 reviewed_by: audit:claude-code (background)
 ---
 

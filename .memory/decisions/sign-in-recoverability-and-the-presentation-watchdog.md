@@ -5,11 +5,11 @@ permalink: hqbase-mac/decisions/sign-in-recoverability-and-the-presentation-watc
 tags: [auth, oauth, ux, concurrency]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/App/AppEnvironment+SignIn.swift, Herald/App/AppEnvironment+Compose.swift, Herald/App/AutoReauthPolicy.swift, Herald/App/MailViewModel.swift, Herald/App/SignatureSettingsModel.swift, Herald/Views/RootView.swift, Herald/Views/SidebarView.swift, Herald/Compose/ComposeViewModel.swift, Herald/Compose/ComposeWindow.swift, HeraldKit/Sources/HeraldKit/Auth/AuthorizationPresenter.swift, HeraldKit/Sources/HeraldKit/Auth/AuthCoordinator.swift, HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthError.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/API/AuthenticatingMiddleware.swift, HeraldKit/Sources/HeraldKit/Sync/MailEventSocket.swift, HeraldKit/Sources/HeraldKit/Sync/URLSessionMailEventChannel.swift]
 source_paths_inferred: false
-source_sha: 177f09f56716a14be9f4b078f50b9a95118a3c35
+source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-09-05
 updated: 2026-09-27
-reviewed: 2026-09-26
-reviewed_by: claude-opus-5-5
+reviewed: 2026-09-27
+reviewed_by: audit:claude-code (background)
 ---
 Current design (verified at HEAD 177f09f): how Herald detects a dead session, routes it to one re-auth transition per account, lets the user or Herald repair it, and keeps composers alive through it. Policy rules live in [[Automatic Re-auth Policy (frontmost, deferred, rate-limited)]].
 

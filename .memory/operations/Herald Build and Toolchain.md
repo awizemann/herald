@@ -3,13 +3,13 @@ title: Herald Build and Toolchain
 type: note
 permalink: hqbase-mac/operations/herald-build-and-toolchain
 tags: [build, xcode]
-source_paths: [scripts/build-detached.sh, HeraldKit/Package.resolved]
-source_paths_inferred: true
-source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
+source_paths: [scripts/build-detached.sh, project.yml]
+source_paths_inferred: false
+source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-08-16
 updated: 2026-09-27
 reviewed: 2026-09-27
-reviewed_by: claude-opus-5-5
+reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations

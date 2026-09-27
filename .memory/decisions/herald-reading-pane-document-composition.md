@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/herald-reading-pane-document-composition
 tags: [reading-pane, html, webkit, security, design]
 source_paths: [Herald/App/MailViewModel+HTMLAssembly.swift, Herald/App/MailViewModel.swift, Herald/Design/MailTheme.swift, HeraldKit/Sources/HeraldKit/Model/Message.swift, HeraldTests/MessageBodyCompositionTests.swift]
 source_paths_inferred: false
-source_sha: 4bd3bd4711d71c167135f7abec683bff2693f91a
+source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-09-04
 updated: 2026-09-04
-reviewed: 2026-09-19
+reviewed: 2026-09-27
 reviewed_by: audit:claude-code (background)
 ---
 

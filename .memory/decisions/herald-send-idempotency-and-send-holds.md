@@ -18,13 +18,14 @@ reviewed_by: audit:claude-code (background)
 - [gotcha] `OutboxService.send` returns a `SendReceipt` (message + rotated draft); `ComposeViewModel` takes ONLY the key via `adoptSendAttemptKey(from:)` — assigning the receipt's whole draft would revert anything typed during the round trip, the same data-loss bug `adoptServerState(from:sent:)` exists to avoid #compose
 - [decision] Both 503s map to `OutboxError.sendOnHold(SendHold)` and are NEVER retried: `.recovering` (SEND_RECOVERY_UNAVAILABLE, mail already accepted) disables Send for the window's lifetime; `.storageNotReady` (nothing accepted, server mid-update) lifts on any edit, and the unchanged key makes even a too-early retry safe #outbox
 - [fact] Reply prefill fills `to` from `MessageDetail.replyTo` when non-empty (Reply semantics: it REPLACES the sender, reply-all still appends the original `to`); `nil` and `[]` both fall back to the sender, and it is display parity because the server already routes there when `to` is omitted #compose
+- [decision] Send is also blocked when the composer's account is signed out (2026-09-26 incident): the outbox belongs to a superseded graph, so nothing can be saved or sent. The window keeps the text for copying; `isAccountSignedOut` is checked alongside `sendHold` in `isSendBlocked` and feeds `sendHoldReason` with `accountSignedOutReason` #auth
 
 ## Relations
 - relates_to [[HQBase Mail API v1 Contract]]
 - relates_to [[Herald Signature Handling]]
 
 
-## Hold UX (2026-09-19 — audit F2 C3)
+## Hold UX (2026-09-19 — audit F2 C3, expanded 2026-09-26)
 
 A hold that the window will not explain is worse than one it refuses loudly. The
 audit found the held Send was a bare `.disabled` button: VoiceOver said "Send,
@@ -33,7 +34,7 @@ to re-announce the reason — did nothing at all, because SwiftUI withdraws a
 disabled control's key equivalent along with the control. The view-model's
 "re-announce" branch was dead code.
 
-- [decision] The hold's own sentence (`OutboxError.sendOnHold(hold).localizedDescription`, via `ComposeViewModel.sendHoldReason`) drives BOTH the Send button's `.help` and its `.accessibilityHint`. One `nonisolated static` source for what is drawn and what is spoken, assertable without a rendered window — the `ReauthBanner.message`/`announcement` pattern #a11y
+- [decision] The hold's own sentence (`OutboxError.sendOnHold(hold).localizedDescription`, via `ComposeViewModel.sendHoldReason`) drives BOTH the Send button's `.help` and its `.accessibilityHint`. One `nonisolated static` source for what is drawn and what is spoken, assertable without a rendered window — the `ReauthBanner.message`/`announcement` pattern #a11y. Account sign-out uses the same pattern with `accountSignedOutReason`.
 - [decision] ⌘⇧D moved off the Send button onto a never-disabled `.opacity(0)` proxy (`ComposeView.sendShortcut`), so the shortcut always reaches `send()`, which refuses and re-announces. `isBusy` still disables the proxy — a send in flight is a different thing from one the server has forbidden. The button keeps the `.disabled` appearance, which is the correct affordance; only the key equivalent is elsewhere, so `.help` now spells "⌘⇧D" out #compose
 - [gotcha] Re-announcing could not ride on `status`: its `didSet` guards on a CHANGE, and the status is ALREADY that failure by the second press, so presses two onward were silent. `announcement` is now paired with `announcementCount`, bumped on every announcement including a repeat, and the window observes the COUNTER. Two bumps inside one synchronous call coalesce into one `onChange`, so the belt-and-braces re-announce cannot speak twice #a11y
 - [fact] The refusal itself is unchanged and still proven: a held send is never POSTed a second time, however it is invoked (`ComposeViewModelTests.everyBlockedSendAttemptReAnnouncesTheReason` asserts `sendCount == 1` across three ⌘⇧D presses). Making the shortcut reachable must not make the SEND reachable #outbox

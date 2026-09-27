@@ -28,7 +28,13 @@ public nonisolated struct MailDomain: Sendable, Hashable, Identifiable {
     }
 }
 
-extension MailDomain {
+// `nonisolated` here matches the primary declaration above: under
+// default-MainActor isolation, a member in a SEPARATE extension does not
+// inherit a type's own `nonisolated`, so without this every `static func`
+// below defaults to MainActor and cannot be called synchronously from a
+// nonisolated context (caught by the R6 reading pane's `DomainBadgeResolver`,
+// the first real, non-test caller of `domains(from:)`).
+nonisolated extension MailDomain {
     /// The id/name a mailbox with no usable `mailDomainID` and no parseable
     /// address groups under, so it still shows up somewhere rather than being
     /// dropped. Never produced by a real server response — every address the

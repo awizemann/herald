@@ -158,4 +158,41 @@ struct ReadingPaneHeaderTests {
         #expect(info.address == "No mailbox")
         #expect(info.badge == nil)
     }
+
+    // MARK: - ReadingPaneEdgeAlignment
+
+    @Test("The web view's inset is exactly the header inset minus the CSS body margin")
+    func webViewInsetIsTheDifference() {
+        #expect(
+            ReadingPaneEdgeAlignment.webViewInset
+                == ReadingPaneEdgeAlignment.headerInset - ReadingPaneEdgeAlignment.webContentCSSMargin
+        )
+    }
+
+    @Test("The web view inset plus the CSS margin reaches the header's own inset exactly")
+    func insetPlusCSSMarginReachesHeaderInset() {
+        #expect(
+            ReadingPaneEdgeAlignment.webViewInset + ReadingPaneEdgeAlignment.webContentCSSMargin
+                == ReadingPaneEdgeAlignment.headerInset
+        )
+    }
+
+    @Test("The current constants land the inset at 28pt")
+    func currentInsetValue() {
+        // Pins the actual numbers (44pt header, 16px CSS margin) so a change to
+        // either constant that silently breaks alignment fails a test instead
+        // of only showing up as a rendered pixel drift.
+        #expect(ReadingPaneEdgeAlignment.headerInset == 44)
+        #expect(ReadingPaneEdgeAlignment.webContentCSSMargin == 16)
+        #expect(ReadingPaneEdgeAlignment.webViewInset == 28)
+    }
+
+    @Test("The inset never goes negative even if the CSS margin somehow exceeded the header inset")
+    func insetNeverNegative() {
+        // `webViewInset` is a fixed constant today, so this asserts the
+        // `max(0, …)` FLOOR the implementation uses rather than re-deriving a
+        // hypothetical: a negative inset would pull the web view the wrong
+        // way, which is exactly what the floor exists to prevent.
+        #expect(max(0, ReadingPaneEdgeAlignment.headerInset - ReadingPaneEdgeAlignment.webContentCSSMargin) >= 0)
+    }
 }

@@ -67,7 +67,7 @@ struct ReadingPaneView: View {
     /// The handoff's reading-pane edge inset (§3.1 "padding 32 44") — 44 is off
     /// the 4pt spacing grid (the scale tops out at `xxxl` 32), so this stays a
     /// named literal here rather than forcing a token that doesn't exist.
-    fileprivate static let horizontalPadding: CGFloat = 44
+    fileprivate static let horizontalPadding: CGFloat = ReadingPaneEdgeAlignment.headerInset
 }
 
 /// "Nothing selected" — the handoff's empty state (§3.1; icon map "Empty:
@@ -86,6 +86,32 @@ private struct ReadingPaneEmptyState: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Nothing selected")
     }
+}
+
+/// Closes the gap between the header's own edge inset and the web view's
+/// CSS body margin, so the header's and the message body's text line up on
+/// the same left/right edge.
+///
+/// The header is inset 44pt in SwiftUI (``ReadingPaneView/horizontalPadding``,
+/// the handoff's §3.1 edge inset). The web view can't share that: its body
+/// text comes from the ONE shared CSS document every `WKWebView` in the app
+/// loads (`MailViewModel+HTMLAssembly.swift`'s `styleSheet`), which sets a
+/// 16px `margin` — and that stylesheet is also what the small signature-
+/// preview box renders with, so raising it to 44px there would eat most of
+/// that box's width. Insetting the web view's SwiftUI CONTAINER by the
+/// difference instead reaches the same total inset (28pt SwiftUI + 16px CSS =
+/// 44pt) without touching the shared document at all.
+nonisolated enum ReadingPaneEdgeAlignment {
+    /// The header's own edge inset (mirrors ``ReadingPaneView/horizontalPadding``).
+    static let headerInset: CGFloat = 44
+    /// The shared web document's CSS `body { margin: … }` (handoff `body` rule
+    /// in `MailViewModel+HTMLAssembly.swift`).
+    static let webContentCSSMargin: CGFloat = 16
+    /// What's left to add in SwiftUI so the two text edges land on the same
+    /// pixel. `max(0, …)`: if the CSS margin ever grew past the header inset,
+    /// this stays a no-op rather than going negative and pulling the web view
+    /// the WRONG way.
+    static let webViewInset: CGFloat = max(0, headerInset - webContentCSSMargin)
 }
 
 /// Pure derivation of the reading pane's "Message N of M" line (handoff §3.1
@@ -348,7 +374,10 @@ struct MessageBodySection: View {
                 }
             }
             if let body = model.body {
+                // Insets the web view to line its CSS-margined body text up
+                // with the header's 44pt edge — see `ReadingPaneEdgeAlignment`.
                 MessageWebView(body: body)
+                    .padding(.horizontal, ReadingPaneEdgeAlignment.webViewInset)
             } else if model.isLoadingBody {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

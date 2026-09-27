@@ -158,11 +158,11 @@ import Testing
         #expect(MailViewModel.quotedTailStart(in: []) == 0)
     }
 
-    @Test func plainTextIsEscapedAndRendersInTheSystemFont() {
+    @Test func plainTextIsEscapedAndRendersInTheReadingFont() {
         let document = MailViewModel.document(wrappingPlainText: "<script>alert(1)</script>")
         #expect(!document.contains("<script>"))
         #expect(document.contains("&lt;script&gt;"))
-        #expect(document.contains("pre.plain { font-family: -apple-system"))
+        #expect(document.contains("pre.plain { font-family: var(--reading-font)"))
     }
 
     // MARK: - Stylesheet and remote-media gating

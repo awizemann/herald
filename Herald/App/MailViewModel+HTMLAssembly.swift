@@ -326,9 +326,13 @@ extension MailViewModel {
     /// unstyled regions (body text, links, quote bars, the disclosure) and never
     /// touches a colour the sender set. Inverting a designed HTML email wrecks it
     /// far more often than it rescues one.
-    private nonisolated static var styleSheet: String {
+    ///
+    /// Built ONCE per process: every input is a constant, and it now carries the
+    /// ~90 KB embedded reading font (``MailTheme/Web/fontFaceRule``).
+    private nonisolated static let styleSheet: String = {
         """
-        :root { color-scheme: light dark; \(variables(MailTheme.Web.light)) }
+        :root { color-scheme: light dark; --reading-font: \(MailTheme.Web.readingFontStack);
+                \(variables(MailTheme.Web.light)) }
         @media (prefers-color-scheme: dark) { :root { \(variables(MailTheme.Web.dark)) } }
         /* Increase Contrast (System Settings → Accessibility). Ordered AFTER the
            appearance blocks so it wins at equal specificity, and split per
@@ -336,14 +340,16 @@ extension MailViewModel {
         @media (prefers-contrast: more) { :root { \(contrastVariables(MailTheme.Web.light)) } }
         @media (prefers-color-scheme: dark) and (prefers-contrast: more) {
             :root { \(contrastVariables(MailTheme.Web.dark)) } }
-        body { font: -apple-system-body; font-family: -apple-system, system-ui, sans-serif;
+        \(MailTheme.Web.fontFaceRule)
+        body { font-family: var(--reading-font); font-size: \(MailTheme.Web.readingFontSize)px;
+               line-height: \(MailTheme.Web.readingLineHeight);
                margin: 16px; word-break: break-word; color: var(--fg); background: var(--bg); }
         a { color: var(--link); }
         img, video, table { max-width: 100%; height: auto; }
         /* Wide tables scroll INSIDE their section instead of forcing the whole
            document sideways. */
         section.body { overflow-x: auto; }
-        pre.plain { font-family: -apple-system, system-ui, sans-serif; white-space: pre-wrap;
+        pre.plain { font-family: var(--reading-font); white-space: pre-wrap;
                     margin: 0; }
         .quote-line { color: var(--secondary); }
         blockquote { border-left: 3px solid var(--quote-1); margin: 12px 0; padding-left: 12px;
@@ -363,5 +369,5 @@ extension MailViewModel {
         section.quoted-body, pre.quoted-body { border-left: 3px solid var(--quote-1);
                                                padding-left: 12px; margin-top: 4px; }
         """
-    }
+    }()
 }

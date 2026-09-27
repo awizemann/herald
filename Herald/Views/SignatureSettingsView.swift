@@ -305,16 +305,16 @@ private struct SignatureEditorSheet: View {
                         .font(.system(.body, design: .monospaced))
                         .accessibilityLabel("Signature HTML")
                         .overlay {
-                            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
-                                .strokeBorder(.separator)
+                            RoundedRectangle(cornerRadius: MailTheme.Radius.md)
+                                .strokeBorder(MailTheme.Color.line)
                         }
                 }
                 editorColumn(title: "Preview") {
                     SignaturePreviewView(html: previewHTML)
-                        .clipShape(.rect(cornerRadius: MailTheme.Radius.sm))
+                        .clipShape(.rect(cornerRadius: MailTheme.Radius.md))
                         .overlay {
-                            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
-                                .strokeBorder(.separator)
+                            RoundedRectangle(cornerRadius: MailTheme.Radius.md)
+                                .strokeBorder(MailTheme.Color.line)
                         }
                 }
             }

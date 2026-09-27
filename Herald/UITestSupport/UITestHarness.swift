@@ -40,9 +40,10 @@ final class UITestHarness {
                 return nil
             }
             logger.notice("UI-test mode: scenario \(configuration.scenario.rawValue, privacy: .public)")
-            // AppKit's window restoration lives in the app's container, which
-            // Debug and Release share: never restore the real app's windows
-            // into a test run, never save the test run's for the real app.
+            // AppKit's window restoration lives in the app's container. Debug
+            // has its own bundle id (and container) since U6a, so this no
+            // longer protects the release app — it keeps a dev copy's windows
+            // out of a test run, and the test run's out of the dev copy.
             // The REGISTRATION domain is volatile — nothing is written.
             UserDefaults.standard.register(defaults: [
                 "ApplePersistenceIgnoreState": true,

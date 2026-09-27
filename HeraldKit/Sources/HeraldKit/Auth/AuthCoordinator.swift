@@ -157,7 +157,10 @@ public final class AuthCoordinator {
             // recognizes Herald" would be untrue — surface the server's answer.
             if registeredNow, case .server("unauthorized_client", _) = error {
                 logger.warning("the server refused the client it just registered (unauthorized_client); registration kept")
-                throw error
+                throw OAuthError.server(
+                    error: "unauthorized_client",
+                    description: "The server refused to let Herald sign in (unauthorized_client). Ask your HQBase administrator to check its OAuth client settings."
+                )
             }
             // The server no longer knows (or no longer trusts) this `client_id`
             // — reinstalled, or its client table reset. Forget the registration

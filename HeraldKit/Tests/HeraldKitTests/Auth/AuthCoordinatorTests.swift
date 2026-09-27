@@ -117,7 +117,7 @@ import Testing
     }
 
     /// Fails if sign-out leaves tokens behind. The registration goes too when it
-    /// was the origin's last account (P9a F — see `SignOutRegistrationTests`):
+    /// was the origin's last account (P9a F — see `SessionRecoveryP9aTests`):
     /// a server that forgot the client meanwhile would otherwise send every Sign
     /// In to its error page.
     @Test("signOut drops the account, its tokens and the last account's registration")

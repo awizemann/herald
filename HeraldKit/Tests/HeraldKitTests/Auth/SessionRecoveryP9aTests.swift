@@ -125,8 +125,8 @@ nonisolated final class ClientBoundRefresher: TokenRefreshing, @unchecked Sendab
     }
 
     /// The re-registration lands while the refresh is on the wire: the grant in
-    /// the store is already the new client's (a sign-in writes it moments
-    /// before the record), the record flips while we wait. The refusal is about
+    /// the store is already the new client's (a sign-in writes the record
+    /// before the tokens), the record flips while we wait. The refusal is about
     /// the id we SENT, not the grant — so it is superseded: re-read and go again
     /// as the current id. Never cleared, latched, forgotten or announced.
     @Test("a refusal for a request sent as a since-replaced client id is retried as the current one", arguments: oldClientKnown)
@@ -385,11 +385,18 @@ nonisolated final class ClientBoundRefresher: TokenRefreshing, @unchecked Sendab
         }
         let coordinator = AuthCoordinator(store: store, presenter: presenter, session: server.makeSession())
 
-        await #expect(throws: OAuthError.server(error: "unauthorized_client", description: nil)) {
+        let expectedDescription = "The server refused to let Herald sign in (unauthorized_client). Ask your HQBase administrator to check its OAuth client settings."
+        await #expect(throws: OAuthError.server(error: "unauthorized_client", description: expectedDescription)) {
             _ = try await coordinator.addAccount(origin: Self.origin)
         }
         #expect(server.requests(path: AuthFixtures.registerPath).count == 1)
         #expect(try store.clientID(for: Self.origin) == "cid_registered")
+
+        // The user-visible description must be readable prose, not the bare
+        // OAuth error code (audit fix for 46f2e27's reviewer).
+        let error = OAuthError.server(error: "unauthorized_client", description: expectedDescription)
+        #expect(error.errorDescription == expectedDescription)
+        #expect(error.errorDescription != "unauthorized_client")
     }
 
     /// `setClientID` takes the same lock as `forgetClientID`'s compare-and-

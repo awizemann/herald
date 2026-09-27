@@ -217,10 +217,12 @@ extension AppEnvironment {
                 await discardAbandonedSignIn(account)
                 return SignInResult(outcome: .cancelled)
             }
-            if ownsSignInUI(generation) {
-                presentsAddAccount = false
-                signInStage = .activating
-            }
+            // The Add Account sheet stays up through activation and closes only
+            // once the account is INSTALLED (below): closed here, an activation
+            // failure had no screen to land on — its message went to a sheet
+            // that was already gone, and the sheet's own didSet cleared it on
+            // the next open (P9b, item G).
+            if ownsSignInUI(generation) { signInStage = .activating }
             // Consent alone is not a signed-in account: an activation that fails
             // (unreachable server, unreadable tokens) leaves the user exactly as
             // stuck as before, and reporting it as a success would also clear the
@@ -237,6 +239,7 @@ extension AppEnvironment {
             )
             switch activation {
             case .installed:
+                if ownsSignInUI(generation), !isReauthentication { presentsAddAccount = false }
                 return SignInResult(outcome: .success, account: account)
             case .abandoned:
                 // Activation suspends before it installs, and a cancel landing
@@ -394,7 +397,11 @@ extension AppEnvironment {
 
     /// Re-runs the whole flow for the ONE account whose token died. The other
     /// accounts keep syncing throughout.
-    func reauthenticate(accountID: Account.ID?) async {
+    /// - Parameter fromComposer: the attempt is a compose window's Sign In. That
+    ///   window announces the attempt's failure itself (it is where the user is),
+    ///   so the re-auth banner — which may be showing the same account — stays
+    ///   quiet about it rather than VoiceOver hearing one failure twice.
+    func reauthenticate(accountID: Account.ID?, fromComposer: Bool = false) async {
         guard let accountID, let account = graphs[accountID]?.account else {
             if graphs.isEmpty { phase = .signedOut }
             return
@@ -404,6 +411,7 @@ extension AppEnvironment {
         // automatic attempt is running would open a second consent window over
         // the first.
         guard autoReauth.beginUserInitiated(accountID: accountID) else { return }
+        setReauthFailureAnnouncedByComposer(fromComposer, accountID: accountID)
         // A new attempt: the last one's reason no longer describes anything.
         reauthErrors[accountID] = nil
         // Retained and generation-stamped like a first sign-in: a re-auth is just
@@ -475,6 +483,22 @@ extension AppEnvironment {
         autoReauth.isAttempting(accountID: accountID)
     }
 
+    /// Whether the last re-auth attempt for this account was a compose window's
+    /// Sign In, which announces its own failure. Read by the re-auth banner when
+    /// an attempt ends. Rewritten by EVERY attempt start (user or automatic), so
+    /// it can never outlive the attempt it describes.
+    func reauthFailureIsAnnouncedByComposer(accountID: Account.ID) -> Bool {
+        composerAnnouncedReauths.contains(accountID)
+    }
+
+    private func setReauthFailureAnnouncedByComposer(_ announced: Bool, accountID: Account.ID) {
+        if announced {
+            composerAnnouncedReauths.insert(accountID)
+        } else {
+            composerAnnouncedReauths.remove(accountID)
+        }
+    }
+
     /// Re-runs consent WITHOUT waiting for the banner to be clicked, when the
     /// rules in ``AutoReauthPolicy`` allow it.
     ///
@@ -491,13 +515,24 @@ extension AppEnvironment {
     /// which is also how a session that died while Herald was in the background
     /// (the common case: the binding expires on a 7-day timer) is repaired the
     /// moment the user comes back.
+    ///
+    /// Before any consent it PROBES whether the session is still dead
+    /// (``healIfSessionRecovered(accountID:)``): another Herald process may
+    /// already have signed the account in again, and then the fix is a
+    /// re-install, not a window.
     func attemptAutomaticReauthentication(accountID: Account.ID) async {
-        guard accountID == selectedAccountID, let account = graphs[accountID]?.account else { return }
-        guard graphs[accountID]?.mail.status == .needsReauth else { return }
+        guard accountID == selectedAccountID, graphs[accountID]?.mail.status == .needsReauth else { return }
+        if await healIfSessionRecovered(accountID: accountID) { return }
+        // Re-read after the probe's suspension: the selection, the graph or its
+        // status may have moved on meanwhile.
+        guard accountID == selectedAccountID, let account = graphs[accountID]?.account,
+              graphs[accountID]?.mail.status == .needsReauth
+        else { return }
         guard autoReauth.begin(
             accountID: accountID,
             isApplicationActive: isApplicationActive()
         ) else { return }
+        setReauthFailureAnnouncedByComposer(false, accountID: accountID)
         reauthErrors[accountID] = nil
         // Held so a sign-out can CANCEL the attempt: its `install` would
         // otherwise land after the account was removed and bring it — and its
@@ -528,9 +563,91 @@ extension AppEnvironment {
     /// usually happens while Herald is in the background or on an account the
     /// window is not showing. Herald becoming frontmost and the user
     /// switching accounts are the two moments a deferred repair becomes possible.
+    ///
+    /// Also the moment to notice a session that came back WITHOUT Herald: every
+    /// other account still on its banner is probed once
+    /// (``healIfSessionRecovered(accountID:)`` — a Keychain read, no network, no
+    /// window) and re-installed if another process has signed it in again. The
+    /// selected account is probed inside its automatic attempt, so each account
+    /// is probed at most once per call. The others go FIRST: the selected
+    /// account's attempt can wait on a consent window for minutes.
     func retryAutomaticReauthentication() async {
-        guard let accountID = selectedAccountID else { return }
-        await attemptAutomaticReauthentication(accountID: accountID)
+        let selected = selectedAccountID
+        for id in accountIDs where id != selected && graphs[id]?.mail.status == .needsReauth {
+            await healIfSessionRecovered(accountID: id)
+        }
+        guard let selected, selectedAccountID == selected else { return }
+        await attemptAutomaticReauthentication(accountID: selected)
+    }
+
+    /// Re-installs an account stuck on `.needsReauth` whose session is no longer
+    /// dead, and returns whether it did — in which case no consent window is
+    /// needed.
+    ///
+    /// Why (audit N2/W10): `.needsReauth` is sticky and the account's engine
+    /// stops, so before this only an install cleared it — even when the release
+    /// and a dev build share the Keychain and the OTHER one had signed in again,
+    /// leaving a healthy grant behind a banner and an automatic consent window.
+    ///
+    /// "No longer dead" means one thing only: the store holds a DIFFERENT grant
+    /// from the one the session died on (``AccountGraph/sessionDeath``,
+    /// ``SessionDeath/isCurrent()``) — and not merely the one this graph's own
+    /// provider rotated it into by refreshing (HQBase rotates the refresh token
+    /// on every use; a bare 401 is never latched and keeps refreshing). The
+    /// same session is never "healed" — a bare 401 that keeps coming back
+    /// would otherwise turn into a re-install loop — and a store that cannot
+    /// be read counts as still dead. What the provider cannot see (another
+    /// process refreshing the same dead session) is bounded by
+    /// ``AutoReauthPolicy/allowsHeal(accountID:now:)``: one heal per interval. A death the
+    /// provider did not detect itself (a bare 401 the sync loop or socket
+    /// escalated) has no recorded grant: the first probe records the grant
+    /// stored now and heals nothing; a later probe heals only if it changed.
+    ///
+    /// Cheap by construction: one or two Keychain reads through the provider,
+    /// no network until a heal actually re-installs, never a window. Only for
+    /// a graph with a real token provider (test graphs on a fake API have
+    /// none), never while a sign-in attempt owns the account (its own install
+    /// is the fix), and one probe per account at a time.
+    @discardableResult
+    func healIfSessionRecovered(accountID: Account.ID) async -> Bool {
+        // Another probe for the account is running: this call heals nothing
+        // itself, and says so — the consent/heal arbitration below
+        // (`autoReauth`'s claim, the heal's `isStillWanted`) settles a race.
+        guard !healingAccountIDs.contains(accountID) else { return false }
+        guard let graph = graphs[accountID], graph.mail.status == .needsReauth,
+              let tokens = graph.tokens,
+              !autoReauth.isAttempting(accountID: accountID)
+        else { return false }
+        healingAccountIDs.insert(accountID)
+        defer { healingAccountIDs.remove(accountID) }
+        guard let death = graph.sessionDeath else {
+            let marker = await tokens.deathOfStoredGrant()
+            if isCurrent(graph), graph.sessionDeath == nil { graph.sessionDeath = marker }
+            return false
+        }
+        guard await !death.isCurrent() else { return false }
+        // Nothing may have claimed the account while the store was read.
+        guard isCurrent(graph), graph.mail.status == .needsReauth,
+              !autoReauth.isAttempting(accountID: accountID)
+        else { return false }
+        // At most one heal per interval: two processes sharing a session that
+        // stays dead see each other's refreshes as "a different grant".
+        guard autoReauth.allowsHeal(accountID: accountID) else {
+            logger.info("a different grant is stored, but this account was healed recently; not re-installing again")
+            return false
+        }
+        autoReauth.recordHeal(accountID: accountID)
+        logger.info("a different grant is stored for an account on its re-auth banner; re-installing without consent")
+        // The stored record, when readable: the process that signed in again may
+        // have re-registered (a new client id) or been granted other scopes.
+        let stored = (try? await auth.loadAccounts())?.first { $0.id == accountID }
+        return await activate(stored ?? graph.account, select: false) { [weak self] in
+            // A sign-out, a sign-in's own install or a user attempt started
+            // meanwhile each outrank this one.
+            guard let self else { return false }
+            return self.isCurrent(graph) && graph.mail.status == .needsReauth
+                && !self.autoReauth.isAttempting(accountID: accountID)
+        }
     }
 
     /// The re-auth round trip both entry points share. Returns whether the
@@ -629,10 +746,17 @@ extension AppEnvironment {
             try await auth.signOut(account)
         } catch {
             logger.error("Sign-out failed: \(error.localizedDescription, privacy: .private)")
-            // Only when the onboarding screen is what is showing (the last
-            // account went): with accounts left, the sheet is closed and the
-            // message would only greet the next Add Account, stale.
-            if graphs.isEmpty { signInError = error.localizedDescription }
+            // The onboarding screen, when that is what is showing (the last
+            // account went). With accounts left the sheet is closed — its slot
+            // would only greet the next Add Account, stale — so the mail
+            // window raises an alert instead: an account the Keychain still
+            // holds comes back at the next launch, and saying nothing made that
+            // look like Herald ignoring the sign-out (P9b, audit N4).
+            if graphs.isEmpty {
+                signInError = error.localizedDescription
+            } else {
+                signOutError = Self.signOutFailureMessage(account: account, reason: error.localizedDescription)
+            }
         }
         // Signing the same origin back in during the revoke round trip would
         // otherwise have its freshly synced rows deleted underneath it.
@@ -644,5 +768,13 @@ extension AppEnvironment {
         } catch {
             logger.error("Cache purge failed: \(error.localizedDescription, privacy: .private)")
         }
+    }
+
+    /// The mail window's alert text for a sign-out that could not finish.
+    /// Pure and static so the wording is assertable without a rendered alert.
+    nonisolated static func signOutFailureMessage(account: Account, reason: String) -> String {
+        let host = account.origin.host ?? account.origin.absoluteString
+        return "Herald closed \(host) but couldn’t remove it from this Mac, "
+            + "so it may come back the next time Herald opens. \(reason)"
     }
 }

@@ -202,18 +202,27 @@ import Testing
         h.environment.isSigningIn = true
         h.environment.presentsAddAccount = true
         #expect(h.environment.signInError == "current")
+
+        // P9b: a user's RE-AUTH also raises `isSigningIn`, but never writes
+        // this slot — what is there is stale and must not greet the sheet.
+        h.environment.presentsAddAccount = false
+        h.environment.signInReauthAccountID = h.accountID
+        h.environment.presentsAddAccount = true
+        #expect(h.environment.signInError == nil, "a re-auth kept a stale Add Account failure on the sheet")
+        h.environment.signInReauthAccountID = nil
+        h.environment.isSigningIn = false
         await h.environment.stopGraph(accountID: h.accountID)
     }
 
     // MARK: - Where it shows
 
     /// The banner's and VoiceOver's wording.
-    @Test func theBannerCarriesTheReasonAndAnnouncesIt() {
+    @Test func theBannerCarriesTheReasonAndAnnouncesIt() throws {
         let a = Self.account.id
         #expect(ReauthBanner.failureDetail(Self.reason).hasSuffix(Self.reason))
-        let failed = ReauthBanner.stateChangeAnnouncement(
+        let failed = try #require(ReauthBanner.stateChangeAnnouncement(
             isReauthenticating: false, cancelledAccountID: nil, accountID: a, failureReason: Self.reason
-        )
+        ))
         #expect(failed.contains(Self.reason))
         #expect(failed.contains("Sign In button"))
         // A cancel is announced as a cancel even if an older reason exists.
@@ -255,6 +264,23 @@ import Testing
         #expect(model.signInAffordance == .available)
         #expect(model.signInFailureReason == ComposeViewModel.signInFailureDetail(Self.reason))
         #expect(model.announcement?.contains(Self.reason) == true, "the composer's failed Sign In was silent")
+        // P9b nit: the composer announced it, so the banner (which may show the
+        // same account) stays quiet — one failure, heard once.
+        #expect(environment.reauthFailureIsAnnouncedByComposer(accountID: h.accountID))
+        #expect(ReauthBanner.stateChangeAnnouncement(
+            isReauthenticating: false, cancelledAccountID: nil, accountID: h.accountID,
+            failureReason: environment.reauthError(accountID: h.accountID),
+            failureAnnouncedElsewhere: environment.reauthFailureIsAnnouncedByComposer(accountID: h.accountID)
+        ) == nil, "VoiceOver hears the composer's failed Sign In twice")
+        // The banner's own Sign In owns its failure again.
+        h.presenter.script(.fail(.webAuthenticationFailed(Self.reason)))
+        await environment.reauthenticate(accountID: h.accountID)
+        #expect(environment.reauthFailureIsAnnouncedByComposer(accountID: h.accountID) == false)
+        #expect(ReauthBanner.stateChangeAnnouncement(
+            isReauthenticating: false, cancelledAccountID: nil, accountID: h.accountID,
+            failureReason: environment.reauthError(accountID: h.accountID),
+            failureAnnouncedElsewhere: environment.reauthFailureIsAnnouncedByComposer(accountID: h.accountID)
+        ) == ReauthBanner.failureAnnouncement(Self.reason))
 
         // Another account's failure is not this composer's business.
         environment.reauthErrors = [Self.other.id: "other"]

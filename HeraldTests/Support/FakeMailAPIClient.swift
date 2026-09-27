@@ -357,8 +357,22 @@ actor FakeMailAPIClient: MailAPIClient {
             attachments: [], content: input
         )
     }
+    /// Parks every `updateDraft` (after it is counted as a request, before it
+    /// is recorded) until ``releaseUpdates()`` — a `PATCH /drafts/{id}` still
+    /// in flight on an outbox the composer has since been moved off.
+    private var holdsUpdates = false
+    private var parkedUpdates: [CheckedContinuation<Void, Never>] = []
+    var parkedUpdateCount: Int { parkedUpdates.count }
+    func holdUpdates() { holdsUpdates = true }
+    func releaseUpdates() {
+        holdsUpdates = false
+        for parked in parkedUpdates { parked.resume() }
+        parkedUpdates = []
+    }
+
     func updateDraft(id: String, with input: DraftInput) async throws -> Draft {
         try composeGate()
+        if holdsUpdates { await withCheckedContinuation { parkedUpdates.append($0) } }
         updatedDrafts.append(input)
         return Draft(
             id: id, version: (input.version ?? 1) + 1, updatedAt: MailFixtures.epoch,

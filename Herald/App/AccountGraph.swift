@@ -26,6 +26,15 @@ final class AccountGraph {
     /// the dead-session wiring `AppEnvironment.activate` gives it is reachable
     /// — and assertable — from the graph.
     let tokens: AccountTokenProvider?
+    /// The grant this graph's session died on, once it has (P9b, audit N2/W10):
+    /// what lets ``AppEnvironment`` tell later whether the store has moved on
+    /// to a DIFFERENT grant — another Herald process signed in again — and heal
+    /// the account without a consent window. Set from the provider's own
+    /// announcement (``AppEnvironment/reportSessionDeath(_:)``), or, for a death
+    /// the provider did not detect (a bare 401 the sync loop or socket
+    /// escalated), from the grant stored when the app first probes it. Dies
+    /// with the graph: a re-install starts clean.
+    var sessionDeath: SessionDeath?
 
     init(
         account: Account,

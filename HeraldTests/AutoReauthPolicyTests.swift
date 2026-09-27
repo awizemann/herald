@@ -66,18 +66,69 @@ import Testing
         #expect(other)
     }
 
-    /// A session that was repaired and expires again days later is a NEW event.
-    /// Fails if a success left the cooldown behind and made the second expiry
-    /// wait it out for no reason.
-    @Test func aSuccessfulAttemptClearsTheCooldown() {
+    /// A session the USER repaired, expiring again later, is a NEW event.
+    /// Fails if a user's successful sign-in left the cooldown behind and made
+    /// the next expiry wait it out for no reason.
+    @Test func aUsersSuccessfulSignInClearsTheCooldown() {
         var policy = AutoReauthPolicy()
-        let first = policy.begin(accountID: "a", isApplicationActive: true, now: now)
-        #expect(first)
+        let automatic = policy.begin(accountID: "a", isApplicationActive: true, now: now)
+        #expect(automatic)
+        policy.finish(accountID: "a", succeeded: false, now: now)
+        let user = policy.beginUserInitiated(accountID: "a")
+        #expect(user)
         policy.finish(accountID: "a", succeeded: true, now: now)
         let nextExpiry = policy.begin(
             accountID: "a", isApplicationActive: true, now: now.addingTimeInterval(1)
         )
         #expect(nextExpiry)
+    }
+
+    /// P9b (audit N1): an AUTOMATIC attempt starts the cooldown whatever its
+    /// outcome. A 401 that keeps escalating without the `invalid_token`
+    /// challenge (no latch, so the socket and the sync loop raise the banner
+    /// again right after every successful flash) must not reopen the consent
+    /// window on every escalation. Fails on the pre-P9b policy, where a success
+    /// cleared the cooldown.
+    @Test func aSuccessfulAutomaticAttemptStillStartsTheCooldown() {
+        var policy = AutoReauthPolicy()
+        let first = policy.begin(accountID: "a", isApplicationActive: true, now: now)
+        #expect(first)
+        policy.finish(accountID: "a", succeeded: true, now: now)
+
+        let justInside = now.addingTimeInterval(AutoReauthPolicy.retryInterval - 1)
+        let again = policy.begin(accountID: "a", isApplicationActive: true, now: justInside)
+        #expect(again == false, "a successful automatic attempt let the next escalation reopen the window")
+        // The user's own Sign In is never rate-limited.
+        let user = policy.beginUserInitiated(accountID: "a")
+        #expect(user)
+        policy.finish(accountID: "a", succeeded: false, now: justInside)
+
+        let after = justInside.addingTimeInterval(AutoReauthPolicy.retryInterval)
+        let allowed = policy.begin(accountID: "a", isApplicationActive: true, now: after)
+        #expect(allowed)
+    }
+
+    /// P9b: a heal (re-install onto a grant another process stored) is bounded
+    /// to one per interval per account — two processes sharing one dead
+    /// session would otherwise re-install each other on every activation — and
+    /// is independent of the consent cooldown, which a legitimate heal usually
+    /// follows. Fails if heals are unbounded, share the consent cooldown, or
+    /// survive a sign-out.
+    @Test func healsAreBoundedPerIntervalAndIndependentOfTheConsentCooldown() {
+        var policy = AutoReauthPolicy()
+        let attempt = policy.begin(accountID: "a", isApplicationActive: true, now: now)
+        #expect(attempt)
+        policy.finish(accountID: "a", succeeded: false, now: now)
+        #expect(policy.allowsHeal(accountID: "a", now: now), "a failed consent attempt blocked the heal")
+
+        policy.recordHeal(accountID: "a", now: now)
+        #expect(policy.allowsHeal(accountID: "a", now: now.addingTimeInterval(AutoReauthPolicy.retryInterval - 1)) == false)
+        #expect(policy.allowsHeal(accountID: "b", now: now))
+        #expect(policy.allowsHeal(accountID: "a", now: now.addingTimeInterval(AutoReauthPolicy.retryInterval)))
+
+        policy.recordHeal(accountID: "a", now: now)
+        policy.forget(accountID: "a")
+        #expect(policy.allowsHeal(accountID: "a", now: now))
     }
 
     /// Signing out and back in must not inherit the dead session's cooldown —

@@ -149,10 +149,14 @@ final class SignatureSettingsModel {
     /// pane, so the NEXT `insufficient_scope` is terminal rather than an
     /// invitation to sign in again forever.
     ///
-    /// Survives the re-auth because it is written before it starts and the pane's
-    /// model is rebuilt only when the account graph is replaced — which is why
-    /// the granted-scope comparison below is the real authority and this flag is
-    /// only the second of the two signals.
+    /// Does NOT survive a successful re-auth: the re-auth re-installs the
+    /// account, and `install` drops this model
+    /// (`AppEnvironment.forgetSignatureSettings`), so the pane comes back with a
+    /// fresh one and the flag reset. It only outlives an attempt that installed
+    /// nothing (cancelled or failed). That is why the granted-scope comparison
+    /// below is the real authority and this flag is only the second of the two
+    /// signals. (Keeping it across the re-install is deferred to the
+    /// multi-account work — audit W12.)
     func signInAgainRequested() {
         hasRetriedSignIn = true
     }

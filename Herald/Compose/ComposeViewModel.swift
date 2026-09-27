@@ -631,6 +631,7 @@ final class ComposeViewModel {
     /// costs one round trip rather than one per keystroke.
     private func scheduleAutosave() {
         autosaveTask?.cancel()
+        isAutosavePending = true
         autosaveTask = Task { [autosaveDelay] in
             do {
                 try await Task.sleep(for: autosaveDelay)
@@ -638,8 +639,47 @@ final class ComposeViewModel {
                 return // Superseded by a later edit, or the window closed.
             }
             guard !Task.isCancelled else { return }
+            self.isAutosavePending = false
             await self.saveNow()
         }
+    }
+
+    /// Drops the pending debounce, if any.
+    private func cancelAutosave() {
+        autosaveTask?.cancel()
+        isAutosavePending = false
+    }
+
+    /// Whether a debounced autosave is scheduled and has not started saving.
+    @ObservationIgnored private var isAutosavePending = false
+    /// Saves whose `saveDraft` round trip has not come back yet.
+    @ObservationIgnored private var savesInFlight = 0
+
+    /// Test seam: whether a debounced autosave is waiting to run.
+    var hasPendingAutosave: Bool { isAutosavePending }
+
+    /// After a save lands: if the draft is STILL dirty and nothing else is
+    /// going to save it, schedule one more (P9b, item J).
+    ///
+    /// The case: a re-auth rebinds the composer while a save is in flight on
+    /// the OLD outbox, the user edits, and a save on the NEW outbox overlaps
+    /// it. If the older one finishes last, the server holds its stale text and
+    /// the draft is dirty against it — but the edit's own autosave has already
+    /// run, so nothing was left to send the newer text again. Normally a dirty
+    /// draft after a save means the user typed during the round trip, which
+    /// already scheduled a save (`isAutosavePending`); another save still in
+    /// flight will re-check when it lands. Never after a failure (a save that
+    /// keeps failing must not turn into a retry loop) and never when an edit
+    /// could not schedule one either (a dead session, a signed-out account, a
+    /// send consuming the draft — including its waits before `.sending`).
+    private func rescheduleAutosaveIfStillDirty() {
+        // A pending attachment keeps the draft dirty after every save by
+        // design (the upload queue delivers it, not a save): re-saving for it
+        // would loop.
+        guard draft.isDirty, draft.pendingAttachments.isEmpty, !isAutosavePending, savesInFlight == 0,
+              !isClosed, !isAccountSignedOut, !requiresSignIn, status != .sending, !isSendInFlight
+        else { return }
+        scheduleAutosave()
     }
 
     /// Persists the draft if there is anything to persist. Never throws: an
@@ -665,15 +705,19 @@ final class ComposeViewModel {
         let binding = outboxBinding
         let creating = beginDraftCreation(for: sent)
         defer { endDraftCreation(creating) }
+        savesInFlight += 1
         do {
             let saved = try await outbox.saveDraft(sent)
+            savesInFlight -= 1
             draft.adoptServerState(from: saved, sent: sent)
             // The cache learns about the draft the moment the server does, so the
             // Drafts folder shows what is being typed without waiting for a poll.
             publishDraftState()
             record(.draftSaved)
             if status == .saving { status = .idle }
+            rescheduleAutosaveIfStillDirty()
         } catch {
+            savesInFlight -= 1
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
             fail(error, binding: binding)
         }
@@ -691,13 +735,16 @@ final class ComposeViewModel {
     /// autosave delay — which is most closes, since the last thing the user does
     /// is type — threw away everything typed since the previous save.
     func flushAndStop() async {
-        autosaveTask?.cancel()
+        cancelAutosave()
         autosaveTask = nil
         // Whatever else happens, the window is going away: the poll must get its
         // draft back or it could never tombstone that row again.
         defer { if let id = draft.serverDraft?.id { draftCache(.closed(id)) } }
         guard !isClosed, draft.isDirty else { return }
         await saveNow()
+        // "Stop": a save that landed still dirty may have queued another; the
+        // window is going away and this flush was the last word.
+        cancelAutosave()
     }
 
     /// Test seam and window-close hook: waits for a pending debounce to finish.
@@ -711,6 +758,11 @@ final class ComposeViewModel {
     /// trip and the error lands on the field instead of in an alert.
     @discardableResult
     func send() async -> Bool {
+        // Before anything suspends (P9b, item J): the waits below come BEFORE
+        // `status = .sending`, so a double click (or ⌘⇧D pressed twice) during
+        // a pending upload or draft create started a second send of the same
+        // message behind the first.
+        guard !isSendInFlight else { return false }
         guard !isSendBlocked else {
             // Reached only by ⌘⇧D while the button is disabled — which is why the
             // shortcut lives on an always-enabled proxy in `ComposeWindow`:
@@ -725,7 +777,9 @@ final class ComposeViewModel {
             }
             return false
         }
-        autosaveTask?.cancel()
+        isSendInFlight = true
+        defer { isSendInFlight = false }
+        cancelAutosave()
         // ⌘⇧D can beat a queued upload to the punch; the attachment ids only exist
         // once the uploads have landed.
         await waitForUploads()
@@ -788,8 +842,12 @@ final class ComposeViewModel {
         }
     }
 
+    /// Whether a ``send()`` call is running, from its first line — including the
+    /// waits before `status` says `.sending`.
+    @ObservationIgnored private var isSendInFlight = false
+
     func discard() async {
-        autosaveTask?.cancel()
+        cancelAutosave()
         cancelAllUploads()
         isClosed = true
         record(.composeDiscarded)
@@ -823,7 +881,7 @@ final class ComposeViewModel {
 
     /// Closes without deleting the server draft — "Save" in the close sheet.
     func saveAndClose() async {
-        autosaveTask?.cancel()
+        cancelAutosave()
         // The close sheet's Save Draft on a composer whose account is gone:
         // nothing can be saved, and the window must say so — `saveNow` returns
         // silently, and the bar already shows the same failure, so without this
@@ -840,14 +898,14 @@ final class ComposeViewModel {
     }
 
     func close() {
-        autosaveTask?.cancel()
+        cancelAutosave()
         isClosed = true
     }
 
     /// Called from the window when it actually goes away, so no timer — and no
     /// upload waiting on a window that no longer exists — outlives it.
     func stop() {
-        autosaveTask?.cancel()
+        cancelAutosave()
         cancelAllUploads()
     }
 

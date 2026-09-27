@@ -49,7 +49,7 @@ extension AppEnvironment {
         }, reauthenticate: { [weak self] in
             // The composer's OWN account, never the selected one: a composer
             // from A whose send 401'd must not sign the user into B.
-            await self?.reauthenticate(accountID: accountID)
+            await self?.reauthenticate(accountID: accountID, fromComposer: true)
         }, isReauthenticating: { [weak self] in
             self?.isReauthenticating(accountID: accountID) ?? false
         }, reauthError: { [weak self] in

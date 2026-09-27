@@ -106,6 +106,20 @@ struct MailWindow: View {
             Text(model.actionError ?? "")
         }
         .sheet(isPresented: Bindable(environment).presentsAddAccount) { OnboardingView(isSheet: true) }
+        // A sign-out that could not finish with other accounts left (audit
+        // N4): the account would otherwise come back at the next launch with
+        // nothing ever having said so.
+        .alert(
+            "Couldn’t finish signing out",
+            isPresented: Binding(
+                get: { environment.signOutError != nil },
+                set: { if !$0 { environment.signOutError = nil } }
+            )
+        ) {
+            Button("OK") { environment.signOutError = nil }
+        } message: {
+            Text(environment.signOutError ?? "")
+        }
         .focusedSceneValue(\.mailModel, model)
         // Primitive mirrors of the selection: the menu bar's enablement and its
         // Star/Mark-as-Read titles have to change when the selection does, and a
@@ -231,14 +245,16 @@ struct ReauthBanner: View {
         // button, and the announcement names the control that replaced it.
         .onAppear { announce(Self.announcement(isReauthenticating: isReauthenticating)) }
         .onChange(of: isReauthenticating) { _, reauthenticating in
-            announce(Self.stateChangeAnnouncement(
+            let announcement = Self.stateChangeAnnouncement(
                 isReauthenticating: reauthenticating,
                 cancelledAccountID: cancelledAccountID,
                 accountID: accountID,
                 // Read fresh: the attempt records its reason before it releases
                 // the account, so the reason is already there when this fires.
-                failureReason: environment.reauthError(accountID: accountID)
-            ))
+                failureReason: environment.reauthError(accountID: accountID),
+                failureAnnouncedElsewhere: environment.reauthFailureIsAnnouncedByComposer(accountID: accountID)
+            )
+            if let announcement { announce(announcement) }
             cancelledAccountID = nil
         }
         .onChange(of: accountID) { _, _ in cancelledAccountID = nil }
@@ -250,14 +266,20 @@ struct ReauthBanner: View {
     ///
     /// An attempt that ended in failure says why, once, here — the banner's
     /// secondary line shows the same reason to sighted users (audit W5).
+    /// Unless the attempt was a compose window's Sign In
+    /// (`failureAnnouncedElsewhere`): that window announces its own failure,
+    /// and VoiceOver heard the one failure twice. `nil` means "say nothing".
     nonisolated static func stateChangeAnnouncement(
         isReauthenticating: Bool,
         cancelledAccountID: Account.ID?,
         accountID: Account.ID,
-        failureReason: String? = nil
-    ) -> String {
+        failureReason: String? = nil,
+        failureAnnouncedElsewhere: Bool = false
+    ) -> String? {
         if !isReauthenticating, cancelledAccountID == accountID { return cancelledAnnouncement }
-        if !isReauthenticating, let failureReason { return failureAnnouncement(failureReason) }
+        if !isReauthenticating, let failureReason {
+            return failureAnnouncedElsewhere ? nil : failureAnnouncement(failureReason)
+        }
         return announcement(isReauthenticating: isReauthenticating)
     }
 

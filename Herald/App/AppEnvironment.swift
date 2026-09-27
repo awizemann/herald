@@ -102,11 +102,30 @@ final class AppEnvironment {
     var presentsAddAccount = false {
         didSet {
             // A fresh sheet starts clean: whatever failed before it was last
-            // closed is history. Not while a sign-in is running — that one's
-            // own failure may be about to land here.
-            if presentsAddAccount, !oldValue, !isSigningIn { signInError = nil }
+            // closed is history. Kept only while an ADD ACCOUNT attempt owns
+            // the slot (its own failure may be about to land here). Not gated
+            // on `isSigningIn` alone (P9b): a user's re-auth raises it too but
+            // never writes this slot, so opening Add Account during one showed
+            // the stale message.
+            let addAccountIsRunning = isSigningIn && signInReauthAccountID == nil
+            if presentsAddAccount, !oldValue, !addAccountIsRunning { signInError = nil }
         }
     }
+
+    /// A sign-out that could not finish while other accounts remain — the
+    /// Keychain refused, or its account list is unreadable — so the account may
+    /// come back at the next launch. Shown as an alert by the mail window
+    /// (audit N4); `nil` once dismissed. The last account's failure goes to
+    /// ``signInError`` instead, on the onboarding screen that is then showing.
+    var signOutError: String?
+
+    /// The launch's explanation when the saved account list is damaged (not
+    /// JSON) and so restores nothing: without it the user was dropped on the
+    /// onboarding screen with no word about the accounts they had. Same voice
+    /// as `AccountStoreError.indexUnreadable`'s message.
+    nonisolated static let damagedAccountIndexMessage =
+        "Herald's saved list of accounts is damaged, so it couldn't restore them. "
+            + "Sign in again to continue — the damaged list is set aside, not deleted."
 
     /// Why the last re-auth attempt for an account failed, per account (audit
     /// W5), in words the user can read — shown by the re-auth banner and by a
@@ -222,6 +241,12 @@ final class AppEnvironment {
     /// cancel (or a sign-out) can release that account's ``AutoReauthPolicy``
     /// claim without waiting for a task that may never return.
     @ObservationIgnored var signInReauthAccountID: Account.ID?
+    /// Accounts whose last re-auth attempt came from a compose window's Sign In
+    /// (see ``reauthFailureIsAnnouncedByComposer(accountID:)``).
+    @ObservationIgnored var composerAnnouncedReauths: Set<Account.ID> = []
+    /// Accounts ``healIfSessionRecovered(accountID:)`` is probing right now —
+    /// one probe per account at a time.
+    @ObservationIgnored var healingAccountIDs: Set<Account.ID> = []
     /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
     /// so every test — and any caller that does not opt in — collects nothing.
     let usage: any UsageTracking
@@ -451,6 +476,13 @@ final class AppEnvironment {
             return
         }
         guard !accounts.isEmpty else {
+            // An empty list may be a damaged one (not JSON), which the store
+            // answers as "no accounts": say so rather than showing onboarding
+            // as if Herald had never been signed in.
+            if await auth.accountIndexIsDamaged() {
+                logger.error("Account list damaged; showing onboarding with an explanation")
+                signInError = Self.damagedAccountIndexMessage
+            }
             phase = .signedOut
             return
         }
@@ -798,6 +830,9 @@ final class AppEnvironment {
             logger.info("a session-death report raced a re-install; ignored")
             return
         }
+        // Kept, so a later probe can tell whether the store has moved on to a
+        // different grant (``healIfSessionRecovered(accountID:)``).
+        graph.sessionDeath = death
         graph.mail.reportSessionExpired()
     }
 

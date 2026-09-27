@@ -58,5 +58,10 @@ struct HeraldApp: App {
                 .defaultAppStorage(UITestHarness.launched?.defaults ?? .standard)
                 #endif
         }
+        // The split layout wants room (sidebar 240 + a 720 page column); the
+        // window opens at the handoff's size and never shrinks below the
+        // view's minimum.
+        .defaultSize(SettingsLayout.defaultSize)
+        .windowResizability(.contentMinSize)
     }
 }

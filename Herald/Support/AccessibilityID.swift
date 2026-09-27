@@ -53,6 +53,29 @@ nonisolated enum AccessibilityID {
         static let mailboxPicker = "sidebar.mailboxPicker"
     }
 
+    /// The Settings window (`SettingsView` and its pages).
+    enum Settings {
+        static let sidebar = "settings.sidebar"
+        /// The account card's switcher menu.
+        static let accountCard = "settings.accountCard"
+        /// Each sidebar item is `itemPrefix + <route key>` — `general`,
+        /// `notifications`, `privacy`, `account`, `signatures`,
+        /// `domain.<domainID>` at the root, and `page.<page>` (`overview`,
+        /// `mailboxes`, `signatures`, `remove`) inside a domain.
+        static let itemPrefix = "settings.item."
+        /// "‹ Settings" at the top of a domain's level.
+        static let back = "settings.back"
+        /// The detail pane's serif title.
+        static let pageTitle = "settings.pageTitle"
+        static let density = "settings.general.density"
+        static let syncNow = "settings.account.syncNow"
+        /// Each colour swatch is `tintSwatchPrefix + <token name>`.
+        static let tintSwatchPrefix = "settings.account.tint."
+        static let tintReset = "settings.account.tintReset"
+        /// Sign Out… — re-homed here from `Sidebar.signOut` (handoff §4).
+        static let signOut = "settings.account.signOut"
+    }
+
     /// The conversation list (middle column).
     enum MailList {
         static let list = "mailList"

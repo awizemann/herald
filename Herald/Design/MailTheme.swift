@@ -500,6 +500,8 @@ enum MailTheme {
         static let metaStrong = Style(.monoSemibold, size: 11, relativeTo: .subheadline)
         /// Mono 10 semibold — a domain badge's letters (header/sidebar size).
         static let badge = Style(.monoSemibold, size: 10, relativeTo: .caption)
+        /// Mono 9 semibold, +5% — the SERVER / HERALD source tags in Settings.
+        static let tag = Style(.monoSemibold, size: 9, relativeTo: .caption2, tracking: 0.05)
 
         /// 44pt light — the onboarding welcome glyph (an SF Symbol, so system).
         static let heroGlyph = Font.system(size: 44, weight: .light)

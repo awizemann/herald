@@ -61,6 +61,26 @@ nonisolated enum AccessibilityID {
         /// finds a subject with `identifier BEGINSWITH rowPrefix AND label
         /// CONTAINS "<subject>"`.
         static let rowPrefix = "mailList.row."
+        /// The header's folder menu (All domains and domain scopes only).
+        static let folderMenu = "mailList.folderMenu"
+        /// The header's plain title (mailbox scope, where it is not a menu).
+        static let title = "mailList.title"
+        /// The "{scope} · {folder}" caption under the title.
+        static let caption = "mailList.caption"
+        /// The open label chip's × (clears the label filter).
+        static let clearLabel = "mailList.clearLabel"
+        /// An empty list's title text.
+        static let emptyTitle = "mailList.empty.title"
+        /// The Drafts-in-a-mailbox empty state's "Show All Drafts".
+        static let showAllDrafts = "mailList.empty.showAllDrafts"
+        /// Each draft row's summary element: `draftRowPrefix + draftID`.
+        static let draftRowPrefix = "mailList.draft."
+        /// The drilled-in thread's "‹ {folder}" back link.
+        static let threadBack = "mailList.thread.back"
+        /// The drilled-in thread's subject heading.
+        static let threadSubject = "mailList.thread.subject"
+        /// Each thread message row's summary element: `messageRowPrefix + messageID`.
+        static let messageRowPrefix = "mailList.message."
     }
 
     enum Toolbar {

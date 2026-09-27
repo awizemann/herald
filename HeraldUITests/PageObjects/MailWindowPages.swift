@@ -151,6 +151,53 @@ struct MailListPage {
     /// The toolbar's New Message button.
     var composeButton: XCUIElement { app.element(id: AccessibilityID.Toolbar.compose) }
     var refreshButton: XCUIElement { app.element(id: AccessibilityID.Toolbar.refresh) }
+
+    // MARK: Header band (redesign R5)
+
+    /// The folder menu — the header title at All domains and at a domain.
+    /// Its VALUE is the current folder's title ("Inbox").
+    var folderMenu: XCUIElement { app.element(id: AccessibilityID.MailList.folderMenu) }
+    /// The plain header title — at a mailbox scope, where it is not a menu.
+    var title: XCUIElement { app.element(id: AccessibilityID.MailList.title) }
+    /// "{scope} · {folder}", e.g. "All domains · Inbox".
+    var caption: XCUIElement { app.element(id: AccessibilityID.MailList.caption) }
+    /// The open label chip's × (absent when no label is open).
+    var clearLabel: XCUIElement { app.element(id: AccessibilityID.MailList.clearLabel) }
+
+    /// Picks a folder from the header's folder menu, by its title. The item
+    /// is looked up INSIDE the menu (SwiftUI does not carry identifiers to
+    /// menu items; the menu bar has folder-named items of its own).
+    func selectFolder(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
+        folderMenu.waitAndClick(file: file, line: line)
+        folderMenu.descendants(matching: .menuItem)[title].firstMatch.waitAndClick(file: file, line: line)
+    }
+
+    // MARK: Empty states
+
+    /// An empty list's title ("Nothing in Sent", "No drafts in team@", "No Results").
+    var emptyTitle: XCUIElement { app.element(id: AccessibilityID.MailList.emptyTitle) }
+    /// "Show All Drafts" — only on the Drafts-in-a-mailbox empty state.
+    var showAllDrafts: XCUIElement { app.element(id: AccessibilityID.MailList.showAllDrafts) }
+
+    // MARK: Drafts and thread
+
+    /// Every draft row's summary element.
+    var draftRows: XCUIElementQuery {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.MailList.draftRowPrefix)
+        )
+    }
+
+    /// The drilled-in thread's "‹ {folder}" back link.
+    var threadBack: XCUIElement { app.element(id: AccessibilityID.MailList.threadBack) }
+    /// The drilled-in thread's subject heading.
+    var threadSubject: XCUIElement { app.element(id: AccessibilityID.MailList.threadSubject) }
+    /// Every message row of the drilled-in thread, newest first.
+    var threadMessageRows: XCUIElementQuery {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", AccessibilityID.MailList.messageRowPrefix)
+        )
+    }
 }
 
 /// The mail window's alerts, found by title.

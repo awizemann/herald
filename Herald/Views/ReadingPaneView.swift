@@ -149,7 +149,7 @@ nonisolated enum ReadingPaneMessagePosition {
 /// (handoff §3.1 — "a 'To [badge] address' chip", "'From' for Drafts and
 /// Sent"). Distinct from `message.to` (the recipient list): the chip names the
 /// MAILBOX the message lives in, the same fact a conversation row's
-/// `MailboxChip` shows in the all-mailboxes scope, not who else was copied.
+/// row attribution shows in the wider scopes, not who else was copied.
 nonisolated enum ReadingPaneMailboxAddress {
     struct Info: Equatable {
         let word: String

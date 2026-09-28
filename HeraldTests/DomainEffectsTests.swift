@@ -287,6 +287,138 @@ struct DomainEffectsTests {
         #expect(model.selectedThreadID != "t_ops")
     }
 
+    // MARK: - Server-disabled mailboxes and domains
+
+    /// `ScopeHarness`'s mailbox with the two server switches set.
+    private static func mailbox(
+        _ id: String, _ address: String, domain: String, isActive: Bool = true, domainEnabled: Bool = true
+    ) -> Mailbox {
+        let base = ScopeHarness.mailbox(id, address, domain: domain)
+        let primary = base.addresses[0]
+        return Mailbox(
+            id: base.id,
+            address: base.address,
+            addresses: [MailboxAddress(
+                id: primary.id, mailboxID: primary.mailboxID, mailDomainID: primary.mailDomainID,
+                address: primary.address, displayName: primary.displayName,
+                receiveEnabled: primary.receiveEnabled, sendEnabled: primary.sendEnabled,
+                isPrimary: primary.isPrimary, domainEnabled: domainEnabled
+            )],
+            displayName: base.displayName,
+            isActive: isActive,
+            accessLevel: base.accessLevel,
+            createdAt: base.createdAt,
+            updatedAt: base.updatedAt
+        )
+    }
+
+    /// Rewrites the fixture's three mailboxes with the given switches, the way
+    /// a sync pass would after the owner flips them on the server.
+    private static func setServerSwitches(
+        _ harness: ScopeHarness,
+        teamActive: Bool = true,
+        northEnabled: Bool = true
+    ) async throws {
+        try await harness.store.upsertMailboxes([
+            mailbox("mbSales", "sales@acme.co", domain: ScopeHarness.acme),
+            mailbox("mbTeam", "team@acme.co", domain: ScopeHarness.acme, isActive: teamActive),
+            mailbox("mbOps", "ops@north.io", domain: ScopeHarness.north, domainEnabled: northEnabled),
+        ], accountID: ScopeHarness.account)
+    }
+
+    /// A mailbox switched off at the server (`isActive == false`) in a domain
+    /// that keeps another, active one. Fails if the disabled mailbox stays in
+    /// its domain, the counts or the badge; if the All domains listing keeps
+    /// its mail (the store's "every mailbox" fast path would, with no domain
+    /// excluded); or if it can still post a banner.
+    @Test("An inactive mailbox leaves its domain, the counts, the listing and notifications")
+    func inactiveMailboxIsExcluded() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        try await Self.setServerSwitches(harness, teamActive: false)
+        await harness.model.start()
+        let model = harness.model
+
+        #expect(model.domains.map(\.name) == ["acme.co", "north.io"], "acme keeps its active mailbox")
+        #expect(model.domains.first { $0.id == ScopeHarness.acme }?.mailboxIDs == ["mbSales"])
+        #expect(!model.mailboxes.contains { $0.id == "mbTeam" })
+        #expect(model.inboxUnreadByDomain == [ScopeHarness.acme: 1, ScopeHarness.north: 1])
+        #expect(model.allDomainsInboxUnread == 2)
+        #expect(model.badgeInboxUnread == 2)
+        #expect(harness.listed == ["t_sales", "t_ops"])
+        #expect(model.notificationSilencedMailboxIDs() == ["mbTeam"])
+
+        // Switched back on: everything returns.
+        try await Self.setServerSwitches(harness)
+        await model.reloadMailboxes()
+        await model.reloadConversations()
+        #expect(model.allDomainsInboxUnread == 3)
+        #expect(harness.listed == ["t_sales", "t_team", "t_ops"])
+        #expect(model.notificationSilencedMailboxIDs().isEmpty)
+    }
+
+    /// The domain's own switch (`domainEnabled == false` on its addresses).
+    /// Fails if the flag is ignored, or if a domain with no enabled mailbox
+    /// left still gets a row. The other fixture mailboxes carry the default
+    /// (`true`, what an older server's absent field decodes to) and must stay.
+    @Test("A disabled domain disappears with all of its mailboxes")
+    func disabledDomainIsExcluded() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        try await Self.setServerSwitches(harness, northEnabled: false)
+        await harness.model.start()
+        let model = harness.model
+
+        #expect(model.domains.map(\.name) == ["acme.co"])
+        #expect(model.allDomainsInboxUnread == 2)
+        #expect(model.badgeInboxUnread == 2)
+        #expect(harness.listed == ["t_sales", "t_team"])
+        #expect(model.notificationSilencedMailboxIDs() == ["mbOps"])
+    }
+
+    /// Mirrors `hideDomain`: a window standing in what the server just switched
+    /// off falls back to All domains, keeping its folder. Fails if the scope
+    /// is left on a mailbox or domain that no longer exists in the sidebar.
+    @Test("A scope inside a mailbox or domain the server disabled falls back to All domains")
+    func scopeFallsBackWhenDisabled() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        await harness.model.start()
+        let model = harness.model
+
+        model.selectScope(.mailbox("mbTeam"))
+        model.selectFolder(.conversation(.archived))
+        await harness.settle()
+        try await Self.setServerSwitches(harness, teamActive: false)
+        await model.reloadMailboxes()
+        #expect(model.scope == .allDomains)
+        #expect(model.folder == .conversation(.archived))
+
+        model.selectScope(.domain(ScopeHarness.north))
+        await harness.settle()
+        try await Self.setServerSwitches(harness, teamActive: false, northEnabled: false)
+        await model.reloadMailboxes()
+        #expect(model.scope == .allDomains)
+    }
+
+    /// Fails if a composer for a disabled mailbox is still offered that
+    /// mailbox's address, or keeps drafting into it under another's From.
+    @Test("Compose never sends from a disabled mailbox")
+    func composeSkipsDisabledMailbox() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        try await Self.setServerSwitches(harness, teamActive: false)
+        await harness.model.start()
+        let model = harness.model
+
+        let context = try #require(await model.composeContext(for: ComposeRequest(kind: .new, mailboxID: "mbTeam")))
+        #expect(context.fromAddress != "team@acme.co")
+        #expect(context.mailboxID != "mbTeam")
+        #expect(model.mailboxes.contains { $0.id == context.mailboxID && $0.address == context.fromAddress })
+        // Still the user's own address: reply-all must not CC it.
+        #expect(model.ownAddresses.contains("team@acme.co"))
+    }
+
     // MARK: - Preference hygiene
 
     /// Fails if the purge misses a stored override, touches a key outside

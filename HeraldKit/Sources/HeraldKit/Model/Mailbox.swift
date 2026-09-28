@@ -17,7 +17,7 @@ import Foundation
 public nonisolated struct MailboxAddress: Sendable, Hashable, Codable, Identifiable {
     // Listed explicitly: see the cache-blob convention above.
     enum CodingKeys: String, CodingKey {
-        case id, mailboxID, mailDomainID, address, displayName, receiveEnabled, sendEnabled, isPrimary
+        case id, mailboxID, mailDomainID, address, displayName, receiveEnabled, sendEnabled, isPrimary, domainEnabled
     }
 
     /// Total decode — a throw here would be a `try!` crash inside SwiftData.
@@ -34,6 +34,9 @@ public nonisolated struct MailboxAddress: Sendable, Hashable, Codable, Identifia
         self.receiveEnabled = value(.receiveEnabled, false)
         self.sendEnabled = value(.sendEnabled, false)
         self.isPrimary = value(.isPrimary, false)
+        // A blob written before this field existed carries no key: enabled,
+        // like a server that does not send it.
+        self.domainEnabled = value(.domainEnabled, true)
     }
 
     public let id: String
@@ -44,6 +47,10 @@ public nonisolated struct MailboxAddress: Sendable, Hashable, Codable, Identifia
     public let receiveEnabled: Bool
     public let sendEnabled: Bool
     public let isPrimary: Bool
+    /// Whether the address's mail domain is enabled on the server (the
+    /// owner's per-domain "Active" switch). Optional in the API — a server
+    /// that predates it omits it, and absent means enabled.
+    public let domainEnabled: Bool
 
     public init(
         id: String,
@@ -53,7 +60,8 @@ public nonisolated struct MailboxAddress: Sendable, Hashable, Codable, Identifia
         displayName: String,
         receiveEnabled: Bool,
         sendEnabled: Bool,
-        isPrimary: Bool
+        isPrimary: Bool,
+        domainEnabled: Bool = true
     ) {
         self.id = id
         self.mailboxID = mailboxID
@@ -63,6 +71,7 @@ public nonisolated struct MailboxAddress: Sendable, Hashable, Codable, Identifia
         self.receiveEnabled = receiveEnabled
         self.sendEnabled = sendEnabled
         self.isPrimary = isPrimary
+        self.domainEnabled = domainEnabled
     }
 }
 
@@ -96,6 +105,15 @@ public nonisolated struct Mailbox: Sendable, Hashable, Codable, Identifiable {
         self.accessLevel = accessLevel
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// Whether the owner has this mailbox switched on at the server: the
+    /// mailbox itself is active AND its domain is enabled (judged on the
+    /// primary — first — address, the same one ``MailDomain`` groups by).
+    /// A disabled mailbox is left out of everything Herald lists, counts,
+    /// notifies about or sends from — see `MailViewModel.reloadMailboxes()`.
+    public var isEnabled: Bool {
+        isActive && (addresses.first?.domainEnabled ?? true)
     }
 
     /// Addresses this mailbox may send from, primary first.

@@ -18,7 +18,9 @@ nonisolated extension MailboxAddress {
             displayName: generated.displayName,
             receiveEnabled: generated.receiveEnabled,
             sendEnabled: generated.sendEnabled,
-            isPrimary: generated.isPrimary
+            isPrimary: generated.isPrimary,
+            // Absent from a server that predates the field: enabled.
+            domainEnabled: generated.domainEnabled ?? true
         )
     }
 }

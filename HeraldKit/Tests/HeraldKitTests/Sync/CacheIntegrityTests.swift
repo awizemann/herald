@@ -78,6 +78,8 @@ struct CacheIntegrityTests {
 
         let address = try decoder.decode(MailboxAddress.self, from: empty)
         #expect(address.sendEnabled == false)
+        // A row cached before `domainEnabled` existed: enabled, never hidden.
+        #expect(address.domainEnabled)
 
         // An unknown `mode` must land on `.none` rather than throwing.
         let signature = try decoder.decode(
@@ -125,7 +127,10 @@ struct CacheIntegrityTests {
             displayName: "Ada",
             receiveEnabled: true,
             sendEnabled: true,
-            isPrimary: true
+            isPrimary: true,
+            // Non-default, so a field missing from `CodingKeys` decodes back as
+            // `true` and fails the round trip.
+            domainEnabled: false
         )
         #expect(try decoder.decode(MailboxAddress.self, from: encoder.encode(address)) == address)
 

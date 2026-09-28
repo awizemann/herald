@@ -113,6 +113,78 @@ import Testing
         #expect(mailboxes[1].createdAt == Fixtures.date("2026-01-02T03:04:05.000Z"))
     }
 
+    /// Fails if `Mapping.swift` drops `domainEnabled` (the explicit `false`
+    /// would read as enabled) or defaults an ABSENT one to disabled (every
+    /// mailbox from a server that predates the field would vanish).
+    @Test("domainEnabled maps; absent from an older server means enabled")
+    func domainEnabledMapping() async throws {
+        let server = FakeServer()
+        server.route("GET", "/api/v1/mailboxes", .json(200, Self.domainEnabledJSON))
+
+        let mailboxes = try await makeClient(server).listMailboxes()
+
+        #expect(mailboxes.map(\.id) == ["mbx_off", "mbx_on", "mbx_legacy"])
+        #expect(mailboxes.map { $0.addresses.first?.domainEnabled } == [false, true, true])
+        #expect(mailboxes.map(\.isEnabled) == [false, true, true])
+    }
+
+    /// The rule the app filters on. Fails if either server switch is ignored,
+    /// or if a mailbox with no address at all (a stale cache row) is dropped.
+    @Test("A mailbox is enabled only when it is active and its domain is enabled")
+    func mailboxIsEnabledNeedsBothSwitches() {
+        func mailbox(isActive: Bool, domainEnabled: Bool?) -> Mailbox {
+            let addresses = domainEnabled.map {
+                [MailboxAddress(
+                    id: "adr", mailboxID: "mbx", mailDomainID: "dom", address: "a@acme.co",
+                    displayName: "", receiveEnabled: true, sendEnabled: true, isPrimary: true, domainEnabled: $0
+                )]
+            } ?? []
+            return Mailbox(
+                id: "mbx", address: "a@acme.co", addresses: addresses, displayName: "",
+                isActive: isActive, accessLevel: .manager, createdAt: .distantPast, updatedAt: .distantPast
+            )
+        }
+        #expect(mailbox(isActive: true, domainEnabled: true).isEnabled)
+        #expect(!mailbox(isActive: false, domainEnabled: true).isEnabled)
+        #expect(!mailbox(isActive: true, domainEnabled: false).isEnabled)
+        #expect(mailbox(isActive: true, domainEnabled: nil).isEnabled)
+    }
+
+    /// One mailbox per `domainEnabled` state: false, true, and absent.
+    private static let domainEnabledJSON = """
+    [
+      \(domainEnabledMailbox(id: "mbx_off", extra: #","domainEnabled": false"#)),
+      \(domainEnabledMailbox(id: "mbx_on", extra: #","domainEnabled": true"#)),
+      \(domainEnabledMailbox(id: "mbx_legacy", extra: ""))
+    ]
+    """
+
+    private static func domainEnabledMailbox(id: String, extra: String) -> String {
+        """
+        {
+          "id": "\(id)",
+          "address": "\(id)@example.com",
+          "addresses": [
+            {
+              "id": "adr_\(id)",
+              "mailboxId": "\(id)",
+              "mailDomainId": "dom_1",
+              "address": "\(id)@example.com",
+              "displayName": "",
+              "receiveEnabled": true,
+              "sendEnabled": true,
+              "isPrimary": true\(extra)
+            }
+          ],
+          "displayName": "",
+          "isActive": true,
+          "accessLevel": "manager",
+          "createdAt": "2026-01-02T03:04:05.000Z",
+          "updatedAt": "2026-02-02T03:04:05.000Z"
+        }
+        """
+    }
+
     @Test("Message HTML keeps the null quoted section and the remote-media flags")
     func messageHTMLMapping() async throws {
         let server = FakeServer()

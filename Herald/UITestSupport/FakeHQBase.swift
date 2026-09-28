@@ -860,6 +860,9 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
                 "receiveEnabled": true,
                 "sendEnabled": true,
                 "isPrimary": true,
+                // Optional upstream (older servers omit it); sent here so the
+                // UI suite exercises the newer wire shape.
+                "domainEnabled": true,
             ]],
             "displayName": "UI Test",
             "isActive": true,

@@ -181,7 +181,17 @@ final class MailViewModel {
 
     // MARK: Published state
 
+    /// The mailboxes Herald shows: every cached mailbox the owner has NOT
+    /// switched off at the server (``Mailbox/isEnabled``). Everything
+    /// domain-shaped — the sidebar, counts, badge, notifications, Settings'
+    /// domain pages, the From address — is derived from this list, so
+    /// filtering it once in ``reloadMailboxes()`` is what removes a disabled
+    /// mailbox (or a whole disabled domain) everywhere.
     private(set) var mailboxes: [Mailbox] = []
+    /// The cached mailboxes ``mailboxes`` leaves out. The store still holds
+    /// their mail (sync is untouched), so every "every mailbox" fast path must
+    /// check this is empty before taking it.
+    private var disabledMailboxes: [Mailbox] = []
     /// The account's domains, derived from ``mailboxes`` on every mailbox
     /// reload (``MailDomain/domains(from:)``) — a domain scope is the set of
     /// its mailboxes' ids, and nothing about it lives on the server.
@@ -371,8 +381,9 @@ final class MailViewModel {
     /// place a ``Scope`` becomes the set every store query takes.
     ///
     /// `.allDomains` leaves out the domains the user hid or took out of "All
-    /// domains"; when none is, the answer is `nil` rather than the full set, so
-    /// the store keeps its unfiltered fast path. A domain that no longer exists
+    /// domains", and every mailbox the server disabled; when there is none of
+    /// either, the answer is `nil` rather than the full set, so the store keeps
+    /// its unfiltered fast path. A domain that no longer exists
     /// resolves to the EMPTY set (lists nothing) rather than to everything.
     func mailboxIDs(for scope: Scope) -> Set<String>? {
         switch scope {
@@ -382,7 +393,7 @@ final class MailViewModel {
             return Set(domains.first { $0.id == id }?.mailboxIDs ?? [])
         case .allDomains:
             let excluded = domains.filter(isExcludedFromAllDomains)
-            guard !excluded.isEmpty else { return nil }
+            guard !excluded.isEmpty || !disabledMailboxes.isEmpty else { return nil }
             return Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
         }
     }
@@ -405,13 +416,13 @@ final class MailViewModel {
     /// `includeInAll`.
     func badgeMailboxIDs() -> Set<String>? {
         let excluded = domains.filter(isExcludedFromBadge)
-        guard !excluded.isEmpty else { return nil }
+        guard !excluded.isEmpty || !disabledMailboxes.isEmpty else { return nil }
         return Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
     }
 
-    /// Mailboxes whose new mail must not post a banner: every mailbox of a
-    /// hidden domain, and of a domain whose own "Notify me about new mail" is
-    /// explicitly off.
+    /// Mailboxes whose new mail must not post a banner: every mailbox the
+    /// server has disabled, every mailbox of a hidden domain, and of a domain
+    /// whose own "Notify me about new mail" is explicitly off.
     ///
     /// Only ever NARROWS the global switch. `notify == nil` follows the global
     /// setting, and an explicit `true` cannot override a global OFF: the global
@@ -419,7 +430,7 @@ final class MailViewModel {
     /// asked). Otherwise a domain toggled off and back on — which stores an
     /// explicit `true` — would keep posting after the user silenced Herald.
     func notificationSilencedMailboxIDs() -> Set<String> {
-        var silenced: Set<String> = []
+        var silenced = Set(disabledMailboxes.map(\.id))
         for domain in domains {
             let hidden = DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
             let notify = DomainPreferences.notify(accountID: accountID, domainID: domain.id, in: defaults)
@@ -457,7 +468,7 @@ final class MailViewModel {
     /// deleted must not keep an invisible filter on the list.
     func validatedLocation(_ location: Location) -> Location {
         var result = location
-        if !mailboxes.isEmpty {
+        if !mailboxes.isEmpty || !disabledMailboxes.isEmpty {
             switch location.scope {
             case .allDomains:
                 break
@@ -1750,8 +1761,12 @@ final class MailViewModel {
     func reloadMailboxes() async {
         do {
             let loaded = try await store.mailboxes(accountID: accountID)
-            mailboxes = loaded
-            domains = MailDomain.domains(from: loaded)
+            // THE filter for server-disabled mailboxes and domains (see
+            // ``mailboxes``). A scope standing on one that just went away falls
+            // back to All domains in `correctStaleScope()`, like a hidden domain.
+            mailboxes = loaded.filter(\.isEnabled)
+            disabledMailboxes = loaded.filter { !$0.isEnabled }
+            domains = MailDomain.domains(from: mailboxes)
             mailboxNames = Self.makeMailboxNames(loaded)
             correctStaleScope()
         } catch {
@@ -2188,16 +2203,24 @@ final class MailViewModel {
 
     // MARK: - Compose
 
-    /// Every address this account owns, across all its mailboxes. Reply-all
-    /// subtracts these, so passing an empty list would CC the user themselves.
+    /// Every address this account owns, across all its mailboxes — disabled
+    /// ones included: they are still the user's, and reply-all subtracts
+    /// these, so leaving one out would CC the user themselves.
     var ownAddresses: [String] {
-        EmailAddress.dedupe(mailboxes.flatMap { [$0.address] + $0.addresses.map(\.address) })
+        EmailAddress.dedupe((mailboxes + disabledMailboxes).flatMap { [$0.address] + $0.addresses.map(\.address) })
+    }
+
+    /// The mailbox a message from `mailboxID` is sent from: that mailbox, or
+    /// the first enabled one when it is unknown or disabled at the server — a
+    /// disabled mailbox's address is never offered.
+    func sendingMailbox(for mailboxID: String?) -> Mailbox? {
+        mailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first
     }
 
     /// The address a message from `mailboxID` should be sent from: the mailbox's
     /// primary send-enabled address, falling back to its main address.
     func sendAddress(forMailbox mailboxID: String?) -> String {
-        guard let mailbox = mailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first else { return "" }
+        guard let mailbox = sendingMailbox(for: mailboxID) else { return "" }
         return mailbox.sendableAddresses.first?.address ?? mailbox.address
     }
 
@@ -2248,7 +2271,12 @@ final class MailViewModel {
                 }
             }
         }
-        let mailboxID = message?.summary.mailboxID ?? request.mailboxID
+        var mailboxID = message?.summary.mailboxID ?? request.mailboxID
+        // A mailbox disabled at the server sends from the enabled one its From
+        // address comes from, so the draft and its From agree.
+        if let id = mailboxID, disabledMailboxes.contains(where: { $0.id == id }) {
+            mailboxID = sendingMailbox(for: id)?.id ?? id
+        }
         return ComposeContext(
             id: request.id,
             kind: request.kind,

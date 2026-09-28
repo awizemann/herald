@@ -3903,6 +3903,10 @@
           },
           "isPrimary": {
             "type": "boolean"
+          },
+          "domainEnabled": {
+            "type": "boolean",
+            "description": "Whether the address's mail domain is enabled. Omitted by servers that predate it; treat absent as enabled."
           }
         }
       },

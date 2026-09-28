@@ -18,9 +18,9 @@ struct OnboardingView: View {
                 .foregroundStyle(MailTheme.Color.accent)
                 .accessibilityHidden(true)
             Text("Connect to HQBase")
-                .font(.title2.weight(.semibold))
+                .textStyle(MailTheme.Typography.display)
             Text("Herald works with your own HQBase server. Enter its address to sign in.")
-                .font(.callout)
+                .textStyle(MailTheme.Typography.snippet)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
@@ -35,7 +35,7 @@ struct OnboardingView: View {
 
             if let message = environment.signInError {
                 Label(message, systemImage: MailTheme.Symbol.warning)
-                    .font(.callout)
+                    .textStyle(MailTheme.Typography.snippet)
                     .foregroundStyle(MailTheme.failure)
                     .frame(maxWidth: 380)
                     .accessibilityIdentifier(AccessibilityID.Onboarding.error)
@@ -48,7 +48,7 @@ struct OnboardingView: View {
                 HStack(spacing: MailTheme.Spacing.sm) {
                     ProgressView().controlSize(.small)
                     Text(stage.message)
-                        .font(.callout)
+                        .textStyle(MailTheme.Typography.snippet)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: 380)

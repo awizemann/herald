@@ -65,7 +65,7 @@ struct UITestStatusLabel: View {
 
     var body: some View {
         Text(harness.status)
-            .font(.system(.caption2, design: .monospaced))
+            .font(MailTheme.Typography.meta.font)
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .padding(MailTheme.Spacing.xxs)

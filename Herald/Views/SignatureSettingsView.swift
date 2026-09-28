@@ -53,7 +53,7 @@ struct SignatureSettingsPane: View {
                 Section {
                     Label(actionError, systemImage: MailTheme.Symbol.warning)
                         .foregroundStyle(MailTheme.failure)
-                        .font(.callout)
+                        .textStyle(MailTheme.Typography.snippet)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -207,10 +207,10 @@ struct SignatureMessagePane<Action: View>: View {
                 // Decorative: the title below says the same thing in words.
                 .accessibilityHidden(true)
             Text(title)
-                .font(.headline)
+                .textStyle(MailTheme.Typography.headline)
             if let message {
                 Text(message)
-                    .font(.callout)
+                    .textStyle(MailTheme.Typography.snippet)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -239,7 +239,7 @@ private struct SignatureRow: View {
                 }
                 if !preview.isEmpty {
                     Text(preview)
-                        .font(.caption)
+                        .textStyle(MailTheme.Typography.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -277,7 +277,7 @@ private struct SignatureRow: View {
 
     private var defaultBadge: some View {
         Text("Default")
-            .font(.caption2)
+            .textStyle(MailTheme.Typography.tag)
             .padding(.horizontal, MailTheme.Spacing.sm)
             .padding(.vertical, MailTheme.Spacing.xxs)
             .background(MailTheme.chipBackground, in: .rect(cornerRadius: MailTheme.Radius.sm))
@@ -314,7 +314,7 @@ private struct SignatureEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.lg) {
             Text(editor.title)
-                .font(.headline)
+                .textStyle(MailTheme.Typography.headline)
 
             Form {
                 TextField("Name", text: $editor.name)
@@ -344,7 +344,7 @@ private struct SignatureEditorSheet: View {
             HStack(alignment: .top, spacing: MailTheme.Spacing.lg) {
                 editorColumn(title: "HTML") {
                     TextEditor(text: $editor.html)
-                        .font(.system(.body, design: .monospaced))
+                        .font(MailTheme.Typography.code.font)
                         .accessibilityLabel("Signature HTML")
                         .overlay {
                             RoundedRectangle(cornerRadius: MailTheme.Radius.md)
@@ -368,13 +368,13 @@ private struct SignatureEditorSheet: View {
             if let fieldError = editor.fieldError {
                 Label(fieldError, systemImage: MailTheme.Symbol.warning)
                     .foregroundStyle(MailTheme.failure)
-                    .font(.callout)
+                    .textStyle(MailTheme.Typography.snippet)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
                 Text("The server sanitises and appends this signature when the message is sent.")
-                    .font(.caption)
+                    .textStyle(MailTheme.Typography.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { model.cancelEdit() }
@@ -415,7 +415,7 @@ private struct SignatureEditorSheet: View {
     private func editorColumn(title: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
             Text(title)
-                .font(.caption)
+                .textStyle(MailTheme.Typography.caption)
                 .foregroundStyle(.secondary)
             content()
         }

@@ -44,7 +44,7 @@ struct LaunchPlaceholder: View {
             ProgressView()
                 .controlSize(.small)
             Text(milestone)
-                .font(.callout)
+                .textStyle(MailTheme.Typography.snippet)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -385,12 +385,12 @@ struct BannerView<Actions: View>: View {
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                Text(text).font(.callout)
+                Text(text).textStyle(MailTheme.Typography.snippet)
                 if let detail {
                     // Server-supplied wording can run long: two lines here,
                     // the whole of it in the tooltip and for VoiceOver.
                     Text(detail)
-                        .font(.caption)
+                        .textStyle(MailTheme.Typography.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .help(detail)

@@ -361,7 +361,7 @@ struct ComposeView: View {
         DisclosureGroup("Quoted \(model.draft.mode.forwardOfMessageID != nil ? "message" : "original")") {
             ScrollView {
                 Text(text)
-                    .font(.callout)
+                    .textStyle(MailTheme.Typography.snippet)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -507,12 +507,12 @@ struct ComposeView: View {
             HStack(spacing: MailTheme.Spacing.sm) {
                 Image(systemName: MailTheme.Symbol.warning).foregroundStyle(MailTheme.failure)
                 VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                    Text(message).font(.callout)
+                    Text(message).textStyle(MailTheme.Typography.snippet)
                     // Why the last sign-in for this account failed (audit W5);
                     // only while Sign In is offered.
                     if let reason = model.signInFailureReason {
                         Text(reason)
-                            .font(.caption)
+                            .textStyle(MailTheme.Typography.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                             .help(reason)
@@ -544,7 +544,7 @@ struct ComposeView: View {
         case .inProgress:
             HStack(spacing: MailTheme.Spacing.xs) {
                 ProgressView().controlSize(.small).accessibilityHidden(true)
-                Text("Signing in…").font(.callout).foregroundStyle(.secondary)
+                Text("Signing in…").textStyle(MailTheme.Typography.snippet).foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Signing in to this message’s account")

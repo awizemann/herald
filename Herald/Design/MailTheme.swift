@@ -570,11 +570,12 @@ enum MailTheme {
         static let tokenInitials = Style(.textSemibold, size: 8, relativeTo: .caption2)
         /// 11 semibold — a thread row's 28pt avatar initials.
         static let avatarInitials = Style(.textSemibold, size: 11, relativeTo: .caption)
+        /// Mono 12 / 1.45 — editable source text (the signature HTML editor).
+        static let code = Style(.mono, size: 12, relativeTo: .body, lineHeight: 1.45)
 
-        // System-font sizes the handoff does not restyle: small SF Symbols
-        // sized against the text beside them, and a few bars that predate the
-        // type scale. Named so no view spells `.caption` itself; moving one onto
-        // the bundled scale is a deliberate size change, made here.
+        // Font-only roles, and system sizes for SF Symbols sized against the
+        // text beside them (glyphs are symbols, not text, so they stay system).
+        // Named so no view spells a system text style itself.
 
         /// An inline glyph at caption size — a row's paperclip, a chip's ×.
         static let inlineGlyph = Font.caption
@@ -583,13 +584,13 @@ enum MailTheme {
         /// A back link's chevron (the thread view's "‹ Inbox").
         static let backChevronGlyph = Font.body.weight(.medium)
         /// A row label chip's name and the "+n" overflow chip beside it.
-        static let rowChip = Font.caption2
-        /// The server-search status bar under the list.
-        static let statusBar = Font.caption
-        /// The sidebar's sync status when it reports a problem: bold, because
-        /// caption-sized `danger` on the sidebar material misses 4.5:1 at
-        /// regular weight.
-        static let statusProblem = Font.caption.bold()
+        static let rowChip = font(.text, size: 10, relativeTo: .caption2)
+        /// The server-search status bar under the list (the `caption` face).
+        static let statusBar = font(.text, size: 11, relativeTo: .subheadline)
+        /// The sidebar's sync status when it reports a problem: semibold,
+        /// because caption-sized `danger` on the sidebar material misses 4.5:1
+        /// at regular weight.
+        static let statusProblem = font(.textSemibold, size: 11, relativeTo: .subheadline)
 
         /// 44pt light — the onboarding welcome glyph (an SF Symbol, so system).
         static let heroGlyph = Font.system(size: 44, weight: .light)

@@ -7,7 +7,7 @@ source_paths: [HeraldKit/Sources/HeraldAPI/openapi.json, scripts/vendor-openapi.
 source_paths_inferred: false
 source_sha: a82a8d7cce5a32c719d4a94f4f07bc68fc504033
 created: 2026-08-16
-updated: 2026-09-26
+updated: 2026-09-28
 reviewed: 2026-09-20
 reviewed_by: audit:claude-code (background)
 ---
@@ -190,3 +190,13 @@ Verified at HTTP level (PKCE with Herald's scope set incl. `offline_access`, the
 ## Update (2026-09-26 — dead client registration, from better-auth oauth-provider source; session-recovery P7)
 - [fact] Unknown/disabled PUBLIC client at the token endpoint (refresh or code exchange) → **400** `{"error":"invalid_client","error_description":"missing client"}` (`throwInvalidClient`; 401 + `WWW-Authenticate` only when client auth used Basic). The client is validated before the grant, so a refresh with a dead client does not touch the refresh-token family. Herald treats `invalid_client`/`unauthorized_client` as a dead session AND forgets `client.<origin>`; a bare 401 (no JSON) is treated as a dead session but keeps the registration (see [[Sign-In Recoverability and the Presentation Watchdog]] #dead-client) #invalid-client
 - [fact] `/oauth2/authorize` with an unknown client_id NEVER redirects to the callback: it sends the browser to `{baseURL}/error?error=invalid_client` (RFC 6749 §4.1.2.1 carve-out); `client_disabled` and `unauthorized_client` (grant not allowed) also go to the error page. So a stale stored client_id shows a server error page in the consent window, not a callback error #authorize-errors
+
+
+
+## Update (2026-09-28 — sent-reply threading + changes journal + events frame, VERIFIED LIVE on a fresh 1.4.2 instance)
+
+Verified against a freshly-built local v1.4.2 worktree (owner cookie session, no PKCE) per the #setup-142 procedure; torn down immediately after (t-a2551142). Created a brand-new thread between two of the instance's own mailboxes (`billing@example.test` → `help@example.test`, both `*.example.test`, no external delivery) via `POST /send`, then exercised `POST /reply` against it.
+
+- [fact] `POST /reply` threads correctly: the reply's `MessageSummary.threadId` was byte-identical to the original message's `threadId` (`thr_135b69ac-…`) across three chained replies (billing→help→billing→help), each one replying to the PREVIOUS reply's `messageId`. The reply lands in the REPLYING mailbox's `sent` folder (`folder:"sent"`), addressed by `Origin: http://localhost:8787` + cookie session (state-changing calls 400 `ORIGIN_FORBIDDEN` without that header, same as sign-out/consent) #reply-threading-verified
+- [fact] The change journal picks up a sent reply as exactly ONE `upsert` entry keyed to the NEW reply message, `hasMore:false`, at the cursor taken immediately before the `POST /reply` call — same checkpoint/upsert shape as the 2026-09-04 `#changes-live` note, now reconfirmed for a reply specifically (not just a generic mutation) #reply-in-changes
+- [fact] `GET /api/v1/events` DOES deliver a `{"type":"changed","topic":"messages"}` frame to the SENDER'S OWN socket after their own `POST /reply` — confirmed on the third attempt (frame arrived within ~15s of connecting, sent ~1s after the socket reported CONNECTED). A first attempt where the socket connected, then a reply was sent immediately, then only an 8s window was watched, saw no frame (timed out) — so the frame is not necessarily instantaneous/synchronous with the HTTP response; don't treat a short (<10s) silent window as proof of no self-echo. Same principal (owner, single cookie session) both replied and listened; not tested cross-principal #reply-events-self-echo

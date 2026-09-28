@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/decisions/herald-sync-model
 tags: [decision, swiftdata, sync]
 created: 2026-08-16
-updated: 2026-09-19
+updated: 2026-09-28
 ---
 
 ## Observations
@@ -35,7 +35,7 @@ updated: 2026-09-19
 ## Update (2026-08-18 — journal mode)
 - [decision] SyncEngine has two modes chosen per pass by feature detection: JOURNAL (server has /changes: checkpoint → paginated bootstrap per mailbox+folder → conversations → consume changes; steady state = re-list mailboxes (purge vanished, bootstrap new BEFORE the journal) → page /changes to hasMore=false persisting the cursor AFTER EACH applied page → re-list conversations only for touched (mailbox, conversation-folder) scopes, always incl. starred; 410 → clear checkpoint + re-bootstrap) and LEGACY (today's re-list; page-walks fully once a Link/cursor has ever been seen for the account, else the 100-cap guard applies). A 404 from /changes marks the account legacy for the engine's lifetime (re-probed on next activation) #journal
 - [fact] `CachedSyncCheckpoint` @Model (accountID unique: changeCursor, bootstrappedAt) lives in the rebuildable cache — nuking the cache forces a clean re-bootstrap by design; message page-walks are capped at 50 pages (skip tombstoning + warn when hit) #checkpoint
-- [gotcha] Tombstoning a message cannot fix conversation rows (denormalized per listing scope) — journal mode must re-list touched scopes; nothing but the starred scope reveals a star change #derived
+- [gotcha] Tombstoning a message cannot fix conversation rows (denormalized per listing scope) — journal mode must re-list touched scopes; nothing but the starred scope reveals a star change. "Touched" = the message's own (and previous) folder scope PLUS every in-scope listing whose cached CachedConversation already holds the message's threadID (MessageUpsertResult.threadListings) — a sent reply otherwise leaves the Inbox row at messageCount 1 and the reply is never shown. Deletes still touch only the deleted message's own scope #derived
 - [decision] Journal-sync hardening (audit of c78f421, fixed in bf7d2e1): MailStore keeps a PENDING-MUTATION fence per (account, message) — journal upserts never overwrite readAt/starredAt/folder while a local action is in flight; on POST success the server's returned summary is applied as authoritative and the fence dropped; revert happens only if the row still equals the optimistic snapshot. Conversation scopes are refreshed PER PAGE before that page's cursor is persisted; a folder move refreshes old AND new scopes; a new mailbox's row is written only after its listing succeeds; `stopAndWait()` + pass-generation guard mean no store writes after stop; a cursored 404 on /changes is a pass failure (only the cursor-less probe flips to legacy); pages apply in journal order; the bootstrap checkpoint is persisted before catch-up #hardening
 - [gotcha] The journal removes re-listing's 15s self-healing — every "cursor advanced but derived state not updated" path becomes a durable divergence; treat cursor-persist as a transaction boundary #atomicity
 
@@ -155,3 +155,7 @@ Two consequences of U2's "membership comes from ROWS", found by the U6 audit.
   — so the per-session capability sets (`labellessAccounts`,
   `labelEmbeddingAccounts`, `lastSweepDigests`, `draftlessAccounts`) are still
   declared there, with their reasoning moved next to the code that writes them #split
+
+
+## Send → immediate sync
+An accepted send calls `ComposeViewModel`'s `sent` hook once (never on failure / send hold); `AppEnvironment.makeComposeViewModel` routes it to the COMPOSING account's `graphs[accountID]?.sync.refreshNow()` (looked up fresh, no-op if signed out). No optimistic local upsert of the receipt — the sync pass brings the sent message in (owner decision, commit 204a6cf).

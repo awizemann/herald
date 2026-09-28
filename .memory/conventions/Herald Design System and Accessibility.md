@@ -24,7 +24,7 @@ updated: 2026-09-28
 - [fact] MailViewModel exposes two @ObservationIgnored reload counters solely so tests can prove "no speculative reload" — the only test instrumentation in the VM #testing
 
 ## Update (2026-08-16 — chips + dates)
-- [rule] Mailbox tint = `MailboxColorAssignment` (FNV-1a over lowercased address → `MailTheme.mailboxPalette` index; override stored as the token NAME under `mailboxColor.<accountID>.<mailboxID>`); the palette ORDER is a persistence contract — append tints, never reorder. Never use `Hasher`/`hashValue` for anything that must survive relaunch (per-process seeded) #tint
+- [rule] SUPERSEDED 2026-09-28 (redesign R3b/V1): per-mailbox tints (`MailboxColorAssignment`, `mailboxPalette`, `mailboxColor.*`) are gone — tints are per ACCOUNT (`AccountTintAssignment`, FNV-1a over the account id; override `account.<id>.tint`) with an optional per-DOMAIN override (`domain.<acct>.<domain>.tint`). The tint list ORDER is a persistence contract — append tints, never reorder. Never use `Hasher`/`hashValue` for anything that must survive relaunch (per-process seeded) #tint
 - [rule] Row dates use `RowDateFormatter` (today→time, Yesterday, ≤6d weekday, same-year "Aug 15", else with year) in a fixed 78pt trailing slot with `.help(full)` + a11y value = full date #dates
 - [gotcha] Adding a test FILE requires `xcodegen generate` before `xcodebuild test`, or the stale project runs without the new suite and reports a false green #xcodegen
 
@@ -150,3 +150,14 @@ updated: 2026-09-28
 
 
 - [gotcha] A selection ring drawn with `strokeBorder` strokes INWARD, so "2pt surface gap + ink ring" (CSS `0 0 0 2px surface, 0 0 0 3.5px ink`) needs `.padding(gap + ringWidth)` before the overlay — padding by the gap alone lets the ring eat 1.5pt of it (Settings › Account colour swatches, fixed V3 2026-09-28). Settings window opens via Cmd-, after activating Herald with System Events (`set frontmost`); it opens at 1000×680. #visual-audit
+
+
+- [gotcha] Compose window (V6, 2026-09-28): the 52pt band = an empty unified NSToolbar (`ComposeWindowChrome`, Herald/Compose/ComposeFields.swift) + `.toolbar(removing: .title)` + `.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)` + `.ignoresSafeArea(.container, edges: .top)`; WITHOUT the background-visibility modifier the macOS 26 toolbar material blurs the SwiftUI band drawn under it. The band drags via `WindowDragGesture` (synthetic CGEvent drags could not move ANY Herald window in the audit env, so drag is unverified live). #visual-audit
+- [gotcha] Recipient token field: a SwiftUI `TextField` being edited ignores a new binding value written from its own setter or from outside the keystroke (comma commit left the committed address on screen), and `.onKeyPress(.delete)` never fires (the field editor swallows it). Fix: a window-scoped `NSEvent` local key monitor (`TokenKeyMonitor`) handles `,` `;` Delete, and `ComposeFieldEditor.sync(to:)` writes the new pending text into the field editor directly. Recreating the field with `.id(...)` loses focus — don't.
+- [procedure] `./scripts/build-detached.sh` relaunches the app WITHOUT `-HeraldUITest` — i.e. against the real account. For visual audits kill it and relaunch with the fake-mode args before opening compose (V6 nearly opened a compose window on the live account).
+
+
+- [convention] Identity colour rule (updated 2026-09-28): a domain badge draws the domain's OPTIONAL colour override, else the owning account's tint — resolved only via `DomainBadgeResolver.tintName(domainOverride:accountTintName:)` / `AppEnvironment.domainTint(for:domainID:)`. Account avatars always draw the account tint. Deviation from handoff §2, by Alan's decision (one account + many domains = identical badges). Pref key `domain.<accountID>.<domainID>.tint`. #identity
+
+
+- [decision] 2026-09-28 (commit 9574175): app fonts everywhere. No view spells a system text style any more — every `.font(.callout/.caption/.headline/.system…)` in Herald/ maps to a `MailTheme.Typography` role (callout→snippet, caption→caption, caption2→tag, headline→headline, onboarding title→display). Added `Typography.code` (Geist Mono 12/1.45, signature HTML editor). `rowChip`, `statusBar`, `statusProblem` are now Geist. Only SF Symbol glyph sizes (inlineGlyph, chevrons, hero/large/emptyGlyph) stay system, inside MailTheme.swift. Guard: `HeraldTests/AppFontGuardTests.swift` scans Herald/*.swift and fails on `.font(.<system style>)` / `Font.<style>` outside `Design/MailTheme.swift` (comment lines skipped). SwiftUI-drawn chrome (Form section headers, menus, alerts, segmented controls) is left system. #typography

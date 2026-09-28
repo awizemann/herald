@@ -7,7 +7,7 @@ source_paths: [Herald/Analytics/UsageEvent.swift, Herald/Analytics/UsageTracking
 source_paths_inferred: false
 source_sha: 9d9a3b76352059446b894af6c1f31b27de4b6bbe
 created: 2026-08-18
-updated: 2026-09-04
+updated: 2026-09-28
 reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
@@ -32,3 +32,6 @@ Herald ships privacy-first, opt-out usage analytics via swift-stats 0.1.0 (hoste
 
 ## Update (2026-09-04)
 - [fact] `UsageTracking` gained `isAvailable` (false on NoopUsageTracker): Settings → Privacy disables the toggle with "Usage analytics aren't included in this build" in unkeyed builds (the toggle used to render live-but-off and snap back — reported as a no-op), and keyed builds now show a brief confirmation caption after opt-in/out. `accountReauthenticated` gained an `automatic` prop to separate machine re-auth attempts from the human funnel #toggle
+
+
+- [decision] 2026-09-28 (commit a78106a): `mailbox_color_changed` removed from the vocabulary (never emitted since per-mailbox colours went). Added `scope_changed(to: all_domains|domain|mailbox, via: UsageViewTrigger)` — `UsageScopeKind` closed enum, kind only, no ids. Emitted in `MailViewModel.navigate(to:)` when scope changes and `reportsView` is true (so silent stale-scope corrections are not reported), recorded just before the `view_shown` it produces. Fixture discriminant 20 reused. Coverage: account switching = `account_switched` (AppEnvironment.selectedAccountID didSet, account popover path); folder changes = `view_shown`. Tests: `UsageScopeChangeTests` in UsageInstrumentationTests.swift.

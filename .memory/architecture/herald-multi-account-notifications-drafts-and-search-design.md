@@ -28,6 +28,8 @@ Landed 2026-08-18 in five phases (multi-account, attachments polish, notificatio
 - relates_to [[Herald Wake Socket Architecture]]
 - relates_to [[Herald Label Caching and UI Architecture]]
 - relates_to [[Sign-In Recoverability and the Presentation Watchdog]]
+- relates_to [[herald-signature-handling]]
+- relates_to [[Herald Design System and Accessibility]]
 
 
 ## Update (2026-09-04)
@@ -60,3 +62,15 @@ Landed 2026-08-18 in five phases (multi-account, attachments polish, notificatio
 - [decision] Click routing: `revealConversation` lands on All domains › Inbox unless All domains excludes something AND the thread's inbox row is not in the All domains set — then `.domain(<thread's domain>)` (resolved via `store.messages(threadID:)` → mailbox → domain). A hidden domain is never a landing place #notifications
 - [decision] Sign-out notifications (F1, 2026-09-28): after the revoke, if no sign-in raced back in, `AppEnvironment.forgetNotifications(forAccount:)` drops a held `pendingRoute` for the account and calls `NewMailNotificationPosting.removeDelivered(forAccount:)` (protocol requirement with a no-op default in a `nonisolated extension`; the adapter matches delivered banners by `NewMailNotification.identifierPrefix(accountID:)` = `herald.newmail.<id>.` AND the payload's accountID — the prefix alone is ambiguous for `https://mail.x` vs `https://mail.x.y`). Runs whether or not the revoke succeeded #sign-out #notifications
 - [decision] Sign-out (`AppEnvironment.signOut`, same `graphs[accountID] == nil` guard as the cache purge) calls `PreferenceHygiene.purgeAccount` ONLY when `auth.signOut` SUCCEEDED (F1) — a failed Keychain half brings the account back at the next launch, and it must come back with its settings: `DomainPreferences.purgeAll` + `sidebar.{scope,folder,label,mailbox}.<id>` + `account.<id>.tint`, exact keys (prefix-safe for `https://mail.x` vs `https://mail.x.y`). Tests: `HeraldTests/DomainEffectsTests.swift` #sign-out
+
+
+
+## Update (2026-09-28 — compose redesign v3)
+- [pointer] Compose From rules (default From by scope, reply From = address the original was sent to, From↔mailboxID coupling, signature reset on From change) live in [[herald-signature-handling]] (V5, commit bd1e15a; code `Herald/Compose/ComposeFrom.swift`). Compose window layout/token-field gotchas live in [[Herald Design System and Accessibility]] (V6, 2df748a).
+
+
+
+## Update 2026-09-28 — window title per scope, Drafts search (commit 7035392)
+- Window title = `ListColumn.windowTitle(scope:accountLabel:scopeName:)`: account label at All domains, domain name inside a domain, mailbox address inside a mailbox. Subtitle stays the folder; Window menu follows automatically.
+- Toolbar search is one `ListSearchField` modifier (ConversationListView.swift) applied to BOTH ConversationListView and DraftListView, so the field never disappears/shifts in Drafts. Drafts filter LOCALLY via `ListColumn.filterDrafts` (subject, recipients, snippet; case-insensitive; trimmed) → `MailViewModel.presentedDrafts`. The API's `GET /drafts?search=` exists but is unused: the cache already holds every draft of the scope. `searchQuery` survives folder switches, same as other folders. Drafts' empty search = "No Results" without the Return hint (no server search in Drafts).
+- Settings account card switches via `selectAccountFromSettings`, which assigns `selectedAccountID` directly and so already emits `account_switched`; pinned by a test in UsageInstrumentationTests.

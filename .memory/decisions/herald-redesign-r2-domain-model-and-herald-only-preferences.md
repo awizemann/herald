@@ -56,3 +56,13 @@ reviewed_by: audit:claude-code (background)
 
 ## Update (2026-09-28 — R9)
 - [fact] CORRECTION: the key set grew by one. `DomainPreferences` now also has `domain.<accountID>.<domainID>.hiddenName` — the domain's name captured at hide time, written by `setHidden`'s new `name:` param and cleared alongside `hidden`/`hiddenAt` on restore. See "Herald Settings Window Architecture" R9 update for the Remove-domain page and `HiddenDomainItem` this feeds #domains #preferences
+
+
+## Per-domain colour override (2026-09-28, commit b47d38d)
+- [decision] New pref `domain.<accountID>.<domainID>.tint` = an account-tint token name (clay/ochre/moss/sage/slate/dusk/plum/rose). Unset or unknown value = the account tint (the old behaviour). Read/write via `DomainPreferences.tintOverride`/`setTintOverride` (nil or invalid clears). Removed on sign-out by `DomainPreferences.purgeAll` (prefix scan), same as monogram. #domain-prefs
+- [decision] Deliberately deviates from handoff §2 ("only accounts get a hue"): Alan's call — with one account and ~15 domains every badge was the same colour. Settings › Domain › Overview has a "Colour" [HERALD] row (shared `TintSwatchPicker`, extracted from the account picker) + Reset. #design-deviation
+- [convention] Single rule: `DomainBadgeResolver.tintName(domainOverride:accountTintName:)` (+ `tint(...)` helpers, `AppEnvironment.domainTint(for:domainID:)`). Every DOMAIN badge goes through it; account avatars keep `accountTint(for:)`. Row attribution carries `Attribution.tintOverride`.
+
+
+## Update (2026-09-28 — defaultFrom key, commit 1d3c88c)
+- [fact] `domain.<accountID>.<domainID>.defaultFrom` — lowercased address a new message in that domain's scope starts from; nil/blank = Automatic. Staleness (no longer a sendable address of the domain) is resolved at read sites via `ComposeFrom.domainDefault`, reading as unset. Purged on sign-out by `purgeAll` (prefix scan). Settings writes it with `reloads: false` (compose-only pref). A domain with exactly one sendable address shows that address as the effective default (picker disabled, no Automatic row).

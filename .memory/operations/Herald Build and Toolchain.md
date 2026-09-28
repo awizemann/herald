@@ -21,6 +21,7 @@ reviewed_by: audit:claude-code (background)
 
 ## Relations
 - relates_to [[Herald Architecture]]
+- relates_to [[Herald UI Testing]]
 
 ## Update (2026-08-15 — plugin validation)
 - [gotcha] xcodebuild fails at "Validate plug-in OpenAPIGenerator" unless `-skipPackagePluginValidation` is passed (the Xcode GUI prompts once to trust it); build-detached.sh passes it. #plugin

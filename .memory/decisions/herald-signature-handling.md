@@ -51,7 +51,7 @@ Adopting `signatures:manage`. The send-time invariant above is UNCHANGED: managi
 - Preview keeps `MessageWebView`'s containment posture: JS off, nil base URL, `RemoteContentBlocker` rule list required (refuses to render without it), all navigation but our own cancelled through the shared `NavigationPolicy`.
 - Compose invalidation: `AppEnvironment.signatureRevision` is bumped after any mutation and `ComposeWindow`'s candidate `.task(id:)` is keyed on it, so an already-open composer stops offering a signature that was just renamed or deleted.
 
-Commits 3eee453 (initial), d9e7bfe (P3 reauth), db538bd (R8 token adoption). Tests: 12 HeraldKit (318→330), 16 app-hosted (255→271).
+Commits 3eee453 (initial), d9e7bfe (P3 reauth), db538bd (redesign v3 V1 symbol-token adoption). Tests: 12 HeraldKit (318→330), 16 app-hosted (255→271).
 
 
 ### Design & code organization (R8 redesign: domain signatures page, Sept 2026)
@@ -74,3 +74,8 @@ Commits 3eee453 (initial), d9e7bfe (P3 reauth), db538bd (R8 token adoption). Tes
 - [decision] Signature reset rule: after a From change, when the new address's list arrives, a hand-picked `.selected(id)` not in it resets to `.automatic` (server would 400 SIGNATURE_NOT_AVAILABLE). A signature valid for both addresses is kept. Reopened drafts are NOT reset (they show the "saved copy" row). `loadSignatures` discards a result whose address no longer matches the draft's From.
 - [decision] Reply/reply-all/forward From = the mailbox's sendable address the original was sent to: own sent message's From, then Delivered-To, then To, then Cc (case-insensitive, `Name <a@b>` stripped) — `ComposeFrom.replyAddress`; else mailbox primary. New message: scope (mailbox → its sendable; domain → account primary if in domain else domain's first sendable) then account primary (= first composable mailbox's primary sendable) — `ComposeFrom.defaultAddress`. Drafts keep stored From.
 - [fact] Footer caption `signatureCaption` scope text: "Mailbox signature · sales@", "Domain default · acme.co", "Personal".
+
+
+## Update (2026-09-28 — per-domain default From + locked replies, commit 1d3c88c)
+- [decision] New message in a DOMAIN scope: the domain's "Default From address" pref (`DomainPreferences.defaultFrom`, Settings › Domain › Overview) when still one of the domain's sendable addresses; else the domain's single sendable address; else the older rule (account primary if in domain, else domain's first sendable). Mailbox scope and All domains unchanged. Pure: `ComposeFrom.domainSendableAddresses` / `domainDefault(storedAddress:sendable:)` / `defaultAddress(...domainDefaultFrom:)`.
+- [decision] Reply and reply-all are LOCKED to the address the original was sent to: `ComposeViewModel.isFromLocked` (= `draft.mode.replyToMessageID != nil`, so reopened reply drafts stay locked too); `selectFrom` refuses; From field disabled, dimmed (`MailTheme.Compose.lockedFromOpacity`), no chevron, VoiceOver hint "Replies are sent from the address the message was sent to". Forward and new keep the picker.

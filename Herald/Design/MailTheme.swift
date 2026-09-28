@@ -342,14 +342,13 @@ enum MailTheme {
             case textMedium = "Geist-Medium"
             case textSemibold = "Geist-SemiBold"
             case mono = "GeistMono-Regular"
-            case monoMedium = "GeistMono-Medium"
             case monoSemibold = "GeistMono-SemiBold"
 
             /// What the system fallback draws for this face.
             var fallbackWeight: Font.Weight {
                 switch self {
                 case .serifDisplay, .serifSubhead, .textSemibold, .monoSemibold: .semibold
-                case .textMedium, .monoMedium: .medium
+                case .textMedium: .medium
                 case .text, .mono: .regular
                 }
             }
@@ -357,7 +356,7 @@ enum MailTheme {
             var fallbackDesign: Font.Design {
                 switch self {
                 case .serifDisplay, .serifSubhead: .serif
-                case .mono, .monoMedium, .monoSemibold: .monospaced
+                case .mono, .monoSemibold: .monospaced
                 case .text, .textMedium, .textSemibold: .default
                 }
             }

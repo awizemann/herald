@@ -65,6 +65,17 @@ import Testing
         #expect(DomainMonogram.normalizeOverride("42") == "42")
     }
 
+    // Audit F3 #8: restricted to ASCII A-Z/0-9 — `Character.isLetter` alone
+    // accepted any Unicode letter, including an accented one built from a
+    // combining sequence ("e" + a combining acute is ONE `Character`, and
+    // `.isLetter` on it is true, but it is not ASCII).
+    @Test("A non-ASCII letter (accented, combining, or a CJK ideograph) is rejected")
+    func normalizeRejectsNonASCIILetters() {
+        #expect(DomainMonogram.normalizeOverride("e\u{0301}C") == nil, "a combining sequence, one Character, not ASCII")
+        #expect(DomainMonogram.normalizeOverride("ÀC") == nil, "precomposed accented letter, still not ASCII")
+        #expect(DomainMonogram.normalizeOverride("日本") == nil)
+    }
+
     // MARK: - assign(domains:overrides:) — clash resolution
 
     @Test("Two domains that would derive the same two letters both promote to three")

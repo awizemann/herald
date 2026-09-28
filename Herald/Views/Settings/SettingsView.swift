@@ -89,7 +89,14 @@ private struct SettingsSidebar: View {
         Binding(
             get: { environment.resolvedSettingsRoute },
             set: { newValue in
-                guard let newValue, newValue != environment.resolvedSettingsRoute else { return }
+                // Compares against the RAW route, not `resolvedSettingsRoute`
+                // (audit F3 #4): a route resolving elsewhere (e.g. a hidden
+                // domain's page, resolved to Account) still highlights that
+                // resolved row, so clicking it again — the highlighted row —
+                // must still WRITE `.account`, or the raw route is stuck
+                // pointing at the hidden domain and a later Restore jumps
+                // straight back to it instead of staying put.
+                guard let newValue, newValue != environment.settingsRoute else { return }
                 let changesLevel = newValue.domainID != environment.settingsRoute.domainID
                 withAnimation(changesLevel && !reduceMotion ? MailTheme.Animation.scope : nil) {
                     environment.settingsRoute = newValue
@@ -157,13 +164,21 @@ private struct SettingsRootRows: View {
 
 /// "HERALD", "ACCOUNT", "DOMAINS" — the handoff's uppercase section caption,
 /// not the source list's default title-case header.
+///
+/// `ink2`, not `ink3` (audit F3 #5): this is a fixed colour drawn over
+/// `.listStyle(.sidebar)`'s own `sidebar` fill (`#F1F3F5` light), not system
+/// vibrancy (a `.secondary`/`.tertiary` label would auto-adapt; this
+/// `Text(...).foregroundStyle(...)` does not), and `ink3` on that fill
+/// measures ~4.34:1 — under AA's 4.5:1 for text this size. `ink2` clears it
+/// comfortably (~6.97:1); ``SidebarSectionHeader`` (main window) had the same
+/// issue and the same fix.
 private struct SettingsSidebarHeader: View {
     let title: String
 
     var body: some View {
         Text(title)
             .textStyle(MailTheme.Typography.section)
-            .foregroundStyle(MailTheme.Color.ink3)
+            .foregroundStyle(MailTheme.Color.ink2)
     }
 }
 

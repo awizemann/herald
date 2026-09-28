@@ -14,16 +14,28 @@ extension AppEnvironment {
     /// the user just asked not to see. Moved before the write so the list's
     /// reload already sees the domain hidden.
     ///
-    /// Settings needs no matching move: a route standing on this domain's page
-    /// resolves itself away the moment the write lands, since
-    /// ``SettingsRoute/resolved(hasAccount:visibleDomainIDs:)`` already treats a
-    /// domain id no longer in ``settingsDomains(accountID:)`` (hidden ones are
-    /// filtered out there) as "not there" and falls back to `.account`.
+    /// ``resolvedSettingsRoute`` resolves a route standing on this domain's
+    /// page away the moment the write lands (a domain id no longer in
+    /// ``settingsDomains(accountID:)``, hidden ones filtered out there,
+    /// reads as "not there" and falls back to `.account`) — but the RAW
+    /// ``AppEnvironment/settingsRoute`` is left alone by that resolution on
+    /// purpose (restoring within the same session brings the same page back).
+    /// That raw route staying on the hidden domain used to strand a later
+    /// click: `SettingsView`'s selection setter compares against the raw
+    /// route too (so clicking the row already highlighted — Account, once
+    /// resolution moved the highlight there — was a no-op), so nothing ever
+    /// rewrote it off the domain and a subsequent Restore reopened straight
+    /// to the hidden domain's own page instead of staying on Account (audit
+    /// F3 #4). Hiding now rewrites the raw route itself when it points INSIDE
+    /// the domain being hidden — any of its pages, not just this one.
     func hideDomain(_ domainID: MailDomain.ID, accountID: Account.ID) async {
         guard let mail = graphs[accountID]?.mail else { return }
         if mail.scopeIsInside(domainID: domainID) {
             mail.pendingNavigationSource = .sidebar
             mail.selectScope(.allDomains)
+        }
+        if settingsRoute.domainID == domainID {
+            settingsRoute = .account
         }
         // Captured before the write, from the domains the account currently
         // derives (hidden ones included) — this is what the Hidden Domains
@@ -59,16 +71,28 @@ extension AppEnvironment {
     }
 
     /// The pure half of ``openHQBaseAdmin(for:)``: `nil` for anything but
-    /// https, and otherwise the origin's scheme/host/port with no path, query
-    /// or fragment — whatever Herald itself may have appended to `origin` (it
-    /// never does today, but this is the one place that would matter) is
-    /// dropped rather than carried into a URL that leaves the app.
+    /// https, and otherwise the origin's scheme/host/port with no path, query,
+    /// fragment or userinfo — whatever Herald itself may have appended to
+    /// `origin` (it never does today, but this is the one place that would
+    /// matter) is dropped rather than carried into a URL that leaves the app.
+    ///
+    /// Built by clearing the irrelevant components OFF `origin`'s own parse
+    /// rather than re-assembling a fresh `URLComponents` from `.host` — an
+    /// IPv6-literal origin's `.host` comes back withOUT the `[...]` brackets
+    /// (`URLComponents.host` strips them), so reassigning it to a new
+    /// components' `.host` produced a URL Foundation refused to render and
+    /// the button silently did nothing. Reusing the original parse keeps its
+    /// bracketed host representation intact.
     static func hqBaseAdminURL(for account: Account) -> URL? {
-        guard account.origin.scheme?.lowercased() == "https", let host = account.origin.host else { return nil }
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = host
-        components.port = account.origin.port
+        guard account.origin.scheme?.lowercased() == "https" else { return nil }
+        guard var components = URLComponents(url: account.origin, resolvingAgainstBaseURL: false),
+              let host = components.host, !host.isEmpty
+        else { return nil }
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        components.user = nil
+        components.password = nil
         return components.url
     }
 }

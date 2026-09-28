@@ -2,7 +2,8 @@ import HeraldKit
 import SwiftUI
 
 // A domain's own settings pages (handoff §3.2 "Domain pages"): Overview,
-// Mailboxes, Signatures. Remove domain stays a placeholder — R9 builds it.
+// Mailboxes, Signatures, and Remove domain (R9's Hide/Restore + the HQBase
+// Admin link — no confirmation sheet, since nothing on it is destructive).
 // Chrome in `SettingsChrome.swift`; routing in `SettingsView.swift`.
 
 // MARK: - Overview
@@ -129,7 +130,13 @@ private struct DomainMonogramField: View {
     }
 
     var body: some View {
-        TextField("", text: $draft, prompt: Text(DomainMonogram.derive(from: item.domain.name)))
+        // `item.monogram`, not `DomainMonogram.derive(from:)` (audit F3 #7):
+        // the badge right beside this field already draws the LIVE monogram
+        // (2 letters, or 3 when clash-promoted against another of the
+        // account's domains) — the placeholder must show the same letters
+        // "Auto" would actually assign, not a bare re-derivation that ignores
+        // clashes and so can silently disagree with the badge next to it.
+        TextField("", text: $draft, prompt: Text(item.monogram))
             .textFieldStyle(.roundedBorder)
             .frame(width: 72)
             .multilineTextAlignment(.center)
@@ -141,17 +148,18 @@ private struct DomainMonogramField: View {
     }
 
     private func commit(_ raw: String) {
+        // The decision itself lives in `DomainMonogram.wouldCommitOverride`
+        // (audit F3 #11) — pure and testable there, not re-implemented here.
+        guard DomainMonogram.wouldCommitOverride(raw) else { return }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            write { DomainPreferences.setMonogramOverride(nil, accountID: accountID, domainID: item.id, in: $0) }
-            return
-        }
-        guard DomainMonogram.normalizeOverride(trimmed) != nil else { return }
-        write { DomainPreferences.setMonogramOverride(trimmed, accountID: accountID, domainID: item.id, in: $0) }
+        write { DomainPreferences.setMonogramOverride(trimmed.isEmpty ? nil : trimmed, accountID: accountID, domainID: item.id, in: $0) }
     }
 
+    // `reloads: false` (audit F3 #9): the monogram is a repaint-only
+    // preference — it changes no list, count or badge — so every valid
+    // keystroke no longer pays for a `reloadConversations` + `reloadDrafts`.
     private func write(_ apply: @escaping (UserDefaults) -> Void) {
-        Task { await environment.updateDomainPreferences(accountID: accountID, apply) }
+        Task { await environment.updateDomainPreferences(accountID: accountID, reloads: false, apply) }
     }
 }
 
@@ -367,13 +375,18 @@ struct DomainMailboxRow: View {
             .background(MailTheme.Color.lineSoft, in: Capsule())
     }
 
+    // The 11pt "On" word drawn in `ok` (green) on `surface` measured 4.39:1 —
+    // under AA's 4.5:1 for text that size (audit F3 #5). The colour cue now
+    // lives on the glyph only (still paired with the word, per the design
+    // system's every-colour-cue-has-text-or-shape rule); the word itself
+    // draws in `ink2`, same as the "Off" state, which already passed.
     private func status(_ on: Bool, onLabel: String, offLabel: String) -> some View {
         HStack(spacing: MailTheme.Spacing.xxs) {
             Image(systemName: on ? "checkmark.circle.fill" : "nosign")
                 .foregroundStyle(on ? MailTheme.Color.ok : MailTheme.Color.ink3)
             Text(on ? "On" : "Off")
                 .textStyle(MailTheme.Typography.caption)
-                .foregroundStyle(on ? MailTheme.Color.ok : MailTheme.Color.ink3)
+                .foregroundStyle(MailTheme.Color.ink2)
         }
         .accessibilityLabel(on ? onLabel : offLabel)
     }
@@ -447,14 +460,28 @@ private struct DomainSignatureList: View {
                 .foregroundStyle(MailTheme.Color.ink2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Gated on THIS domain's own scope (audit F3 #6), not just
+                // `scopeOptions.isEmpty` — that stayed enabled whenever ANY
+                // scope was offered, even one belonging to a different
+                // domain, and `beginCreate(preferring:)` used to silently
+                // substitute it in. A domain whose mailboxes have not
+                // finished loading a signature-manageable one yet disables
+                // the button instead, with a reason.
+                let domainScope = SignatureScopeRef(type: .domain, id: domainID)
+                let scopeAvailable = model.offersScope(domainScope)
                 Button {
-                    model.beginCreate(preferring: SignatureScopeRef(type: .domain, id: domainID))
+                    model.beginCreate(preferring: domainScope)
                 } label: {
                     Label("New Signature", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.scopeOptions.isEmpty)
+                .disabled(!scopeAvailable)
                 .accessibilityIdentifier(AccessibilityID.Settings.domainNewSignature)
+                .help(
+                    scopeAvailable
+                        ? "New signature for \(domainName)."
+                        : "This domain has no signature-manageable mailbox loaded yet."
+                )
             }
             if signatures.isEmpty {
                 Text("No signatures for this domain yet.")
@@ -575,7 +602,11 @@ struct DomainRemoveSettingsPage: View {
                     .accessibilityIdentifier(AccessibilityID.Settings.hideDomain)
                 }
             }
-            HiddenDomainsSection(accountID: accountID, tint: environment.accountTint(for: accountID))
+            HiddenDomainsSection(
+                items: environment.hiddenDomains(accountID: accountID),
+                accountID: accountID,
+                tint: environment.accountTint(for: accountID)
+            )
             if let account = environment.graphs[accountID]?.account {
                 SettingsCard(fill: MailTheme.Color.bg) {
                     actionRow(
@@ -584,14 +615,24 @@ struct DomainRemoveSettingsPage: View {
                         note: "Deleting a domain and its mailboxes is managed by a workspace admin in HQBase. "
                             + "Herald can’t delete domains."
                     ) {
+                        // `nil` only for an origin the sign-in flow should
+                        // already have refused (non-https) — disabled rather
+                        // than a silent no-op if that guard is ever wrong.
+                        let adminURL = AppEnvironment.hqBaseAdminURL(for: account)
                         Button {
                             environment.openHQBaseAdmin(for: account)
                         } label: {
                             Label("Open in HQBase Admin", systemImage: "arrow.up.right.square")
                         }
                         .buttonStyle(SettingsOutlineButtonStyle())
+                        .disabled(adminURL == nil)
                         .accessibilityLabel("Open HQBase Admin in your browser")
                         .accessibilityIdentifier(AccessibilityID.Settings.openAdmin)
+                        .help(
+                            adminURL == nil
+                                ? "This account's server address can't be opened as a link."
+                                : "Opens \(adminURL!.absoluteString) in your browser."
+                        )
                     }
                 }
             }
@@ -639,11 +680,17 @@ struct DomainRemoveSettingsPage: View {
 /// means.
 struct HiddenDomainsSection: View {
     @Environment(AppEnvironment.self) private var environment
+    /// Computed ONCE by the caller (audit F3 #9), not re-derived here: this
+    /// reads `UserDefaults.dictionaryRepresentation()` in full
+    /// (``DomainPreferences/hiddenDomainIDs(accountID:in:)``), and
+    /// `AccountSettingsPage` already needs the same list for its own
+    /// `isEmpty` gate — computing it again in this view's own `body` doubled
+    /// that scan every render for no reason.
+    let items: [HiddenDomainItem]
     let accountID: Account.ID
     let tint: MailTheme.AccountTint
 
     var body: some View {
-        let items = environment.hiddenDomains(accountID: accountID)
         SettingsSection(title: "Hidden domains") {
             SettingsCard {
                 if items.isEmpty {
@@ -696,7 +743,9 @@ private struct HiddenDomainRow: View {
     }
 
     private var note: String {
-        let mailboxes = item.mailboxCount == 1 ? "1 mailbox" : "\(item.mailboxCount) mailboxes"
+        let mailboxes = item.allMailboxesDisabled
+            ? "Disabled on the server"
+            : (item.mailboxCount == 1 ? "1 mailbox" : "\(item.mailboxCount) mailboxes")
         guard let hiddenAt = item.hiddenAt else { return mailboxes }
         return "Hidden \(Self.dateFormatter.string(from: hiddenAt)) · \(mailboxes)"
     }

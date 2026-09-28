@@ -249,8 +249,14 @@ struct AccountSettingsPage: View {
             // here too, but ONLY once there is something to restore, so the
             // common case (nothing hidden) does not carry a second empty
             // "Hidden domains" card the design never puts on this page.
-            if !environment.hiddenDomains(accountID: account.id).isEmpty {
-                HiddenDomainsSection(accountID: account.id, tint: environment.accountTint(for: account.id))
+            //
+            // Computed ONCE (audit F3 #9): `hiddenDomains` re-scans every key
+            // in `UserDefaults` (``DomainPreferences/hiddenDomainIDs``), and
+            // `HiddenDomainsSection` used to call it again itself — doubling
+            // that scan on every render of this page for no reason.
+            let hiddenDomains = environment.hiddenDomains(accountID: account.id)
+            if !hiddenDomains.isEmpty {
+                HiddenDomainsSection(items: hiddenDomains, accountID: account.id, tint: environment.accountTint(for: account.id))
             }
             SettingsCard {
                 HStack(alignment: .center, spacing: MailTheme.Spacing.md) {

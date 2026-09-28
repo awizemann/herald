@@ -104,10 +104,25 @@ struct SidebarPage {
 
     /// Signs the current account out through the app menu's item ("Sign Out"
     /// or "Sign Out of <account>"): the sidebar has no Sign Out any more, and
-    /// Settings › Account's Sign Out… asks first. Clicked without opening the
-    /// menu ("Herald UI Testing": items are in the tree while closed).
+    /// the menu item now opens Settings › Account and raises its confirmation
+    /// dialog rather than signing out directly (audit F3 #1 — a stray ⌘-driven
+    /// click must ask first, same as the Settings page's own "Sign Out…").
+    /// Clicked without opening the menu ("Herald UI Testing": items are in the
+    /// tree while closed); this then confirms the dialog it raises.
     func signOut(file: StaticString = #filePath, line: UInt = #line) {
         signOutMenuItem(prefix: "Sign Out").waitAndClick(file: file, line: line)
+        confirmSignOutDialog(file: file, line: line)
+    }
+
+    /// The confirmation dialog's destructive "Sign Out" button — distinct
+    /// from the Settings page's "Sign Out…" (with ellipsis) that raises it.
+    /// macOS presents a SwiftUI `.confirmationDialog` as a sheet on the key
+    /// window, same as `.alert` (see `AlertsPage.alert(titled:)`).
+    private func confirmSignOutDialog(file: StaticString = #filePath, line: UInt = #line) {
+        let inSheet = app.sheets.buttons["Sign Out"].firstMatch
+        let inDialog = app.dialogs.buttons["Sign Out"].firstMatch
+        let button = inSheet.exists ? inSheet : inDialog
+        button.waitAndClick(file: file, line: line)
     }
 
     /// Switches the window to the account whose popover row contains `text`.

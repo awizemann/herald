@@ -328,7 +328,9 @@ extension MailViewModel {
     /// far more often than it rescues one.
     ///
     /// Built ONCE per process: every input is a constant, and it now carries the
-    /// ~90 KB embedded reading font (``MailTheme/Web/fontFaceRule``).
+    /// embedded reading font (``MailTheme/Web/fontFaceRule``) — a ~70 KB
+    /// `.woff2` file, ~93 KB once base64-encoded into the `data:` URL this
+    /// style sheet actually embeds.
     private nonisolated static let styleSheet: String = {
         """
         :root { color-scheme: light dark; --reading-font: \(MailTheme.Web.readingFontStack);

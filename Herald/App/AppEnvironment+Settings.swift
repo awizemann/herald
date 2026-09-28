@@ -58,9 +58,17 @@ extension AppEnvironment {
 
     /// The account's hidden domains — the Remove-domain page's "HIDDEN
     /// DOMAINS" list (R9), newest hide first.
+    ///
+    /// `monogramMailboxes`, not `mailboxes` (audit F3 #3): `mailboxes` already
+    /// drops server-disabled ones, so a domain hidden AND fully disabled on
+    /// the server was invisible to `MailDomain.domains(from:)` here too — it
+    /// fell all the way to the id-only fallback ("0 mailboxes") even though
+    /// its mailboxes are still cached, just switched off. `settingsDomains`
+    /// above reads the same superset so the two never disagree on a domain's
+    /// mailbox count or monogram.
     func hiddenDomains(accountID: Account.ID) -> [HiddenDomainItem] {
         HiddenDomainItem.hidden(
-            mailboxes: graphs[accountID]?.mail.mailboxes ?? [],
+            mailboxes: graphs[accountID]?.mail.monogramMailboxes ?? [],
             accountID: accountID,
             defaults: domainPreferencesObserved()
         )
@@ -116,14 +124,25 @@ extension AppEnvironment {
     /// The ONE write path for Herald-only per-domain preferences
     /// (`DomainPreferences`: monogram, includeInAll, countInBadge, notify,
     /// hidden). `write` receives the defaults the preferences live in; after it
-    /// runs, every observer repaints (``domainPreferencesRevision``), and the
-    /// account's view-model reloads its list, counts and badge — an exclusion
-    /// or a hide changes what "All domains" lists. Views never write
-    /// `DomainPreferences` directly.
-    func updateDomainPreferences(accountID: Account.ID, _ write: (UserDefaults) -> Void) async {
+    /// runs, every observer repaints (``domainPreferencesRevision``), and —
+    /// when `reloads` is true (the default) — the account's view-model
+    /// reloads its list, counts and badge — an exclusion or a hide changes
+    /// what "All domains" lists. Views never write `DomainPreferences`
+    /// directly.
+    ///
+    /// `reloads: false` (audit F3 #9) is for a write that only needs a
+    /// REPAINT — the monogram override, which changes nothing about which
+    /// conversations or drafts belong to "All domains" or any count. Every
+    /// OTHER valid keystroke in the monogram field used to run a full
+    /// `reloadConversations` + `reloadDrafts` for no reason; the observed
+    /// revision bump (what repaints the badge next to the field) still
+    /// happens either way.
+    func updateDomainPreferences(accountID: Account.ID, reloads: Bool = true, _ write: (UserDefaults) -> Void) async {
         write(defaults)
         domainPreferencesRevision &+= 1
-        await graphs[accountID]?.mail.domainPreferencesDidChange()
+        if reloads {
+            await graphs[accountID]?.mail.domainPreferencesDidChange()
+        }
         applyDockBadge()
     }
 

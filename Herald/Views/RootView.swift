@@ -192,8 +192,17 @@ struct MailWindow: View {
             .accessibilityIdentifier(AccessibilityID.Toolbar.refresh)
         }
 
-        ToolbarItem {
-            NewMessageButton { model.requestCompose(.new) }
+        // Standalone, not inside the shared glass capsule: a filled button
+        // squeezed into that capsule overflowed it.
+        if #available(macOS 26.0, *) {
+            ToolbarItem {
+                NewMessageButton(tint: environment.accountTint(for: model.accountID)) { model.requestCompose(.new) }
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem {
+                NewMessageButton(tint: environment.accountTint(for: model.accountID)) { model.requestCompose(.new) }
+            }
         }
     }
 
@@ -402,10 +411,13 @@ struct BannerView<Actions: View>: View {
 }
 
 /// The toolbar's primary action (handoff §3.1 — "reply … | archive, trash,
-/// labels … | refresh, then primary New"): accent fill, `onAccent` text, the
+/// labels … | refresh, then primary New"): account-tint fill, the
 /// one button in the toolbar that isn't a plain icon. Keeps Compose's existing
 /// accessibility id — only its position (now trailing) and styling changed.
 private struct NewMessageButton: View {
+    /// The account's tint: fill = `solid`, label = `avatarText` (the avatar's
+    /// own pairing — white on the tints fails AA contrast).
+    let tint: MailTheme.AccountTint
     let action: () -> Void
 
     var body: some View {
@@ -415,10 +427,11 @@ private struct NewMessageButton: View {
                 Text("New")
             }
             .textStyle(MailTheme.Typography.bodyMedium)
-            .foregroundStyle(MailTheme.Color.onAccent)
+            .foregroundStyle(tint.avatarText)
             .padding(.horizontal, MailTheme.Spacing.md)
             .frame(height: MailTheme.hitTarget)
-            .background(MailTheme.Color.accent, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+            .background(tint.solid, in: Capsule())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help("New Message")

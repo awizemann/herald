@@ -300,6 +300,17 @@ private struct SignatureEditorSheet: View {
     /// the first pass has nothing to debounce against and must paint at once.
     @State private var hasRenderedPreview = false
 
+    /// Names what the signature becomes the default FOR — "this scope" meant
+    /// nothing to anyone who doesn't know the server's vocabulary.
+    static func defaultToggleLabel(for scope: SignatureScope?) -> String {
+        switch scope {
+        case .domain: "Use as the default for this domain"
+        case .mailbox: "Use as the default for this mailbox"
+        case .user: "Use as my personal default"
+        case nil: "Use as the default"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.lg) {
             Text(editor.title)
@@ -322,7 +333,7 @@ private struct SignatureEditorSheet: View {
                     }
                 }
 
-                Toggle("Use as the default for this scope", isOn: $editor.isDefault)
+                Toggle(Self.defaultToggleLabel(for: editor.scope?.type), isOn: $editor.isDefault)
             }
             .formStyle(.grouped)
             // `minHeight`, not `height`: at the larger accessibility text sizes

@@ -16,6 +16,14 @@ nonisolated protocol MailSyncing: Sendable {
     /// Whether anything on screen is showing labels, which decides whether the
     /// membership sweep runs on its fast or its idle interval.
     func setLabelSurfaceVisible(_ visible: Bool) async
+    /// Fetches one more SERVER page for the listings the sync pass stopped
+    /// short on (its page cap). `true` while more may remain.
+    func loadOlderConversations(mailboxIDs: Set<String>?, folder: ConversationFolder) async throws -> Bool
+}
+
+extension MailSyncing {
+    /// Fakes that never cap a listing have nothing older to fetch.
+    func loadOlderConversations(mailboxIDs: Set<String>?, folder: ConversationFolder) async throws -> Bool { false }
 }
 
 extension SyncEngine: MailSyncing {}
@@ -358,6 +366,11 @@ final class MailViewModel {
         location = target
         reloadGeneration &+= 1
         persistLocation()
+        // A new listing starts from its first page again.
+        conversationListLimit = Self.conversationPageSize
+        cacheMayHaveMoreConversations = false
+        serverMayHaveMoreConversations = true
+        isLoadingMoreConversations = false
         // A label-only change is deliberately NOT reported: the usage
         // vocabulary (`UsageViewKind`) has no label view, and inventing one
         // means a new wire name and a new fixture id — an analytics change that
@@ -690,6 +703,31 @@ final class MailViewModel {
     /// so "one label write rebuilt the index exactly once" is assertable. Not
     /// `private(set)` only because the write lives in the labels extension file.
     @ObservationIgnored var labelIndexReloadCount = 0
+
+    // MARK: Paging
+    //
+    // The list shows the newest ``conversationPageSize`` threads and grows by
+    // that much each time the user scrolls to its end (``loadMoreConversations()``).
+    // Every reload — a sync tick included — re-reads the CURRENT limit, so a
+    // background pass can never truncate what the user already paged in, and
+    // rows come from one store query, so a page boundary cannot duplicate one.
+    // Past the cache, the sync engine fetches further server pages for any
+    // listing its pass stopped short on (its page cap).
+
+    static let conversationPageSize = 100
+    /// How many threads the current listing reads from the store.
+    private(set) var conversationListLimit = MailViewModel.conversationPageSize
+    /// Whether the last read filled its limit — the store may hold more.
+    private(set) var cacheMayHaveMoreConversations = false
+    /// Cleared once the engine says the server has nothing older for this
+    /// listing; reset by every navigation.
+    private(set) var serverMayHaveMoreConversations = true
+    private(set) var isLoadingMoreConversations = false
+    /// Whether the list should end in a "load more" row.
+    var canLoadMoreConversations: Bool {
+        guard location.folder.conversationFolder != nil else { return false }
+        return cacheMayHaveMoreConversations || (location.labelID == nil && serverMayHaveMoreConversations)
+    }
 
     /// Everything the store holds for the current scope, before search.
     private(set) var allConversations: [ConversationSummary] = [] {
@@ -1761,6 +1799,15 @@ final class MailViewModel {
         if !allConversations.contains(where: { $0.id == threadID }) {
             await reloadConversations()
         }
+        // Older than the loaded pages: page through the CACHE until it shows up
+        // (never the server — a notification names mail a pass just stored).
+        let revealLocation = location
+        let revealGeneration = reloadGeneration
+        while !allConversations.contains(where: { $0.id == threadID }), cacheMayHaveMoreConversations,
+              isCurrentReload(revealLocation, revealGeneration), !Task.isCancelled {
+            conversationListLimit += Self.conversationPageSize
+            await reloadConversations()
+        }
         guard allConversations.contains(where: { $0.id == threadID }) else {
             logger.info("Notification named a conversation that is no longer in the inbox")
             return
@@ -1971,6 +2018,7 @@ final class MailViewModel {
         let location = self.location
         let generation = reloadGeneration
         let mailboxIDs = mailboxIDs(for: location.scope)
+        let limit = conversationListLimit
         do {
             let rows: [ConversationSummary]
             if let folder = location.folder.conversationFolder {
@@ -1978,11 +2026,12 @@ final class MailViewModel {
                     // Label ∩ folder ∩ scope — the label narrows the folder
                     // listing, it no longer spans every folder on its own.
                     rows = try await store.conversations(
-                        withLabel: labelID, accountID: accountID, folder: folder, mailboxIDs: mailboxIDs
+                        withLabel: labelID, accountID: accountID, folder: folder, mailboxIDs: mailboxIDs,
+                        limit: limit
                     )
                 } else {
                     rows = try await store.conversations(
-                        accountID: accountID, mailboxIDs: mailboxIDs, folder: folder
+                        accountID: accountID, mailboxIDs: mailboxIDs, folder: folder, limit: limit
                     )
                 }
             } else {
@@ -1998,6 +2047,7 @@ final class MailViewModel {
             await reloadLabelIndex()
             guard isCurrentReload(location, generation), !Task.isCancelled else { return }
             allConversations = rows
+            cacheMayHaveMoreConversations = rows.count >= limit
             isLoadingConversations = false
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
@@ -2014,6 +2064,43 @@ final class MailViewModel {
         }
         refreshBodySearchIndex()
         await reloadUnreadCounts()
+    }
+
+    /// The list scrolled to its end: show the next page.
+    ///
+    /// From the cache while it holds more; past it, one server page per listing
+    /// the sync pass capped. A failure leaves everything as it was, so the next
+    /// time the end row appears is the retry.
+    func loadMoreConversations() async {
+        guard canLoadMoreConversations, !isLoadingMoreConversations,
+              let folder = location.folder.conversationFolder else { return }
+        let location = self.location
+        let generation = reloadGeneration
+        isLoadingMoreConversations = true
+        defer { isLoadingMoreConversations = false }
+        if !cacheMayHaveMoreConversations {
+            // A search that filtered the list down leaves this row on screen,
+            // and it would keep pulling server pages on its own; server search
+            // is what answers a search past the cache.
+            guard searchQuery.isEmpty else { return }
+            guard let sync else {
+                serverMayHaveMoreConversations = false
+                return
+            }
+            let mayHaveMore: Bool
+            do {
+                mayHaveMore = try await sync.loadOlderConversations(
+                    mailboxIDs: mailboxIDs(for: location.scope), folder: folder
+                )
+            } catch {
+                logger.warning("Loading older conversations failed: \(error.localizedDescription, privacy: .private)")
+                return
+            }
+            guard isCurrentReload(location, generation), !Task.isCancelled else { return }
+            serverMayHaveMoreConversations = mayHaveMore
+        }
+        conversationListLimit += Self.conversationPageSize
+        await reloadConversations()
     }
 
     /// The unread badges — only the counts something draws.

@@ -102,7 +102,13 @@ struct SettingsSection<Content: View>: View {
 
 /// A grouped card: 1px `line` border, radius lg, each child a row separated
 /// from the next by a `lineSoft` hairline.
+///
+/// `fill` is `surface` for every ordinary card; the Remove-domain page's
+/// "Delete this domain on the server" card is the one exception (handoff §3.2:
+/// "a neutral card (bg fill, line border)") — its border is the same, only the
+/// fill sets it apart as inert rather than an actionable Herald setting.
 struct SettingsCard<Content: View>: View {
+    var fill: Color = MailTheme.Color.surface
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -119,7 +125,7 @@ struct SettingsCard<Content: View>: View {
                 }
             }
         }
-        .background(MailTheme.Color.surface, in: RoundedRectangle(cornerRadius: MailTheme.Radius.lg))
+        .background(fill, in: RoundedRectangle(cornerRadius: MailTheme.Radius.lg))
         .overlay {
             RoundedRectangle(cornerRadius: MailTheme.Radius.lg)
                 .strokeBorder(MailTheme.Color.line, lineWidth: 1)

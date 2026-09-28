@@ -409,7 +409,7 @@ private struct SettingsDetail: View {
         case .signatures:
             DomainSignaturesSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
         case .remove:
-            DomainSettingsPlaceholderPage(item: item, page: page, breadcrumb: breadcrumb)
+            DomainRemoveSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
         }
     }
 }

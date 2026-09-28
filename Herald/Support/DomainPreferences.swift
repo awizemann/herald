@@ -99,6 +99,15 @@ nonisolated enum DomainPreferences {
         key("hiddenAt", accountID: accountID, domainID: domainID)
     }
 
+    /// The domain's name, captured at the moment it was hidden — the Hidden
+    /// Domains list's (R9) fallback for a domain whose mailboxes have since
+    /// left the account's cache, so that row can still show a real name
+    /// instead of falling back to a raw id (a server `mailDomainID`, rarely
+    /// human-legible).
+    static func hiddenNameKey(accountID: String, domainID: String) -> String {
+        key("hiddenName", accountID: accountID, domainID: domainID)
+    }
+
     // MARK: - Monogram override
 
     /// The user's override, normalized (``DomainMonogram/normalizeOverride(_:)``).
@@ -166,31 +175,44 @@ nonisolated enum DomainPreferences {
     }
 
     /// `nil` while the domain has never been hidden (or was restored — see
-    /// ``setHidden(_:accountID:domainID:in:now:)``).
+    /// ``setHidden(_:accountID:domainID:in:name:now:)``).
     static func hiddenAt(accountID: String, domainID: String, in defaults: UserDefaults) -> Date? {
         defaults.object(forKey: hiddenAtKey(accountID: accountID, domainID: domainID)) as? Date
     }
 
+    /// The name captured when the domain was hidden — `nil` once restored, or
+    /// if it was hidden before this field existed.
+    static func hiddenName(accountID: String, domainID: String, in defaults: UserDefaults) -> String? {
+        defaults.string(forKey: hiddenNameKey(accountID: accountID, domainID: domainID))
+    }
+
     /// Hiding stamps `hiddenAt` with `now` (a fresh hide is a fresh event, even
     /// for a domain hidden before and restored — the Hidden-domains list's
-    /// "Hidden {date}" should reflect the LATEST hide, not the first).
-    /// Restoring (`false`) clears both keys, so a restored domain reads
-    /// identically to one that was never hidden.
+    /// "Hidden {date}" should reflect the LATEST hide, not the first) and
+    /// records `name` (the caller's current best name for the domain, if it
+    /// has one) as the Hidden Domains list's fallback once the domain's
+    /// mailboxes are gone from the account's cache. Restoring (`false`) clears
+    /// all three keys, so a restored domain reads identically to one that was
+    /// never hidden.
     static func setHidden(
         _ hidden: Bool,
         accountID: String,
         domainID: String,
         in defaults: UserDefaults,
+        name: String? = nil,
         now: Date = Date()
     ) {
         let hiddenKey = hiddenKey(accountID: accountID, domainID: domainID)
         let hiddenAtKey = hiddenAtKey(accountID: accountID, domainID: domainID)
+        let hiddenNameKey = hiddenNameKey(accountID: accountID, domainID: domainID)
         if hidden {
             defaults.set(true, forKey: hiddenKey)
             defaults.set(now, forKey: hiddenAtKey)
+            if let name { defaults.set(name, forKey: hiddenNameKey) }
         } else {
             defaults.removeObject(forKey: hiddenKey)
             defaults.removeObject(forKey: hiddenAtKey)
+            defaults.removeObject(forKey: hiddenNameKey)
         }
     }
 

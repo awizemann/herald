@@ -56,6 +56,16 @@ extension AppEnvironment {
         )
     }
 
+    /// The account's hidden domains — the Remove-domain page's "HIDDEN
+    /// DOMAINS" list (R9), newest hide first.
+    func hiddenDomains(accountID: Account.ID) -> [HiddenDomainItem] {
+        HiddenDomainItem.hidden(
+            mailboxes: graphs[accountID]?.mail.mailboxes ?? [],
+            accountID: accountID,
+            defaults: domainPreferencesObserved()
+        )
+    }
+
     // MARK: - Account tint
 
     /// The account's tint token NAME: the Settings override when there is a

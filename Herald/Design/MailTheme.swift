@@ -191,6 +191,10 @@ enum MailTheme {
         /// the handoff's 16–18% / 50–55% range, which is what chips drew already.
         static let chipFill: Double = 0.18
         static let chipBorder: Double = 0.55
+        /// A hidden domain's badge in the Hidden Domains list (handoff §3.2
+        /// "Remove domain"): the same badge, dimmed as a whole rather than
+        /// re-tuned fill/border numbers.
+        static let hiddenBadgeOpacity: Double = 0.6
     }
 
     // MARK: Chips

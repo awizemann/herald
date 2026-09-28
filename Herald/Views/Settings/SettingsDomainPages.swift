@@ -545,27 +545,166 @@ private struct DomainSignatureRow: View {
     }
 }
 
-// MARK: - Remove domain (placeholder — R9)
+// MARK: - Remove domain
 
-/// A domain page before its real content exists.
-///
-/// PLACEHOLDER: phase R9 builds Remove domain. It replaces its `case` in
-/// `SettingsDetail.domainPage(_:item:accountID:breadcrumb:)` with its own page,
-/// built from the same chrome (`SettingsPage`, `SettingsSection`,
-/// `SettingsCard`, `SettingsRow`, `SettingsSourceTag`) — then this type goes.
-struct DomainSettingsPlaceholderPage: View {
+/// Settings › {domain} › Remove domain (handoff §3.2 "Remove domain"): Hide
+/// Domain (never a server delete — Herald has no domain-delete API and asks
+/// for no confirmation, since nothing on this page is destructive), the
+/// account's Hidden Domains list with Restore, and a neutral card pointing at
+/// where a workspace admin actually deletes a domain.
+struct DomainRemoveSettingsPage: View {
+    @Environment(AppEnvironment.self) private var environment
     let item: SettingsDomainItem
-    let page: DomainSettingsPage
+    let accountID: Account.ID
     let breadcrumb: String
 
     var body: some View {
-        SettingsPage(title: page.title, breadcrumb: breadcrumb) {
+        SettingsPage(title: DomainSettingsPage.remove.title, breadcrumb: breadcrumb) {
             SettingsCard {
-                SettingsRow(
-                    title: "Not built yet",
-                    note: "This page for \(item.domain.name) is built in phase R9."
-                )
+                actionRow(
+                    title: "Hide from Herald",
+                    source: .herald,
+                    note: "Removes \(item.domain.name) from the sidebar, unread counts and notifications "
+                        + "on this Mac. Nothing changes on the server. You can restore it below."
+                ) {
+                    Button("Hide Domain") {
+                        Task { await environment.hideDomain(item.id, accountID: accountID) }
+                    }
+                    .buttonStyle(SettingsOutlineButtonStyle())
+                    .accessibilityLabel("Hide \(item.domain.name) from Herald")
+                    .accessibilityIdentifier(AccessibilityID.Settings.hideDomain)
+                }
+            }
+            HiddenDomainsSection(accountID: accountID, tint: environment.accountTint(for: accountID))
+            if let account = environment.graphs[accountID]?.account {
+                SettingsCard(fill: MailTheme.Color.bg) {
+                    actionRow(
+                        title: "Delete this domain on the server",
+                        source: .server,
+                        note: "Deleting a domain and its mailboxes is managed by a workspace admin in HQBase. "
+                            + "Herald can’t delete domains."
+                    ) {
+                        Button {
+                            environment.openHQBaseAdmin(for: account)
+                        } label: {
+                            Label("Open in HQBase Admin", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(SettingsOutlineButtonStyle())
+                        .accessibilityLabel("Open HQBase Admin in your browser")
+                        .accessibilityIdentifier(AccessibilityID.Settings.openAdmin)
+                    }
+                }
             }
         }
     }
+
+    /// The shared shape of this page's two cards: a title (tagged SERVER/
+    /// HERALD) and an explanation on the left, one action on the right — the
+    /// same layout `SettingsRow` draws, but full-bleed (no `maxWidth`-clamped
+    /// control column) since each of these rows is the card's only content.
+    private func actionRow<Trailing: View>(
+        title: String,
+        source: SettingsSource,
+        note: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                HStack(spacing: MailTheme.Spacing.sm) {
+                    Text(title)
+                        .textStyle(MailTheme.Typography.bodyMedium)
+                        .foregroundStyle(MailTheme.Color.ink)
+                    SettingsSourceTag(source: source)
+                }
+                Text(note)
+                    .textStyle(MailTheme.Typography.caption)
+                    .foregroundStyle(MailTheme.Color.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            trailing()
+        }
+        .padding(.vertical, MailTheme.Spacing.lg)
+        .padding(.horizontal, MailTheme.Spacing.lg)
+    }
+}
+
+/// "HIDDEN DOMAINS" (handoff §3.2): every domain this account has hidden, with
+/// Restore. Shown on the Remove-domain page (as designed) AND, so a user can
+/// always get back a domain even when EVERY domain is hidden — at which point
+/// `settingsDomains(accountID:)` is empty, the sidebar's Domains section
+/// disappears, and no domain's Remove-domain page is reachable at all — again
+/// at the bottom of Settings › Account (``AccountSettingsPage``). Reusable
+/// rather than forked so the two spots can never disagree on what "hidden"
+/// means.
+struct HiddenDomainsSection: View {
+    @Environment(AppEnvironment.self) private var environment
+    let accountID: Account.ID
+    let tint: MailTheme.AccountTint
+
+    var body: some View {
+        let items = environment.hiddenDomains(accountID: accountID)
+        SettingsSection(title: "Hidden domains") {
+            SettingsCard {
+                if items.isEmpty {
+                    Text("No hidden domains.")
+                        .textStyle(MailTheme.Typography.caption)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                        .padding(.vertical, MailTheme.Spacing.md)
+                        .padding(.horizontal, MailTheme.Spacing.lg)
+                } else {
+                    ForEach(items) { item in
+                        HiddenDomainRow(item: item, tint: tint) {
+                            Task { await environment.restoreDomain(item.id, accountID: accountID) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One hidden domain: its badge at 60% opacity, name, "Hidden {date} · N
+/// mailboxes", and Restore.
+private struct HiddenDomainRow: View {
+    let item: HiddenDomainItem
+    let tint: MailTheme.AccountTint
+    let restore: () -> Void
+
+    var body: some View {
+        HStack(spacing: MailTheme.Spacing.md) {
+            DomainBadge(monogram: item.monogram, tint: tint, size: .sidebar)
+                .opacity(MailTheme.Wash.hiddenBadgeOpacity)
+            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                Text(item.name)
+                    .textStyle(MailTheme.Typography.body)
+                    .foregroundStyle(MailTheme.Color.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(note)
+                    .textStyle(MailTheme.Typography.caption)
+                    .foregroundStyle(MailTheme.Color.ink3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Restore", action: restore)
+                .buttonStyle(SettingsOutlineButtonStyle())
+                .accessibilityLabel("Restore \(item.name)")
+                .accessibilityIdentifier(AccessibilityID.Settings.restoreDomainPrefix + item.id)
+        }
+        .padding(.vertical, MailTheme.Spacing.sm + MailTheme.Spacing.xxs)
+        .padding(.horizontal, MailTheme.Spacing.lg)
+    }
+
+    private var note: String {
+        let mailboxes = item.mailboxCount == 1 ? "1 mailbox" : "\(item.mailboxCount) mailboxes"
+        guard let hiddenAt = item.hiddenAt else { return mailboxes }
+        return "Hidden \(Self.dateFormatter.string(from: hiddenAt)) · \(mailboxes)"
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
 }

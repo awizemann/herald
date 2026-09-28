@@ -121,6 +121,9 @@ nonisolated struct LabelPinKey: Sendable, Hashable {
 /// mutation the user just made.
 nonisolated struct PendingMutation: Sendable, Hashable {
     let token: UUID
+    /// The row's thread, so the CONVERSATION-level writers (listing upserts and
+    /// tombstoning) can tell a fenced thread without a fetch.
+    let threadID: String
     let readAt: Date?
     let starredAt: Date?
     let folderRaw: String
@@ -598,6 +601,11 @@ public actor MailStore {
                 mailboxKey: mailboxKey,
                 threadIDs: conversations.map(\.id)
             )
+            // A listing fetched before an in-flight action's POST landed carries
+            // the PRE-action read/star/folder. Those rows are re-derived from the
+            // (fenced) message rows after the listing is applied, so the list row
+            // keeps the optimistic state while the rest of the listing still lands.
+            let fenced = pendingThreadIDs(accountID: accountID)
             for dto in conversations {
                 guard let row = existing[dto.id] else {
                     let row = CachedConversation(
@@ -608,10 +616,16 @@ public actor MailStore {
                     )
                     _ = Self.apply(dto, to: row)
                     modelContext.insert(row)
+                    if fenced.contains(dto.id) {
+                        try refreshConversationRows([row], accountID: accountID, threadID: dto.id)
+                    }
                     changes.inserted.insert(dto.id)
                     continue
                 }
                 if Self.apply(dto, to: row) { changes.updated.insert(dto.id) }
+                if fenced.contains(dto.id) {
+                    try refreshConversationRows([row], accountID: accountID, threadID: dto.id)
+                }
             }
             if !changes.isEmpty { try save() }
             return changes
@@ -883,6 +897,11 @@ public actor MailStore {
 
     /// Test seam: whether a message is currently fenced against journal upserts.
     /// A leak here is a message the journal can never correct again.
+    /// Threads with at least one message under the triage fence.
+    func pendingThreadIDs(accountID: String) -> Set<String> {
+        Set(pendingMutations.lazy.filter { $0.key.accountID == accountID }.map(\.value.threadID))
+    }
+
     func hasPendingMutation(messageID: String, accountID: String) -> Bool {
         pendingMutations[PendingKey(accountID: accountID, messageID: messageID)] != nil
     }
@@ -1038,6 +1057,7 @@ public actor MailStore {
     private func markPending(_ row: CachedMessage, token: UUID) {
         pendingMutations[PendingKey(accountID: row.accountID, messageID: row.id)] = PendingMutation(
             token: token,
+            threadID: row.threadID,
             readAt: row.readAt,
             starredAt: row.starredAt,
             folderRaw: row.folderRaw

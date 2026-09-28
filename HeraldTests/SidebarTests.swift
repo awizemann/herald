@@ -216,19 +216,43 @@ struct SidebarTests {
 
     /// Marks exactly the domain's unread INBOX threads — every mailbox of the
     /// domain, whatever the window's scope/folder — through the conversation
-    /// route with the Inbox folder. Fails if it follows the current listing,
-    /// touches another domain, re-marks read threads or archived ones.
-    @Test("Mark All as Read covers the domain's unread Inbox only")
+    /// route with the Inbox folder, each thread ONCE. Around the fixture:
+    /// - `t_read`: already read — not sent;
+    /// - `t_twice`: unread in BOTH acme mailboxes — one request, not two;
+    /// - `t_gone`: unread in mbTeam but archived locally a moment ago (its
+    ///   inbox row still listed) — not sent;
+    /// - `t_cross`: unread in acme's mbSales AND north's mbOps — the
+    ///   conversation route would mark north's copy too, so only acme's
+    ///   MESSAGE goes, by the message route, and north keeps its unread.
+    /// Fails on the old run (every listed row through the conversation route:
+    /// `t_twice` twice, `t_gone` and `t_cross` wholesale), if it follows the
+    /// current listing, or touches another domain.
+    @Test("Mark All as Read covers the domain's unread Inbox only, once per thread")
     func markAllAsReadScope() async throws {
         let harness = try await ScopeHarness.make()
         try await harness.seed()
-        // A thread that is already read must not be sent again.
-        let read = MailFixtures.message(id: "m_read", threadID: "t_read", mailboxID: "mbTeam", read: true)
-        try await harness.store.upsertMessages([read], accountID: ScopeHarness.account)
-        try await harness.store.upsertConversations(
-            [MailFixtures.conversation(read, unread: 0)], accountID: ScopeHarness.account, mailboxID: "mbTeam", folder: .inbox
-        )
+        let account = ScopeHarness.account
+        func add(_ id: String, thread: String, in mailbox: String, read: Bool = false, minute: Int) async throws {
+            let message = MailFixtures.message(
+                id: id, threadID: thread, mailboxID: mailbox, read: read,
+                date: MailFixtures.epoch.addingTimeInterval(TimeInterval(3_600 + minute * 60))
+            )
+            try await harness.store.upsertMessages([message], accountID: account)
+            try await harness.store.upsertConversations(
+                [MailFixtures.conversation(message, unread: read ? 0 : 1)], accountID: account, mailboxID: mailbox, folder: .inbox
+            )
+            // The message route answers with this summary, read.
+            await harness.api.setDetail(MailFixtures.detail(message))
+        }
+        try await add("m_read", thread: "t_read", in: "mbTeam", read: true, minute: 1)
+        try await add("m_twice_s", thread: "t_twice", in: "mbSales", minute: 2)
+        try await add("m_twice_t", thread: "t_twice", in: "mbTeam", minute: 3)
+        try await add("m_gone", thread: "t_gone", in: "mbTeam", minute: 4)
+        try await add("m_cross_a", thread: "t_cross", in: "mbSales", minute: 5)
+        try await add("m_cross_n", thread: "t_cross", in: "mbOps", minute: 6)
+        _ = try await harness.store.applyLocalAction(.archive, messageID: "m_gone", accountID: account)
         await harness.model.start()
+        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.acme] == 4, "t_sales, t_team, t_twice, t_cross")
         // Standing somewhere else entirely.
         harness.model.selectScope(.domain(ScopeHarness.north))
         harness.model.selectFolder(.conversation(.sent))
@@ -236,13 +260,89 @@ struct SidebarTests {
 
         await harness.model.markAllAsRead(inDomain: ScopeHarness.acme)
 
-        let sent = await harness.api.conversationActionIDs("read")
-        #expect(Set(sent) == ["m_t_sales", "m_t_team"])
-        #expect(sent.count == 2)
+        let whole = await harness.api.conversationActionIDs("read")
+        #expect(whole.sorted() == ["m_t_sales", "m_t_team", "m_twice_t"], "one request per thread, newest member")
         #expect(await harness.api.actionFolders("read", on: "m_t_sales") == [.inbox])
-        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.acme] == nil, "acme's count reloaded to zero")
-        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.north] == 1, "north untouched")
+        #expect(await harness.api.messageActionIDs("read") == ["m_cross_a"], "only acme's copy of the shared thread")
+        // A cached conversation row's unread is THREAD-wide (MailStore's
+        // `refreshConversationRows`), so acme's row of t_cross still reads
+        // unread while north's message is — the price of not marking north's.
+        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.acme] == 1, "only the shared t_cross remains")
+        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.north] == 2, "north keeps t_ops AND its copy of t_cross")
         #expect(harness.model.actionError == nil)
+        #expect(harness.model.markAllTask == nil, "the finished run released its task")
+    }
+
+    /// Many threads: at most `markAllConcurrency` requests are ever in flight,
+    /// the list reloads part-way (every `markAllReloadInterval` completions),
+    /// and a second click while it runs starts nothing. Fails on the old
+    /// unbounded group (all 30 parked at once), on a single reload at the end,
+    /// or on a re-entry that re-sends the batch.
+    @Test("Mark All as Read is bounded, reloads as it goes, and ignores re-entry", .timeLimit(.minutes(1)))
+    func markAllAsReadIsBounded() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        let threads = (1...30).map { "t_bulk\($0)" }
+        for (index, thread) in threads.enumerated() {
+            let message = MailFixtures.message(
+                id: "m_\(thread)", threadID: thread, mailboxID: "mbSales",
+                date: MailFixtures.epoch.addingTimeInterval(TimeInterval(7_200 + index * 60))
+            )
+            try await harness.store.upsertMessages([message], accountID: ScopeHarness.account)
+            try await harness.store.upsertConversations(
+                [MailFixtures.conversation(message)], accountID: ScopeHarness.account, mailboxID: "mbSales", folder: .inbox
+            )
+        }
+        await harness.model.start()
+        let reloadsBefore = harness.model.conversationReloadCount
+        await harness.api.closeActionGate()
+
+        harness.model.beginMarkAllAsRead(inDomain: ScopeHarness.acme)
+        await harness.api.waitForParkedActions(count: MailViewModel.markAllConcurrency)
+        // Give an unbounded implementation every chance to over-issue.
+        for _ in 0..<200 { await Task.yield() }
+        #expect(await harness.api.parkedActionCount == MailViewModel.markAllConcurrency)
+        harness.model.beginMarkAllAsRead(inDomain: ScopeHarness.acme)
+        await harness.api.openActionGate()
+        await harness.model.markAllTask?.value
+
+        let sent = await harness.api.conversationActionIDs("read")
+        #expect(sent.count == 32, "30 bulk threads + t_sales + t_team, each once — the second click added nothing")
+        #expect(Set(sent).count == 32)
+        #expect(await harness.api.maxActionsInFlight <= MailViewModel.markAllConcurrency)
+        #expect(
+            harness.model.conversationReloadCount - reloadsBefore == 2,
+            "one reload at \(MailViewModel.markAllReloadInterval) completions, one at the end"
+        )
+        #expect(harness.model.inboxUnreadByDomain[ScopeHarness.acme] == nil)
+    }
+
+    /// Sign-out's `stop()` cancels a running Mark All as Read: nothing past the
+    /// requests already in flight is sent. Fails when the run is an unowned
+    /// `Task` in the view (it POSTs the rest for an account that is gone).
+    @Test("stop() cancels a running Mark All as Read", .timeLimit(.minutes(1)))
+    func markAllAsReadStopsWithTheAccount() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        for index in 1...20 {
+            let message = MailFixtures.message(
+                id: "m_s\(index)", threadID: "t_s\(index)", mailboxID: "mbTeam",
+                date: MailFixtures.epoch.addingTimeInterval(TimeInterval(7_200 + index * 60))
+            )
+            try await harness.store.upsertMessages([message], accountID: ScopeHarness.account)
+            try await harness.store.upsertConversations(
+                [MailFixtures.conversation(message)], accountID: ScopeHarness.account, mailboxID: "mbTeam", folder: .inbox
+            )
+        }
+        await harness.model.start()
+        await harness.api.closeActionGate()
+        harness.model.beginMarkAllAsRead(inDomain: ScopeHarness.acme)
+        await harness.api.waitForParkedActions(count: MailViewModel.markAllConcurrency)
+        let task = harness.model.markAllTask
+        harness.model.stop()
+        await harness.api.openActionGate()
+        await task?.value
+        #expect(await harness.api.conversationActionIDs("read").count == MailViewModel.markAllConcurrency)
     }
 
     /// A rejected request reverts (the service's optimistic rule) and says so.
@@ -274,7 +374,7 @@ struct SidebarTests {
         #expect(DomainPreferences.isHidden(accountID: id, domainID: "dom_acme", in: environment.defaults))
         #expect(mail.scope == .allDomains)
         #expect(mail.folder == .conversation(.sent))
-        #expect(mail.mailboxIDs(for: .allDomains) == ["mb_nw"])
+        #expect(mail.mailboxIDs(for: .allDomains) == ["mb_nw", MailViewModel.unassignedMailboxKey])
     }
 
     /// Hiding a domain the window is NOT in leaves the scope alone.

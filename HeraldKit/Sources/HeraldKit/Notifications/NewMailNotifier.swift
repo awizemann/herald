@@ -93,7 +93,7 @@ public actor NewMailNotifier {
         guard truncated || sorted.count > coalesceThreshold else {
             return sorted.reversed().map { message in
                 NewMailNotification(
-                    id: "herald.newmail.\(accountID).\(message.id)",
+                    id: NewMailNotification.identifierPrefix(accountID: accountID) + message.id,
                     title: senderDisplayName(message.fromAddress),
                     subtitle: message.subject.isEmpty ? "(No subject)" : message.subject,
                     body: message.snippet,
@@ -109,7 +109,7 @@ public actor NewMailNotifier {
         let count = sorted.count
         return [
             NewMailNotification(
-                id: "herald.newmail.\(accountID).burst",
+                id: NewMailNotification.identifierPrefix(accountID: accountID) + "burst",
                 title: accountLabel.isEmpty ? "New mail" : accountLabel,
                 subtitle: "",
                 body: truncated ? "\(count)+ new messages" : "\(count) new messages",

@@ -67,28 +67,22 @@ nonisolated enum ListColumn {
         /// - Parameters:
         ///   - monogramOverrides: the user's per-domain monogram (Settings ›
         ///     Domain › Overview), already read out of `UserDefaults`.
-        ///   - accountID: only used to satisfy the badge resolver; the tint
-        ///     itself is drawn from the list column's own account-tint helper.
         static func make(
             level: AttributionLevel,
             mailboxes: [Mailbox],
             domains: [MailDomain],
-            monogramOverrides: [MailDomain.ID: String],
-            accountID: String
+            monogramOverrides: [MailDomain.ID: String]
         ) -> AttributionIndex {
             guard level != .none else { return .empty }
             var monograms: [Mailbox.ID: String] = [:]
             if level == .domainAndMailbox {
-                // One resolve per DOMAIN (its first mailbox stands in for all
-                // of them), fanned out to every mailbox it holds.
+                // ONE clash resolution over every domain, fanned out to each
+                // domain's mailboxes. Going through the badge resolver per
+                // domain ran the whole assignment once per domain — O(D²).
+                let assigned = DomainMonogram.assign(domains: domains, overrides: monogramOverrides)
                 for domain in domains {
-                    guard let first = domain.mailboxIDs.first,
-                          let info = DomainBadgeResolver.resolve(
-                              mailboxID: first, domains: domains, monogramOverrides: monogramOverrides,
-                              accountID: accountID, tintOverride: nil
-                          )
-                    else { continue }
-                    for id in domain.mailboxIDs { monograms[id] = info.monogram }
+                    let monogram = assigned[domain.id] ?? DomainMonogram.derive(from: domain.name)
+                    for id in domain.mailboxIDs { monograms[id] = monogram }
                 }
             }
             var localParts: [Mailbox.ID: String] = [:]

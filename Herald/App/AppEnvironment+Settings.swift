@@ -140,9 +140,9 @@ extension AppEnvironment {
     func updateDomainPreferences(accountID: Account.ID, reloads: Bool = true, _ write: (UserDefaults) -> Void) async {
         write(defaults)
         domainPreferencesRevision &+= 1
-        if reloads {
-            await graphs[accountID]?.mail.domainPreferencesDidChange()
-        }
+        // Always told, so the view-model's cached reads see the write; only
+        // the list/drafts/count refetch is skipped for a repaint-only write.
+        await graphs[accountID]?.mail.domainPreferencesDidChange(reloads: reloads)
         applyDockBadge()
     }
 

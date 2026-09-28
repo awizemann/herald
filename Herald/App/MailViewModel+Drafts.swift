@@ -39,7 +39,10 @@ extension MailViewModel {
     /// own mailboxes' drafts.
     func reloadDrafts() async {
         draftReloadCount += 1
+        draftReloadsInFlight += 1
+        defer { draftReloadsInFlight -= 1 }
         let scope = location.scope
+        let generation = reloadGeneration
         let mailboxIDs = mailboxIDs(for: scope)
         let includingUnassigned = scope == .allDomains
         do {
@@ -49,9 +52,9 @@ extension MailViewModel {
             let count = try await store.draftCount(
                 accountID: accountID, mailboxIDs: mailboxIDs, includingUnassigned: includingUnassigned
             )
-            // The scope moved while this was in flight; the newer reload owns
-            // the list.
-            guard !Task.isCancelled, scope == location.scope else { return }
+            // The scope — or what it resolves to — moved while this was in
+            // flight; the newer reload owns the list.
+            guard !Task.isCancelled, scope == location.scope, generation == reloadGeneration else { return }
             drafts = rows
             draftCount = count
         } catch {

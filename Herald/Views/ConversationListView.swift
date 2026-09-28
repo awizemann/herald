@@ -176,7 +176,9 @@ struct ConversationListView: View {
             }
         }
         .overlay {
-            if model.presentedConversations.isEmpty {
+            // Not while a scope/folder change is loading: the list is cleared
+            // at once, and "Nothing in Inbox" would flash before the rows land.
+            if model.presentedConversations.isEmpty, !model.isLoadingConversations {
                 // "Nothing in Sent / in acme.co", or "No Results" while a
                 // search filters the list (see `ListColumn.emptyState`).
                 ListEmptyStateView(state: model.listEmptyState)

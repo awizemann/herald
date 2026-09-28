@@ -938,6 +938,19 @@ final class AppEnvironment {
         router.install()
     }
 
+    /// Sign-out's notification half: the account's banners still sitting in
+    /// Notification Centre are withdrawn, and a click held for it
+    /// (``pendingRoute``) is dropped — either would otherwise route a later
+    /// click, or a later sign-in of the same account, to mail it no longer
+    /// owns.
+    func forgetNotifications(forAccount accountID: Account.ID) async {
+        if pendingRoute?.accountID == accountID { pendingRoute = nil }
+        await notificationPoster.removeDelivered(forAccount: accountID)
+    }
+
+    /// Test seam: the held click, if any.
+    var pendingRouteForTesting: NewMailRoute? { pendingRoute }
+
     /// Where a clicked banner lands: the account it names becomes the selected
     /// one, then THAT account's view-model shows the conversation.
     ///

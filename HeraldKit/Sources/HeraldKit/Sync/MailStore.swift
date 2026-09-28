@@ -13,6 +13,45 @@ public nonisolated struct MessageStateSnapshot: Sendable, Hashable {
     public let folderRaw: String
 }
 
+/// One unread conversation row, reduced to what the sidebar counts need
+/// (``MailStore/unreadConversationKeys(accountID:)``).
+public nonisolated struct UnreadConversationKey: Sendable, Hashable {
+    public let threadID: String
+    /// `mailboxID ?? ""` — `""` is a row tied to no mailbox.
+    public let mailboxKey: String
+    /// Raw ``ConversationFolder`` the row was LISTED under.
+    public let listFolder: String
+    /// Raw ``MailFolder`` of its latest message — moved by a local
+    /// archive/trash before the listing catches up.
+    public let folderRaw: String
+    /// The row's newest message — an action's fallback target when the cache
+    /// holds the conversation row but not its messages.
+    public let latestMessageID: String
+
+    public init(
+        threadID: String, mailboxKey: String, listFolder: String, folderRaw: String, latestMessageID: String = ""
+    ) {
+        self.threadID = threadID
+        self.mailboxKey = mailboxKey
+        self.listFolder = listFolder
+        self.folderRaw = folderRaw
+        self.latestMessageID = latestMessageID
+    }
+
+    /// Whether the row counts toward `folder` — the SAME rule as
+    /// ``MailStore/unreadCount(accountID:mailboxIDs:folder:)`` and the list's
+    /// presentation filter: a row a local archive moved out of the inbox stops
+    /// counting there at once.
+    public func counts(in folder: ConversationFolder) -> Bool {
+        guard listFolder == folder.rawValue else { return false }
+        switch folder {
+        case .archived: return folderRaw == MailFolder.archived.rawValue
+        case .trash: return folderRaw == MailFolder.trash.rawValue
+        default: return folderRaw != MailFolder.archived.rawValue && folderRaw != MailFolder.trash.rawValue
+        }
+    }
+}
+
 /// Pre-mutation state of one cached conversation row.
 public nonisolated struct ConversationStateSnapshot: Sendable, Hashable {
     public let threadID: String
@@ -178,12 +217,66 @@ public actor MailStore {
             predicate: predicate,
             sortBy: [SortDescriptor(\.sortDate, order: .reverse)]
         )
-        descriptor.fetchLimit = limit
-        descriptor.fetchOffset = offset
         do {
-            return try modelContext.fetch(descriptor).map(Self.conversation(from:))
+            guard mailboxIDs.map({ $0.count > 1 }) ?? true else {
+                descriptor.fetchLimit = limit
+                descriptor.fetchOffset = offset
+                return try modelContext.fetch(descriptor).map(Self.conversation(from:))
+            }
+            // Walked in store pages until `limit` distinct threads are in hand:
+            // a duplicate costs a row but not a slot, so a fixed `fetchLimit`
+            // would come back short.
+            let batch = max(limit, 100)
+            var seen: Set<String> = []
+            var skipped = 0
+            var result: [ConversationSummary] = []
+            var storeOffset = 0
+            while result.count < limit {
+                descriptor.fetchLimit = batch
+                descriptor.fetchOffset = storeOffset
+                let rows = try modelContext.fetch(descriptor)
+                for row in rows where seen.insert(row.threadID).inserted {
+                    if skipped < offset {
+                        skipped += 1
+                        continue
+                    }
+                    result.append(Self.conversation(from: row))
+                    if result.count == limit { break }
+                }
+                guard rows.count == batch else { break }
+                storeOffset += batch
+            }
+            return result
         } catch {
             logger.error("Conversation fetch failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
+    /// One key per cached conversation row with anything unread — every
+    /// listing scope of the account, in ONE fetch of four columns.
+    ///
+    /// The sidebar's counts (per folder of the scope, per mailbox, per domain,
+    /// All domains, the Dock badge) are all derived from this in memory,
+    /// counting DISTINCT threads: a `fetchCount` per mailbox was an actor hop
+    /// each (well over a hundred on a large account, on every reload), and
+    /// summing per-mailbox counts counted a thread with rows in two mailboxes
+    /// twice.
+    public func unreadConversationKeys(accountID: String) throws -> [UnreadConversationKey] {
+        var descriptor = FetchDescriptor<CachedConversation>(
+            predicate: #Predicate { $0.accountID == accountID && $0.unreadCount > 0 }
+        )
+        descriptor.propertiesToFetch = [\.threadID, \.mailboxKey, \.listFolder, \.folderRaw, \.latestMessageID]
+        do {
+            return try modelContext.fetch(descriptor).map {
+                UnreadConversationKey(
+                    threadID: $0.threadID, mailboxKey: $0.mailboxKey,
+                    listFolder: $0.listFolder, folderRaw: $0.folderRaw,
+                    latestMessageID: $0.latestMessageID
+                )
+            }
+        } catch {
+            logger.error("Unread key fetch failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
     }

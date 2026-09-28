@@ -216,12 +216,12 @@ final class MailViewModel {
     // unread, whatever folder the list shows (plan v2 decision N6: a Sent
     // unread count means nothing). Only ids with unread appear in the maps.
 
-    /// Inbox unread per mailbox — the mailbox rows' counts, and the ONLY input
-    /// ``inboxUnreadByDomain`` is summed from.
+    /// Inbox unread per mailbox — the mailbox rows' counts.
     private(set) var inboxUnreadByMailbox: [Mailbox.ID: Int] = [:]
-    /// Inbox unread per domain: the sum of its mailboxes' counts. A mailbox
-    /// belongs to exactly one domain and a conversation row to one mailbox, so
-    /// nothing is counted twice.
+    /// Inbox unread per domain: DISTINCT threads over its mailboxes, not the
+    /// sum of their counts — a thread with messages in two of a domain's
+    /// mailboxes has a row under each, and summing counted it twice
+    /// (``UnreadTally``).
     private(set) var inboxUnreadByDomain: [MailDomain.ID: Int] = [:]
     /// Inbox unread of the "All domains" scope — hidden and not-included
     /// domains left out, counted over the SAME mailbox set the All domains
@@ -233,6 +233,83 @@ final class MailViewModel {
     /// badge" (``badgeMailboxIDs()``). Independent of "All domains": a domain
     /// kept out of the combined list can still count toward the badge.
     private(set) var badgeInboxUnread = 0
+
+    // MARK: Reload generation
+    //
+    // Every async reload (the list, the label index, the counts, the drafts)
+    // captures ``reloadGeneration`` before its first store read and publishes
+    // only if it is unchanged. It is bumped by whatever changes what those
+    // reads MEAN — a navigation, a per-domain preference write, a change to
+    // the mailbox/domain list — and every bumper starts the reloads its
+    // change needs, so a dropped answer is always superseded by a newer one.
+    // Checking `location` alone missed the last two: a count read begun
+    // before "exclude from All domains" landed after it with the old number.
+
+    /// See above. Internal so the drafts and labels extensions can check it.
+    @ObservationIgnored private(set) var reloadGeneration = 0
+
+    /// Test seam: runs after a count reload's store read, just before its
+    /// generation check — the one moment a navigation can land between a
+    /// count being computed and published. `nil` outside tests.
+    @ObservationIgnored var countsWillPublish: (@MainActor () -> Void)?
+
+    /// Whether the list is waiting on the store after a move to a different
+    /// scope or folder. The rows are cleared at once rather than left under
+    /// the new header (they answered the OLD location's question); a same
+    /// location reload keeps its rows until the new ones land, so a sync tick
+    /// never flickers the list.
+    private(set) var isLoadingConversations = false
+
+    /// Bumped by ``domainPreferencesDidChange()``. `DomainPreferences` live in
+    /// `UserDefaults`, which Observation cannot see; everything the
+    /// view-model derives from them reads through ``observedDefaults`` so a
+    /// monogram override or an exclusion repaints what was drawn from it.
+    private(set) var domainPreferencesRevision = 0
+
+    /// ``defaults``, read in a way Observation records — pass THIS (never
+    /// `defaults`) wherever a view draws from `DomainPreferences` through the
+    /// view-model.
+    var observedDefaults: UserDefaults {
+        _ = domainPreferencesRevision
+        return defaults
+    }
+
+    /// Bumped on every mailbox reload; with ``domainPreferencesRevision`` it
+    /// keys ``resolvedSetsCache``.
+    @ObservationIgnored private var mailboxListRevision = 0
+
+    /// The mailbox sets All domains, the Dock badge and the notification
+    /// filter resolve to. Each read preferences for every domain and built a
+    /// fresh `Set`, and ``mailboxIDs(for:)`` is asked once per changed message
+    /// in a sync pass — so they are resolved once per (mailbox list,
+    /// preferences) and reused.
+    private struct ResolvedSets {
+        let mailboxListRevision: Int
+        let preferencesRevision: Int
+        let allDomains: Set<String>?
+        let badge: Set<String>?
+        let silenced: Set<String>
+    }
+
+    @ObservationIgnored private var resolvedSetsCache: ResolvedSets?
+
+    private var resolvedSets: ResolvedSets {
+        let preferences = domainPreferencesRevision
+        if let cached = resolvedSetsCache,
+           cached.mailboxListRevision == mailboxListRevision,
+           cached.preferencesRevision == preferences {
+            return cached
+        }
+        let resolved = ResolvedSets(
+            mailboxListRevision: mailboxListRevision,
+            preferencesRevision: preferences,
+            allDomains: resolveMailboxIDs(excluding: isExcludedFromAllDomains),
+            badge: resolveMailboxIDs(excluding: isExcludedFromBadge),
+            silenced: resolveSilencedMailboxIDs()
+        )
+        resolvedSetsCache = resolved
+        return resolved
+    }
 
     // MARK: Navigation
     //
@@ -270,6 +347,7 @@ final class MailViewModel {
         let old = location
         guard target != old else { return }
         location = target
+        reloadGeneration &+= 1
         persistLocation()
         // A label-only change is deliberately NOT reported: the usage
         // vocabulary (`UsageViewKind`) has no label view, and inventing one
@@ -289,6 +367,14 @@ final class MailViewModel {
         // Server search answers a (scope, folder) question; its rows answer the
         // OLD location's question and would leak into the new list.
         cancelServerSearch()
+        // Another scope or folder is a different listing: the rows on screen
+        // answer the old one, and leaving them under the new header until the
+        // store answers showed (say) one domain's inbox titled as another's.
+        // A label change only narrows the same listing, so it keeps them.
+        if target.scope != old.scope || target.folder != old.folder {
+            isLoadingConversations = true
+            if !allConversations.isEmpty { allConversations = [] }
+        }
         // The folder and the label are the presentation rule, so the visible
         // list is wrong until it is recomputed — don't wait for the store.
         refilter()
@@ -310,8 +396,10 @@ final class MailViewModel {
             if opensLabel { await self?.sync?.refreshLabelsNow() }
         }
         // Drafts are scoped too, so a scope change re-reads them (and their
-        // badge) even when the Drafts list is not on screen.
-        if entersDrafts || target.scope != old.scope {
+        // badge) even when the Drafts list is not on screen. A drafts read
+        // still in flight is re-run as well: the generation bump above drops
+        // its answer, and nothing else would replace it.
+        if entersDrafts || target.scope != old.scope || draftReloadsInFlight > 0 {
             // Owned, and cancelled by `stop()`: an unstructured `Task` here
             // outlives the account graph that spawned it.
             draftTask?.cancel()
@@ -391,7 +479,10 @@ final class MailViewModel {
     /// `.allDomains` leaves out the domains the user hid or took out of "All
     /// domains", and every mailbox the server disabled; when there is none of
     /// either, the answer is `nil` rather than the full set, so the store keeps
-    /// its unfiltered fast path. A domain that no longer exists
+    /// its unfiltered fast path. An explicit All domains set always holds
+    /// ``unassignedMailboxKey``: mail tied to NO mailbox belongs to no domain,
+    /// so no domain's exclusion can take it out — the same rule the drafts
+    /// list keeps with `includingUnassigned`. A domain that no longer exists
     /// resolves to the EMPTY set (lists nothing) rather than to everything.
     func mailboxIDs(for scope: Scope) -> Set<String>? {
         switch scope {
@@ -400,32 +491,45 @@ final class MailViewModel {
         case .domain(let id):
             return Set(domains.first { $0.id == id }?.mailboxIDs ?? [])
         case .allDomains:
-            let excluded = domains.filter(isExcludedFromAllDomains)
-            guard !excluded.isEmpty || !disabledMailboxes.isEmpty else { return nil }
-            return Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
+            return resolvedSets.allDomains
         }
+    }
+
+    /// The `mailboxKey` of a conversation row tied to no mailbox (an
+    /// unassigned catch-all message) — `mailboxID ?? ""` in the store.
+    nonisolated static let unassignedMailboxKey = ""
+
+    /// Every enabled mailbox minus the domains `isExcluded` rejects, plus the
+    /// unassigned key — or `nil` ("every mailbox") when nothing is excluded
+    /// and nothing disabled.
+    private func resolveMailboxIDs(excluding isExcluded: (MailDomain) -> Bool) -> Set<String>? {
+        let excluded = domains.filter(isExcluded)
+        guard !excluded.isEmpty || !disabledMailboxes.isEmpty else { return nil }
+        var ids = Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
+        ids.insert(Self.unassignedMailboxKey)
+        return ids
     }
 
     /// Whether a domain stays out of the `.allDomains` listing on this Mac.
     func isExcludedFromAllDomains(_ domain: MailDomain) -> Bool {
-        DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
+        let defaults = observedDefaults
+        return DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
             || !DomainPreferences.includeInAll(accountID: accountID, domainID: domain.id, in: defaults)
     }
 
     /// Whether a domain's unread stays out of the Dock badge on this Mac.
     func isExcludedFromBadge(_ domain: MailDomain) -> Bool {
-        DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
+        let defaults = observedDefaults
+        return DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
             || !DomainPreferences.countInBadge(accountID: accountID, domainID: domain.id, in: defaults)
     }
 
     /// The mailboxes whose Inbox unread counts toward the Dock badge, or `nil`
-    /// for "every mailbox" — the same shape and fast path as the `.allDomains`
-    /// case of ``mailboxIDs(for:)``, with `countInBadge` in place of
-    /// `includeInAll`.
+    /// for "every mailbox" — the same shape, fast path and unassigned rule as
+    /// the `.allDomains` case of ``mailboxIDs(for:)``, with `countInBadge` in
+    /// place of `includeInAll`.
     func badgeMailboxIDs() -> Set<String>? {
-        let excluded = domains.filter(isExcludedFromBadge)
-        guard !excluded.isEmpty || !disabledMailboxes.isEmpty else { return nil }
-        return Set(mailboxes.map(\.id)).subtracting(excluded.flatMap(\.mailboxIDs))
+        resolvedSets.badge
     }
 
     /// Mailboxes whose new mail must not post a banner: every mailbox the
@@ -438,6 +542,11 @@ final class MailViewModel {
     /// asked). Otherwise a domain toggled off and back on — which stores an
     /// explicit `true` — would keep posting after the user silenced Herald.
     func notificationSilencedMailboxIDs() -> Set<String> {
+        resolvedSets.silenced
+    }
+
+    private func resolveSilencedMailboxIDs() -> Set<String> {
+        let defaults = observedDefaults
         var silenced = Set(disabledMailboxes.map(\.id))
         for domain in domains {
             let hidden = DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
@@ -448,22 +557,34 @@ final class MailViewModel {
     }
 
     /// Re-reads everything a per-domain preference feeds — the All domains
-    /// listing and its drafts, every unread count and the Dock badge. Reached
-    /// through `AppEnvironment.updateDomainPreferences`, the one call a
+    /// listing and its drafts, every unread count, the Dock badge, the
+    /// notification filter and every monogram drawn through
+    /// ``observedDefaults``. Reached through
+    /// `AppEnvironment.updateDomainPreferences`, the one call a
     /// Settings/sidebar control makes after writing `DomainPreferences`
-    /// (include in All domains, count in badge, hide/restore); notifications
-    /// need nothing, they read the preferences per pass. What happens to a
-    /// scope standing IN a domain that was just hidden is the Hide flow's call
-    /// (R9), not this reload's.
-    func domainPreferencesDidChange() async {
+    /// (monogram, include in All domains, count in badge, notify,
+    /// hide/restore) — and the ONLY thing that invalidates the cached
+    /// resolved sets, so a preference written any other way is not seen. What
+    /// happens to a scope standing IN a domain that was just hidden is the
+    /// Hide flow's call (R9), not this reload's.
+    ///
+    /// `reloads: false` is for a write that only changes how things are DRAWN
+    /// (a monogram override): the revision still moves — every monogram and
+    /// cached set re-reads — but the list, drafts and counts are not refetched.
+    func domainPreferencesDidChange(reloads: Bool = true) async {
+        domainPreferencesRevision &+= 1
+        guard reloads else { return }
+        // Any read already in flight resolved its mailbox set before the write.
+        reloadGeneration &+= 1
         await reloadConversations()
         await reloadDrafts()
     }
 
-    /// Whether a message's mailbox is inside a resolved scope set.
+    /// Whether a message's mailbox is inside a resolved scope set. A message
+    /// with no mailbox matches by ``unassignedMailboxKey``, like its row.
     nonisolated static func mailboxIDs(_ ids: Set<String>?, contain mailboxID: String?) -> Bool {
         guard let ids else { return true }
-        return mailboxID.map(ids.contains) ?? false
+        return ids.contains(mailboxID ?? unassignedMailboxKey)
     }
 
     /// `location` with any part that no longer exists replaced — the scope by
@@ -517,6 +638,10 @@ final class MailViewModel {
     @ObservationIgnored var draftReloadCount = 0
     /// The in-flight drafts load, owned so ``stop()`` can cancel it.
     @ObservationIgnored var draftTask: Task<Void, Never>?
+    /// How many ``reloadDrafts()`` calls are between their capture and their
+    /// publish — what tells a navigation that bumps the generation that a
+    /// drafts answer is about to be dropped and needs re-running.
+    @ObservationIgnored var draftReloadsInFlight = 0
 
     // MARK: Labels
     //
@@ -748,6 +873,10 @@ final class MailViewModel {
     private var detailTask: Task<Void, Never>?
     /// The reading pane's label load. Owned so `stop()` can cancel it.
     @ObservationIgnored var labelTask: Task<Void, Never>?
+    /// A running domain "Mark All as Read" (`SidebarNavigation.swift`). Owned
+    /// so `stop()` — sign-out, account teardown — cancels it instead of
+    /// leaving it POSTing for an account that is gone.
+    @ObservationIgnored var markAllTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     /// Exposed so tests can await the dwell timer instead of sleeping.
     private(set) var markReadTask: Task<Void, Never>?
@@ -792,6 +921,7 @@ final class MailViewModel {
         cancelServerSearch()
         draftTask?.cancel()
         labelTask?.cancel()
+        markAllTask?.cancel()
     }
 
     // MARK: - Derived state
@@ -1648,7 +1778,7 @@ final class MailViewModel {
         let mailboxID = (messages.first { $0.folder == .inbox } ?? messages.first)?.mailboxID
         guard let mailboxID,
               let domain = domains.first(where: { $0.mailboxIDs.contains(mailboxID) }),
-              !DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: defaults)
+              !DomainPreferences.isHidden(accountID: accountID, domainID: domain.id, in: observedDefaults)
         else { return .allDomains }
         return .domain(domain.id)
     }
@@ -1691,6 +1821,8 @@ final class MailViewModel {
             reloadThread = selectedThreadID != nil
             reloadMailboxList = true
         } else {
+            // Resolved once for the pass, not once per changed message.
+            let scopeIDs = mailboxIDs(for: location.scope)
             for id in changes.inserted.union(changes.updated) {
                 guard let message = try? await store.message(id: id, accountID: accountID) else {
                     // Not a message id — a mailbox or a thread-only row.
@@ -1723,7 +1855,7 @@ final class MailViewModel {
                 if let mailboxID = message.mailboxID, mailboxNames[mailboxID] == nil {
                     reloadMailboxList = true
                 }
-                if inScope(message) || visibleThreads.contains(message.threadID) {
+                if inScope(message, scopeIDs: scopeIDs) || visibleThreads.contains(message.threadID) {
                     reloadConversationList = true
                 }
             }
@@ -1758,9 +1890,9 @@ final class MailViewModel {
     /// NOT narrowed by the open label: a message can gain or lose the label in
     /// the very change being resolved, and a spare reload is cheap where a
     /// missed one leaves a row stranded.
-    private func inScope(_ message: MessageSummary) -> Bool {
+    private func inScope(_ message: MessageSummary, scopeIDs: Set<String>?) -> Bool {
         guard let folder = location.folder.conversationFolder,
-              Self.mailboxIDs(mailboxIDs(for: location.scope), contain: message.mailboxID)
+              Self.mailboxIDs(scopeIDs, contain: message.mailboxID)
         else { return false }
         return Self.conversationFolder(for: message.folder) == folder
     }
@@ -1783,6 +1915,7 @@ final class MailViewModel {
             let loaded = try await store.mailboxes(accountID: accountID)
             let wasLoaded = !monogramMailboxes.isEmpty
             let wasDisabled = Set(disabledMailboxes.map(\.id))
+            let hadDomains = domains
             // THE filter for server-disabled mailboxes and domains (see
             // ``mailboxes``). A scope standing on one that just went away falls
             // back to All domains in `correctStaleScope()`, like a hidden domain.
@@ -1791,13 +1924,21 @@ final class MailViewModel {
             domains = MailDomain.domains(from: mailboxes)
             monogramDomains = MailDomain.domains(from: loaded)
             mailboxNames = Self.makeMailboxNames(loaded)
+            mailboxListRevision &+= 1
+            // What a scope RESOLVES to moved: a mailbox was switched off or
+            // on, or one joined or left a domain. Reads in flight resolved the
+            // old sets, so they must not publish (the reloads below replace
+            // them). A rename moves nothing and costs nothing.
+            let scopeSetsMoved = wasLoaded
+                && (Set(disabledMailboxes.map(\.id)) != wasDisabled || domains != hadDomains)
+            if scopeSetsMoved { reloadGeneration &+= 1 }
             let before = location
             correctStaleScope()
             // A server-side flip changes what a still-valid scope (All domains,
             // a domain keeping other mailboxes) lists, and nothing else would
             // reload it: the change that carried it names only the mailbox.
             // A scope correction already reloads through `navigate`.
-            if wasLoaded, Set(disabledMailboxes.map(\.id)) != wasDisabled, location == before {
+            if scopeSetsMoved, location == before {
                 await reloadConversations()
                 await reloadDrafts()
             }
@@ -1813,6 +1954,7 @@ final class MailViewModel {
         // and whichever store read finishes last wins — showing the previous
         // location's rows under the current one.
         let location = self.location
+        let generation = reloadGeneration
         let mailboxIDs = mailboxIDs(for: location.scope)
         do {
             let rows: [ConversationSummary]
@@ -1839,12 +1981,14 @@ final class MailViewModel {
             // at the height it was measured at (see the design-system note,
             // list row heights).
             await reloadLabelIndex()
-            guard location == self.location, !Task.isCancelled else { return }
+            guard isCurrentReload(location, generation), !Task.isCancelled else { return }
             allConversations = rows
+            isLoadingConversations = false
         } catch {
             logger.error("Conversation load failed: \(error.localizedDescription, privacy: .private)")
-            guard location == self.location, !Task.isCancelled else { return }
+            guard isCurrentReload(location, generation), !Task.isCancelled else { return }
             allConversations = []
+            isLoadingConversations = false
         }
         // A server-search hit is by construction NOT in `allConversations`; the
         // union is what the user selected from, so it is the union that decides
@@ -1859,83 +2003,63 @@ final class MailViewModel {
 
     /// The unread badges — only the counts something draws.
     ///
-    /// Each badge is a `fetchCount` in the store. Fetching and mapping up to 100
-    /// whole rows per mailbox to count them is the same query with every row
-    /// materialised, and it ran on every conversation reload.
+    /// ONE store read (``MailStore/unreadConversationKeys(accountID:)``: every
+    /// unread row's thread, mailbox and folder) and everything else in memory
+    /// (``UnreadTally``). It used to be a `fetchCount` per mailbox plus one per
+    /// folder and per aggregate — serial actor hops that grew with the account
+    /// (160 mailboxes, 167 hops) on every conversation reload — and it summed
+    /// per-mailbox numbers, counting a thread in two mailboxes twice.
     ///
-    /// Five kinds of count, each drawn somewhere:
+    /// Five kinds of count, each drawn somewhere, each over DISTINCT threads:
     /// - every sidebar folder of the CURRENT scope (the folder rows), including
     ///   Starred;
     /// - the inbox of every mailbox (the mailbox rows);
-    /// - the inbox of every domain — the sum of its mailboxes, no store read;
-    /// - the inbox of All domains — its own count over the All domains mailbox
-    ///   set rather than a sum, because with nothing excluded that listing is
-    ///   unfiltered and shows every row, including any whose mailbox the
-    ///   mailbox list does not hold;
+    /// - the inbox of every domain;
+    /// - the inbox of All domains, over the SAME set the All domains listing
+    ///   reads (with nothing excluded that is every row, including any whose
+    ///   mailbox the mailbox list does not hold);
     /// - the Dock badge's inbox — the same, over ``badgeMailboxIDs()``.
     ///
-    /// A count whose mailbox set equals one already asked for reuses it, so the
-    /// common case (nothing excluded, All domains on screen) costs no extra
-    /// fetch over the per-folder and per-mailbox ones.
+    /// Publishes only if no navigation, preference write or mailbox change
+    /// landed while the store answered (``reloadGeneration``) — whoever bumped
+    /// it runs a fresh count.
     private func reloadUnreadCounts() async {
+        let generation = reloadGeneration
         let scopeIDs = mailboxIDs(for: location.scope)
-        var byFolder: [ConversationFolder: Int] = [:]
-        for folder in MailTheme.sidebarFolders {
-            if let unread = await unreadCount(mailboxIDs: scopeIDs, folder: folder), unread > 0 {
-                byFolder[folder] = unread
-            }
-        }
-        let scopeInbox = byFolder[.inbox] ?? 0
-        var byMailbox: [Mailbox.ID: Int] = [:]
-        for mailbox in mailboxes {
-            let unread: Int?
-            if case .mailbox(let id) = location.scope, id == mailbox.id {
-                unread = scopeInbox
-            } else {
-                unread = await unreadCount(mailboxIDs: [mailbox.id], folder: .inbox)
-            }
-            if let unread, unread > 0 { byMailbox[mailbox.id] = unread }
-        }
         let allDomainIDs = mailboxIDs(for: .allDomains)
-        let allDomains: Int
-        if location.scope == .allDomains {
-            allDomains = scopeInbox
-        } else {
-            allDomains = await unreadCount(mailboxIDs: allDomainIDs, folder: .inbox) ?? 0
-        }
         let badgeIDs = badgeMailboxIDs()
-        let badge = badgeIDs == allDomainIDs
-            ? allDomains
-            : await unreadCount(mailboxIDs: badgeIDs, folder: .inbox) ?? 0
-        folderUnreadCounts = byFolder
-        inboxUnreadByMailbox = byMailbox
-        inboxUnreadByDomain = Self.sumByDomain(domains, byMailbox: byMailbox)
-        allDomainsInboxUnread = allDomains
-        badgeInboxUnread = badge
-        unreadCountDidChange?(badge)
-    }
-
-    /// Per-domain Inbox unread from per-mailbox Inbox unread. Pure; domains
-    /// with nothing unread are left out, like the per-mailbox map.
-    nonisolated static func sumByDomain(
-        _ domains: [MailDomain], byMailbox: [Mailbox.ID: Int]
-    ) -> [MailDomain.ID: Int] {
-        var result: [MailDomain.ID: Int] = [:]
-        for domain in domains {
-            let total = domain.mailboxIDs.reduce(0) { $0 + (byMailbox[$1] ?? 0) }
-            if total > 0 { result[domain.id] = total }
-        }
-        return result
-    }
-
-    /// One badge count, or `nil` (logged) when the store could not answer.
-    private func unreadCount(mailboxIDs: Set<String>?, folder: ConversationFolder) async -> Int? {
+        let mailboxIDs = mailboxes.map(\.id)
+        let domains = self.domains
+        let folders = MailTheme.sidebarFolders
+        let keys: [UnreadConversationKey]
         do {
-            return try await store.unreadCount(accountID: accountID, mailboxIDs: mailboxIDs, folder: folder)
+            keys = try await store.unreadConversationKeys(accountID: accountID)
         } catch {
             logger.error("Unread count failed: \(error.localizedDescription, privacy: .private)")
-            return nil
+            return
         }
+        // Set work over every unread row of the account; not on the main actor.
+        let tally = await Task.detached(priority: .userInitiated) { @Sendable in
+            UnreadTally(
+                keys: keys, scopeIDs: scopeIDs, folders: folders,
+                mailboxIDs: mailboxIDs, domains: domains,
+                allDomainIDs: allDomainIDs, badgeIDs: badgeIDs
+            )
+        }.value
+        countsWillPublish?()
+        guard generation == reloadGeneration else { return }
+        folderUnreadCounts = tally.byFolder
+        inboxUnreadByMailbox = tally.byMailbox
+        inboxUnreadByDomain = tally.byDomain
+        allDomainsInboxUnread = tally.allDomains
+        badgeInboxUnread = tally.badge
+        unreadCountDidChange?(tally.badge)
+    }
+
+    /// Whether a reload that captured `location` and `generation` before its
+    /// store read still answers what is on screen.
+    func isCurrentReload(_ location: Location, _ generation: Int) -> Bool {
+        location == self.location && generation == reloadGeneration
     }
 
     private nonisolated static func makeMailboxNames(_ mailboxes: [Mailbox]) -> [String: String] {
@@ -2248,10 +2372,32 @@ final class MailViewModel {
     /// keeps the From that matches its mailbox — the server refuses the send);
     /// ``composeContext(for:)`` keeps new mail and replies off disabled ones.
     func sendAddress(forMailbox mailboxID: String?) -> String {
-        guard let mailbox = monogramMailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first else {
+        let fallback = defaultComposeMailboxID().flatMap { id in mailboxes.first { $0.id == id } }
+        guard let mailbox = monogramMailboxes.first(where: { $0.id == mailboxID }) ?? fallback else {
             return ""
         }
         return mailbox.sendableAddresses.first?.address ?? mailbox.address
+    }
+
+    /// The mailbox a message with nothing to tie it to (a new message with no
+    /// selection, or one whose mailbox the server switched off) is sent from:
+    /// the first enabled mailbox of the scope on screen — the mailbox itself,
+    /// the domain's first, or under All domains the first mailbox of a domain
+    /// All domains shows — then any mailbox of a domain that is not hidden.
+    ///
+    /// NEVER a hidden domain's: the user took it out of Herald, and a new
+    /// message silently leaving from it was the old `mailboxes.first`. `nil`
+    /// when every enabled mailbox is in a hidden domain — the composer then
+    /// opens with no From rather than a hidden one.
+    func defaultComposeMailboxID() -> String? {
+        let defaults = observedDefaults
+        let hidden = Set(domains
+            .filter { DomainPreferences.isHidden(accountID: accountID, domainID: $0.id, in: defaults) }
+            .flatMap(\.mailboxIDs))
+        let visible = mailboxes.map(\.id).filter { !hidden.contains($0) }
+        let scopeIDs = mailboxIDs(for: scope)
+        // `visible` keeps the mailbox list's order, so "first" is stable.
+        return visible.first { Self.mailboxIDs(scopeIDs, contain: $0) } ?? visible.first
     }
 
     static let disabledMailboxReplyError = "This mailbox is turned off on the server, so you can't reply from it."
@@ -2311,9 +2457,12 @@ final class MailViewModel {
                 actionError = Self.disabledMailboxReplyError
                 return nil
             }
-            // A brand-new message has no such tie: the first enabled mailbox.
-            mailboxID = mailboxes.first?.id
+            // A brand-new message has no such tie.
+            mailboxID = nil
         }
+        // Nothing ties a new message to a mailbox: the scope's, never a
+        // hidden domain's.
+        if request.kind == .new, mailboxID == nil { mailboxID = defaultComposeMailboxID() }
         return ComposeContext(
             id: request.id,
             kind: request.kind,

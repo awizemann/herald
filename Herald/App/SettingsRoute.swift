@@ -157,9 +157,8 @@ nonisolated struct SettingsDomainItem: Hashable, Sendable, Identifiable {
     ///
     /// Monograms are assigned across ALL of the account's domains, hidden and
     /// server-disabled ones included, so neither changes the letters another
-    /// domain already shows everywhere else. Main-actor because `MailDomain.domains`
-    /// is (HeraldKit is default-MainActor).
-    @MainActor static func visible(
+    /// domain already shows everywhere else.
+    static func visible(
         mailboxes: [Mailbox],
         accountID: String,
         defaults: UserDefaults
@@ -210,7 +209,7 @@ nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
     /// `MailViewModel.monogramMailboxes`, not `.mailboxes`) — a hidden domain
     /// whose mailboxes are all disabled on the server is otherwise invisible
     /// here too and falls all the way to the id-only fallback.
-    @MainActor static func hidden(
+    static func hidden(
         mailboxes: [Mailbox],
         accountID: String,
         defaults: UserDefaults

@@ -742,9 +742,12 @@ extension AppEnvironment {
         // A fallback, not a switch: `account_removed` already said what happened.
         if selectedAccountID == accountID { selectAccount(accountIDs.first) }
         if graphs.isEmpty { phase = .signedOut }
+        let signedOut: Bool
         do {
             try await auth.signOut(account)
+            signedOut = true
         } catch {
+            signedOut = false
             logger.error("Sign-out failed: \(error.localizedDescription, privacy: .private)")
             // The onboarding screen, when that is what is showing (the last
             // account went). With accounts left the sheet is closed — its slot
@@ -761,10 +764,18 @@ extension AppEnvironment {
         // Signing the same origin back in during the revoke round trip would
         // otherwise have its freshly synced rows deleted underneath it.
         guard graphs[accountID] == nil else { return }
+        // Whether or not the revoke landed, this session is done with the
+        // account: its banners must not route a click back to it. After the
+        // revoke, so a click held DURING the round trip is dropped too.
+        await forgetNotifications(forAccount: accountID)
+        guard graphs[accountID] == nil else { return }
         // Same guard, same reason, for the Herald-only preferences (domain
         // settings, saved navigation, tint): a sign-in that raced in keeps
         // them; otherwise the next sign-in starts as clean as a first one.
-        PreferenceHygiene.purgeAccount(accountID, from: defaults)
+        // Only when the revoke SUCCEEDED: a failed one leaves the account in
+        // the Keychain, it comes back at the next launch, and it must come
+        // back with its settings rather than as a stranger.
+        if signedOut { PreferenceHygiene.purgeAccount(accountID, from: defaults) }
         guard let store else { return }
         do {
             // Scoped to this account: the other accounts' rows share the

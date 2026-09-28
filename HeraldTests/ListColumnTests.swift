@@ -29,7 +29,7 @@ struct ListColumnTests {
     static func index(_ scope: MailViewModel.Scope, overrides: [MailDomain.ID: String] = [:]) -> ListColumn.AttributionIndex {
         ListColumn.AttributionIndex.make(
             level: .init(scope: scope), mailboxes: mailboxes,
-            domains: MailDomain.domains(from: mailboxes), monogramOverrides: overrides, accountID: "acct"
+            domains: MailDomain.domains(from: mailboxes), monogramOverrides: overrides
         )
     }
 

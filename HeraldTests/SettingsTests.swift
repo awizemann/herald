@@ -327,7 +327,7 @@ import Testing
 
         #expect(invalidated.withLock { $0 }, "A reader of the domain list must be told it changed")
         #expect(environment.settingsDomains(accountID: id).map(\.id) == ["dom_acme"])
-        #expect(mail.mailboxIDs(for: .allDomains) == ["mb_acme"])
+        #expect(mail.mailboxIDs(for: .allDomains) == ["mb_acme", MailViewModel.unassignedMailboxKey])
     }
 
     /// The list column reads the tint from the account's view-model, not from

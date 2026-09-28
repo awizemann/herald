@@ -104,12 +104,23 @@ import Testing
         } onChange: {
             invalidated.withLock { $0 = true }
         }
+        // The list column and reading pane read monograms through the
+        // VIEW-MODEL's observed defaults, not the environment's — a
+        // repaint-only write must reach them too, or the rows keep the old
+        // letters until an unrelated reload.
+        let modelInvalidated = Mutex(false)
+        withObservationTracking {
+            _ = model.observedDefaults
+        } onChange: {
+            modelInvalidated.withLock { $0 = true }
+        }
 
         await environment.updateDomainPreferences(accountID: account.id, reloads: false) { defaults in
             DomainPreferences.setMonogramOverride("XY", accountID: account.id, domainID: domainID, in: defaults)
         }
 
         #expect(invalidated.withLock { $0 }, "A reader of the observed defaults must still be told the write happened")
+        #expect(modelInvalidated.withLock { $0 }, "The view-model's monogram readers must be told too")
         #expect(model.conversationReloadCount == conversationsBefore, "reloads: false must not reload conversations")
         #expect(model.draftReloadCount == draftsBefore, "reloads: false must not reload drafts")
 

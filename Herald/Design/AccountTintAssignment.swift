@@ -10,10 +10,12 @@ import Foundation
 /// assertable off-screen — it has to be identical on every launch and machine.
 nonisolated enum AccountTintAssignment {
     /// Fixed contract with R1's `MailTheme` account-tint colours: this exact
-    /// order. Appending a new name is safe (existing hashes are unaffected
-    /// only if it goes at the end); reordering or removing one is not — it
-    /// would reassign every account's default tint and break the persistence
-    /// contract on `override` values already written to disk.
+    /// order, and this exact COUNT. The default is `stableHash % count`, so
+    /// changing the list in ANY way — appending included — repaints most
+    /// accounts' defaults (only an override survives). Removing or renaming a
+    /// token additionally strands `override` values already written to disk
+    /// (they fall back to the default). Treat a change here as a visible
+    /// migration, not a free addition.
     static let tokenNames = ["clay", "ochre", "moss", "sage", "slate", "dusk", "plum", "rose"]
 
     /// The tint an account gets when nobody has overridden it. Stable forever

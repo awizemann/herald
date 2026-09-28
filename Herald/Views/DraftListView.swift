@@ -37,7 +37,7 @@ struct DraftListView: View {
             .tag(draft.id)
             .listRowInsets(EdgeInsets())
         }
-        .listStyle(.inset)
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
         // Same NSTableView row-height floor as the conversation list: a freshly
         // inserted row it has not measured is otherwise drawn at 24pt.
@@ -89,11 +89,6 @@ struct DraftRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: ListColumn.Layout.rowColumnGap) {
-            // Where a conversation row carries its unread dot. Blank, not absent:
-            // the two lists' text columns start at the same x or switching
-            // folders visibly shifts every row sideways.
-            UnreadDot(isUnread: false)
-
             VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
                 HStack(spacing: ListColumn.Layout.attributionGap) {
                     if !attribution.isEmpty {

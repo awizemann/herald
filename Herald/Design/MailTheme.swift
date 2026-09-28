@@ -322,6 +322,13 @@ enum MailTheme {
     /// too small to click reliably and fails pointer-accessibility guidance).
     static let hitTarget: CGFloat = 28
 
+    /// Height of a standalone toolbar control, so it lines up with the
+    /// system's toolbar item capsules (the Liquid Glass groups on macOS 26 are
+    /// 36pt tall; earlier toolbars size controls to the hit target).
+    static var toolbarControlHeight: CGFloat {
+        if #available(macOS 26.0, *) { 36 } else { hitTarget }
+    }
+
     /// An icon-only button's frame (handoff §1 "Hit target"): 30 wide × 28
     /// tall — the 28pt minimum, a touch wider so adjacent glyphs don't crowd.
     static let iconButtonSize = CGSize(width: 30, height: 28)

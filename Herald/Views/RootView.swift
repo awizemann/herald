@@ -429,7 +429,7 @@ private struct NewMessageButton: View {
             .textStyle(MailTheme.Typography.bodyMedium)
             .foregroundStyle(tint.avatarText)
             .padding(.horizontal, MailTheme.Spacing.md)
-            .frame(height: MailTheme.hitTarget)
+            .frame(height: MailTheme.toolbarControlHeight)
             .background(tint.solid, in: Capsule())
             .contentShape(Capsule())
         }

@@ -37,7 +37,7 @@ struct ThreadMessageListView: View {
                 .tag(message.id)
                 .listRowInsets(EdgeInsets())
             }
-            .listStyle(.inset)
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             // Same unmeasured-row floor as the conversation list.
             .environment(\.defaultMinListRowHeight, rowHeight)

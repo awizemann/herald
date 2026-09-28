@@ -107,7 +107,7 @@ struct ConversationListView: View {
             // a simultaneous TapGesture on the row content raced the List's own
             // selection, so clicks on text often failed to select at all.
         }
-        .listStyle(.inset)
+        .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .accessibilityIdentifier(AccessibilityID.MailList.list)
         // The row's own `minHeight` cannot win this one: macOS `List` is an
@@ -339,7 +339,6 @@ struct UnreadDot: View {
         Circle()
             .fill(isUnread ? (isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.unreadIndicator)) : AnyShapeStyle(.clear))
             .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
-            .frame(width: ListColumn.Layout.dotColumnWidth)
             .accessibilityHidden(true)
     }
 }
@@ -384,9 +383,6 @@ struct ConversationRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: ListColumn.Layout.rowColumnGap) {
-            UnreadDot(isUnread: row.isUnread, isSelected: isSelected)
-                .padding(.top, (firstLineHeight - MailTheme.unreadDotDiameter) / 2)
-
             VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
                 firstLine
                 if !metrics.subjectInline { subjectLabel }
@@ -423,6 +419,13 @@ struct ConversationRow: View {
         }
         .padding(.vertical, metrics.verticalPadding)
         .padding(.horizontal, ListColumn.Layout.rowHorizontalPadding)
+        // The dot hangs in the leading padding rather than owning a column, so
+        // the text starts at the same 12pt edge the trailing column ends at.
+        .overlay(alignment: .topLeading) {
+            UnreadDot(isUnread: row.isUnread, isSelected: isSelected)
+                .frame(width: ListColumn.Layout.rowHorizontalPadding)
+                .padding(.top, metrics.verticalPadding + (firstLineHeight - MailTheme.unreadDotDiameter) / 2)
+        }
         // Stable minimum height + no vertical compression: see the list's
         // `defaultMinListRowHeight`, which is the same number.
         .frame(minHeight: minHeight, alignment: .top)

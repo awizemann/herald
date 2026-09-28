@@ -170,6 +170,12 @@ struct SidebarView: View {
         Section {
             if filtersDomains {
                 SidebarFilterField(text: $transient.domainFilter, prompt: "Filter \(visible.count) domains")
+                    // Span the same width as the rows' selection fill, with a
+                    // clear gap before "All domains".
+                    // The source list draws its selection ~6pt outside the row
+                    // content, so the field reaches out by the same amount.
+                    .padding(.horizontal, -(MailTheme.Spacing.xs + MailTheme.Spacing.xxs))
+                    .padding(.bottom, MailTheme.Spacing.sm)
             }
             SidebarItem(
                 symbol: MailTheme.Symbol.allDomains, title: "All domains", isStrong: true,
@@ -603,7 +609,8 @@ private struct SidebarBackLink: View {
     }
 }
 
-/// "Filter N mailboxes": 26pt, surface fill, lineSoft ring.
+/// "Filter N domains/mailboxes": a form field shaped like a sidebar row's
+/// selection (row height, field radius), surface fill, lineSoft ring.
 private struct SidebarFilterField: View {
     @Binding var text: String
     let prompt: String
@@ -621,12 +628,12 @@ private struct SidebarFilterField: View {
         }
         .padding(.horizontal, MailTheme.Spacing.sm)
         .frame(height: Self.height)
-        .background(MailTheme.Color.surface, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+        .background(MailTheme.Color.surface, in: RoundedRectangle(cornerRadius: MailTheme.Radius.md))
         .overlay {
-            RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+            RoundedRectangle(cornerRadius: MailTheme.Radius.md)
                 .strokeBorder(MailTheme.Color.lineSoft, lineWidth: 1)
         }
     }
 
-    static let height: CGFloat = 26
+    static let height: CGFloat = MailTheme.hitTarget
 }

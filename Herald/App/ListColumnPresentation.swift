@@ -373,10 +373,9 @@ nonisolated enum ListColumn {
         static let comfortableRowPadding: CGFloat = 14
         static let compactRowPadding: CGFloat = 7
         static let rowHorizontalPadding: CGFloat = 12
-        /// Between the dot column, the text column and the trailing column.
+        /// Between the text column and the trailing column. (The unread dot
+        /// hangs in the leading padding; it has no column of its own.)
         static let rowColumnGap: CGFloat = 10
-        /// The dot's column is 10 wide; the dot itself is 8.
-        static let dotColumnWidth: CGFloat = 10
         static let lineGap: CGFloat = 3
         static let messageLineGap: CGFloat = 2
         /// Inside line 1: badge, mailbox, "·", sender.

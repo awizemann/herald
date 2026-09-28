@@ -138,6 +138,17 @@ public nonisolated struct MessageScope: Sendable, Hashable {
     }
 }
 
+/// One conversation listing (mailbox + conversation folder) a cached row sits in.
+public nonisolated struct ConversationListing: Sendable, Hashable {
+    public let mailboxID: String?
+    public let folder: ConversationFolder
+
+    public init(mailboxID: String?, folder: ConversationFolder) {
+        self.mailboxID = mailboxID
+        self.folder = folder
+    }
+}
+
 /// What a batch of message upserts changed, plus — for every row that already
 /// existed — the scope it was in BEFORE the upsert.
 public nonisolated struct MessageUpsertResult: Sendable, Hashable {
@@ -154,11 +165,23 @@ public nonisolated struct MessageUpsertResult: Sendable, Hashable {
     /// engine turns this into `.labelsChanged`, which is the event the
     /// view-model already rebuilds the label index for.
     public let labelsChanged: Bool
+    /// Every cached conversation listing that already holds one of the batch's
+    /// threads. A message's own folder is not the only listing it can stale: a
+    /// sent reply lands in `sent`, yet the Inbox row for its thread carries the
+    /// message count and latest message — refreshing only `sent` leaves the
+    /// inbox showing a one-message thread and the reply is never seen.
+    public let threadListings: Set<ConversationListing>
 
-    public init(changes: ChangeSet, previousScopes: [String: MessageScope], labelsChanged: Bool = false) {
+    public init(
+        changes: ChangeSet,
+        previousScopes: [String: MessageScope],
+        labelsChanged: Bool = false,
+        threadListings: Set<ConversationListing> = []
+    ) {
         self.changes = changes
         self.previousScopes = previousScopes
         self.labelsChanged = labelsChanged
+        self.threadListings = threadListings
     }
 }
 
@@ -663,12 +686,29 @@ public actor MailStore {
             // depend on it.)
             let labelsChanged = try applyEmbeddedLabels(from: messages, accountID: accountID)
             return MessageUpsertResult(
-                changes: changes, previousScopes: previousScopes, labelsChanged: labelsChanged
+                changes: changes,
+                previousScopes: previousScopes,
+                labelsChanged: labelsChanged,
+                threadListings: try conversationListings(threadIDs: Set(messages.map(\.threadID)), accountID: accountID)
             )
         } catch {
             logger.error("Message upsert failed: \(error.localizedDescription, privacy: .private)")
             throw error
         }
+    }
+
+    /// The listings holding a cached row for any of `threadIDs` — two columns,
+    /// served by the (accountID, threadID) index.
+    private func conversationListings(threadIDs: Set<String>, accountID: String) throws -> Set<ConversationListing> {
+        var descriptor = FetchDescriptor<CachedConversation>(
+            predicate: #Predicate { $0.accountID == accountID && threadIDs.contains($0.threadID) }
+        )
+        descriptor.propertiesToFetch = [\.listFolder, \.mailboxKey]
+        return Set(try modelContext.fetch(descriptor).compactMap { row in
+            ConversationFolder(rawValue: row.listFolder).map {
+                ConversationListing(mailboxID: row.mailboxKey.isEmpty ? nil : row.mailboxKey, folder: $0)
+            }
+        })
     }
 
     // MARK: - Sync checkpoint

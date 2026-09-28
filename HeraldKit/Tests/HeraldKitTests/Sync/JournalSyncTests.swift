@@ -642,6 +642,50 @@ struct JournalSyncTests {
         )
     }
 
+    /// A sent reply lands in `sent`, but the Inbox row for its thread is what
+    /// carries the message count the reader uses to show the thread as a
+    /// conversation. Fails if only the reply's own folder is re-listed: with
+    /// `sent` out of scope nothing is listed at all and the inbox row stays at one
+    /// message. The cached `archived` row proves out-of-scope listings are not
+    /// fetched just because they hold the thread.
+    @Test("A reply upserted into another folder re-lists every cached listing of its thread")
+    func replyRefreshesTheThreadsOtherListings() async throws {
+        let api = FakeMailAPIClient()
+        await api.setSupportsChanges(true)
+        await api.setMailboxes([SyncFixtures.mailbox("mbx_a")])
+        let reply = SyncFixtures.message("m_reply", threadID: "thr_x", folder: .sent)
+        await api.setChangePages([
+            ChangePage(changes: [.upsert(reply)], nextCursor: "c1", hasMore: false)
+        ])
+        await api.setConversationPages([
+            ConversationPage(
+                conversations: [ConversationSummary(latest: reply, isStarred: false, messageCount: 2, unreadCount: 0)],
+                nextCursor: nil,
+                totalCount: 1
+            )
+        ])
+
+        let store = try MailStore.inMemory()
+        _ = try await store.upsertMailboxes([SyncFixtures.mailbox("mbx_a")], accountID: account)
+        for folder in [ConversationFolder.inbox, .archived] {
+            _ = try await store.upsertConversations(
+                [SyncFixtures.conversation(threadID: "thr_x", latestID: "m_orig")],
+                accountID: account, mailboxID: "mbx_a", folder: folder
+            )
+        }
+        try await seedCheckpoint(store)
+
+        let engine = makeEngine(api, store)
+        await engine.start(accountID: account)
+        await runOnePass(engine)
+
+        let scopes = await api.conversationScopes()
+        #expect(scopes == ["mbx_a:inbox"], "only the in-scope listing holding the thread, got \(scopes)")
+        let inbox = try await store.conversations(accountID: account, mailboxIDs: nil, folder: .inbox)
+        #expect(inbox.map(\.messageCount) == [2])
+        #expect(inbox.map(\.latest.id) == ["m_reply"])
+    }
+
     /// Writing a new mailbox's row before its listing succeeds makes the mailbox
     /// "known" — and steady state only bootstrap-lists mailboxes it considers
     /// NEW. A listing that then throws leaves a mailbox no pass will ever list

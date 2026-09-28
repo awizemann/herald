@@ -841,6 +841,13 @@ public actor SyncEngine {
             else { continue }
             touched.formUnion(conversationScopes(mailboxID: previous.mailboxID, folder: previous.folder))
         }
+        // Every OTHER listing already showing one of these threads — a sent
+        // reply changes the Inbox row's count and latest message. Out-of-scope
+        // folders are skipped: this pass never lists them.
+        let inScope = Set(scope.folders.compactMap(\.conversation))
+        for listing in result.threadListings where inScope.contains(listing.folder) {
+            touched.insert(ConversationScope(mailboxID: listing.mailboxID, folder: listing.folder))
+        }
         return result.changes
     }
 

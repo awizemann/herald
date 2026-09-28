@@ -37,7 +37,7 @@ struct MiddleColumnView: View {
                 if model.isShowingDrafts {
                     // Drafts are not conversations and not messages — a different
                     // list entirely, in the same slot.
-                    DraftListView(model: model, metrics: metrics)
+                    DraftListView(model: model, searchText: $searchText, metrics: metrics)
                         .transition(.opacity)
                 } else if model.isShowingThread {
                     ThreadMessageListView(model: model, metrics: metrics)
@@ -63,9 +63,6 @@ struct ConversationListView: View {
     /// re-runs the list's data source (or the detail pane).
     @Binding var searchText: String
     let metrics: ListColumn.RowMetrics
-    /// ⌘F focus. `@FocusState` cannot be reached from `Commands`, which is why
-    /// the shortcut rides on a hidden button in this view instead of the menu bar.
-    @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
         // Once per pass, not per row: every row of the pass shares the scope's
@@ -135,41 +132,7 @@ struct ConversationListView: View {
             model.openSelectedThreadViaShortcut()
             return .handled
         }
-        // The native toolbar field (handoff §3.1); the prompt names the scope a
-        // search covers — "Search all domains", "Search acme.co".
-        .searchable(text: $searchText, placement: .toolbar, prompt: Text(model.searchPrompt))
-        .searchFocused($searchFieldFocused)
-        // Return in the search field searches the SERVER for what is on screen;
-        // the local pass has already run on every keystroke.
-        .onSubmit(of: .search) { model.submitSearch() }
-        .task(id: searchText) {
-            guard searchText != model.searchQuery else { return }
-            // Clearing is not typing: it needs no debounce, and waiting to apply
-            // it leaves the old needle's rows on screen under an empty field.
-            // That window is also what an ACCOUNT SWITCH walks into — the column
-            // is `.id(accountID)`-reset, so the field comes back empty while the
-            // incoming account's view-model still holds its previous query.
-            guard !searchText.isEmpty else {
-                model.searchQuery = ""
-                return
-            }
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                return
-            }
-            model.searchQuery = searchText
-        }
-        // ⌘F, the standard macOS Find. A `Commands` item cannot write this view's
-        // `@FocusState`, so the shortcut lives on a hidden button in the window
-        // that owns the field. Hidden from accessibility: the search field is
-        // already reachable, this is only the shortcut's carrier.
-        .background {
-            Button("Find") { searchFieldFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
-                .hidden()
-                .accessibilityHidden(true)
-        }
+        .listSearchField(model: model, text: $searchText)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let description = model.serverSearchDescription {
                 SearchStatusBar(description: description, state: model.serverSearchState)
@@ -601,5 +564,61 @@ struct CountPill: View {
             .padding(.vertical, MailTheme.Spacing.xxs / 2)
             .background(MailTheme.rowChipBackground(isSelected: isSelected), in: Capsule())
             .accessibilityHidden(true)
+    }
+}
+
+/// The toolbar search field, shared by the conversation list and the Drafts
+/// list so the field neither disappears nor shifts the toolbar when the user
+/// switches into Drafts. The text is owned by ``MiddleColumnView``; this
+/// debounces it into `model.searchQuery`, which both lists filter by.
+private struct ListSearchField: ViewModifier {
+    @Bindable var model: MailViewModel
+    @Binding var text: String
+    /// ⌘F focus. `@FocusState` cannot be reached from `Commands`, which is why
+    /// the shortcut rides on a hidden button here instead of the menu bar.
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            // The native toolbar field (handoff §3.1); the prompt names the scope
+            // a search covers — "Search all domains", "Search acme.co".
+            .searchable(text: $text, placement: .toolbar, prompt: Text(model.searchPrompt))
+            .searchFocused($focused)
+            // Return in the search field searches the SERVER for what is on
+            // screen; the local pass has already run on every keystroke.
+            .onSubmit(of: .search) { model.submitSearch() }
+            .task(id: text) {
+                guard text != model.searchQuery else { return }
+                // Clearing is not typing: it needs no debounce, and waiting to
+                // apply it leaves the old needle's rows on screen under an empty
+                // field. That window is also what an ACCOUNT SWITCH walks into —
+                // the column is `.id(accountID)`-reset, so the field comes back
+                // empty while the incoming account's view-model still holds its
+                // previous query.
+                guard !text.isEmpty else {
+                    model.searchQuery = ""
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+                model.searchQuery = text
+            }
+            // ⌘F, the standard macOS Find. Hidden from accessibility: the search
+            // field is already reachable, this is only the shortcut's carrier.
+            .background {
+                Button("Find") { focused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+    }
+}
+
+extension View {
+    func listSearchField(model: MailViewModel, text: Binding<String>) -> some View {
+        modifier(ListSearchField(model: model, text: text))
     }
 }

@@ -560,6 +560,29 @@ private struct UsageHarness {
         #expect(switches == [.accountSwitched(accounts: .twoToFive)])
     }
 
+    /// The Settings window's account card switches the same shared selection
+    /// as the main window's popover, so it must report the same event. Fails if
+    /// the Settings path goes around the counted assignment (e.g. through
+    /// `selectAccount`), or if re-picking the current account counts.
+    @Test func switchingFromTheSettingsCardIsAnAccountSwitch() async throws {
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(
+            defaults: UsageHarness.scratchDefaults(), usage: tracker
+        )
+        let store = try MailStore.inMemory()
+        let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
+        let b = Account(origin: URL(string: "https://b.example.com")!, clientID: "cid", scopes: [])
+        await environment.install(account: a, api: FakeMailAPIClient(), store: store)
+        await environment.install(account: b, api: FakeMailAPIClient(), store: store, select: false)
+
+        environment.selectAccountFromSettings(a.id) // already current: not a switch
+        environment.selectAccountFromSettings(b.id)
+        await environment.drainPendingUsage()
+        #expect(environment.selectedAccountID == b.id)
+        let switches = await tracker.events.filter { $0.name == "account_switched" }
+        #expect(switches == [.accountSwitched(accounts: .twoToFive)])
+    }
+
     /// Clicking a banner can LAUNCH Herald: the route is held until its account
     /// comes up and then replayed. The replay assigns the selected account, but
     /// nobody reached for the switcher — fails if that assignment is counted as a

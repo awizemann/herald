@@ -211,8 +211,8 @@ struct ListColumnTests {
     }
 
     /// A search that matched nothing is "No Results", and only suggests Return
-    /// while the server has not been asked. Drafts are not searched, so their
-    /// state never turns into "No Results".
+    /// while the server has not been asked. Drafts filter locally only, so they
+    /// say "No Results" too but never suggest Return.
     @Test("A search with no matches says No Results")
     func searchEmptyState() {
         let pending = ListColumn.emptyState(
@@ -230,7 +230,66 @@ struct ListColumnTests {
             folder: .drafts, scope: .mailbox("mbTeam"), scopeName: "team@acme.co",
             labelName: nil, searching: true, serverSearchPending: true
         )
-        #expect(drafts.title == "No drafts in team@")
+        #expect(drafts.title == "No Results")
+        #expect(drafts.message == nil, "Return does nothing more in Drafts")
+    }
+
+    // MARK: - Window title
+
+    /// Fails if the title stops following the scope — e.g. stays the account
+    /// name inside a domain, or names a mailbox by anything but its address.
+    @Test("The window title is the account, the domain, or the mailbox address")
+    func windowTitleFollowsScope() {
+        #expect(ListColumn.windowTitle(.allDomains, accountLabel: "Alan", scopeName: "All domains") == "Alan")
+        #expect(ListColumn.windowTitle(.domain("d"), accountLabel: "Alan", scopeName: "shabubox.com") == "shabubox.com")
+        #expect(
+            ListColumn.windowTitle(.mailbox("m"), accountLabel: "Alan", scopeName: "hello@shabubox.com")
+                == "hello@shabubox.com"
+        )
+    }
+
+    /// The live bridge: the view-model's title moves with the sidebar scope.
+    @Test("The view-model's window title follows the sidebar scope")
+    func windowTitleBridge() async throws {
+        let harness = try await ScopeHarness.make()
+        try await harness.seed()
+        await harness.model.start()
+        let model = harness.model
+        #expect(model.windowTitle == model.accountLabel)
+        model.selectScope(harness.acmeScope)
+        await harness.settle()
+        #expect(model.windowTitle == "acme.co")
+        model.selectScope(.mailbox("mbSales"))
+        await harness.settle()
+        #expect(model.windowTitle == "sales@acme.co")
+    }
+
+    // MARK: - Drafts search
+
+    static func draft(_ id: String, subject: String, to: [String], snippet: String) -> DraftSummary {
+        DraftSummary(
+            id: id, mailboxID: nil, recipients: to, subject: subject, snippet: snippet,
+            updatedAt: epoch, hasAttachments: false
+        )
+    }
+
+    static let sampleDrafts = [
+        draft("1", subject: "Quarterly Report", to: ["bob@acme.co"], snippet: "numbers attached"),
+        draft("2", subject: "Lunch", to: ["Carol@North.io"], snippet: "see you at noon"),
+        draft("3", subject: "Hello", to: [], snippet: "The REPORT is late"),
+    ]
+
+    /// Fails if a field is left out of the match, if matching is
+    /// case-sensitive, or if a whitespace-only needle filters anything.
+    @Test("Drafts search matches subject, recipients and snippet, ignoring case")
+    func draftsFilter() {
+        let ids = { (q: String) in ListColumn.filterDrafts(Self.sampleDrafts, query: q).map(\.id) }
+        #expect(ids("report") == ["1", "3"], "subject and snippet, any case")
+        #expect(ids("carol@north") == ["2"], "recipients, any case")
+        #expect(ids("  lunch ") == ["2"], "the needle is trimmed")
+        #expect(ids("zzz").isEmpty)
+        #expect(ids("") == ["1", "2", "3"])
+        #expect(ids("   ") == ["1", "2", "3"], "whitespace is no filter")
     }
 
     /// Show All Drafts returns to All domains KEEPING Drafts (not the Inbox),

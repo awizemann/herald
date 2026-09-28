@@ -11,6 +11,9 @@ import SwiftUI
 /// affordances appear.
 struct DraftListView: View {
     @Bindable var model: MailViewModel
+    /// The same field the conversation list searches with (owned by
+    /// ``MiddleColumnView``); here it narrows the drafts locally.
+    @Binding var searchText: String
     let metrics: ListColumn.RowMetrics
 
     var body: some View {
@@ -18,7 +21,7 @@ struct DraftListView: View {
         let attribution = model.rowAttributionIndex()
         let accountTint = model.listAccountTint
         let rowHeight = metrics.conversationRowHeight(.current)
-        List(model.drafts, selection: $model.selectedDraftID) { draft in
+        List(model.presentedDrafts, selection: $model.selectedDraftID) { draft in
             DraftRow(
                 draft: draft,
                 // Same rule as a conversation row (handoff §2); at All domains a
@@ -53,12 +56,13 @@ struct DraftListView: View {
             return .handled
         }
         .overlay {
-            if model.drafts.isEmpty {
+            if model.presentedDrafts.isEmpty {
                 // Inside a mailbox: "No drafts in team@" + Show All Drafts,
                 // since mailbox-less drafts only list under All domains.
                 ListEmptyStateView(state: model.listEmptyState) { model.showAllDrafts() }
             }
         }
+        .listSearchField(model: model, text: $searchText)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Open Draft") { model.openDraft(id) }

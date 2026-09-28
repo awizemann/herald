@@ -112,7 +112,7 @@ struct MailWindow: View {
             ReadingPaneView(model: model)
                 .navigationSplitViewColumnWidth(min: Self.readingMinWidth, ideal: Self.readingIdealWidth)
         }
-        .navigationTitle(model.accountLabel)
+        .navigationTitle(model.windowTitle)
         .navigationSubtitle(model.scopeTitle)
         .toolbar { toolbar }
         .alert(

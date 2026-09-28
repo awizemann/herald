@@ -160,6 +160,27 @@ nonisolated enum ListColumn {
         return "Search \(scopeName)"
     }
 
+    /// The window title (and so the Window menu's entry): the account at All
+    /// domains, otherwise the scope itself — "shabubox.com",
+    /// "hello@shabubox.com". The subtitle stays the folder.
+    static func windowTitle(_ scope: MailViewModel.Scope, accountLabel: String, scopeName: String) -> String {
+        if case .allDomains = scope { return accountLabel }
+        return scopeName
+    }
+
+    /// The drafts the list shows for a search needle: a case-insensitive
+    /// substring match on subject, recipients and body snippet. The needle is
+    /// trimmed the same way the conversation search trims it; an empty needle
+    /// is no filter at all.
+    static func filterDrafts(_ drafts: [DraftSummary], query: String) -> [DraftSummary] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return drafts }
+        func hit(_ text: String) -> Bool { text.localizedCaseInsensitiveContains(needle) }
+        return drafts.filter { draft in
+            hit(draft.subject) || hit(draft.snippet) || draft.recipients.contains(where: hit)
+        }
+    }
+
     static func folderTitle(_ folder: MailViewModel.Folder) -> String {
         folder.conversationFolder.map(MailTheme.title(for:)) ?? MailTheme.draftsTitle
     }
@@ -237,11 +258,13 @@ nonisolated enum ListColumn {
         searching: Bool,
         serverSearchPending: Bool
     ) -> EmptyState {
-        if searching, folder != .drafts {
+        if searching {
+            // Drafts filter locally only (the cache holds every draft of the
+            // scope), so Return has nothing more to offer there.
             return EmptyState(
                 symbol: "magnifyingglass",
                 title: "No Results",
-                message: serverSearchPending ? "Press Return to search the server." : nil,
+                message: serverSearchPending && folder != .drafts ? "Press Return to search the server." : nil,
                 offersShowAllDrafts: false
             )
         }

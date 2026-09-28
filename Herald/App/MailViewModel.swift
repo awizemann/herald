@@ -1127,7 +1127,8 @@ final class MailViewModel {
     func submitSearch() {
         if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             record(.searchRun(
-                scope: .local, results: UsageBucket(count: presentedConversations.count)
+                scope: .local,
+                results: UsageBucket(count: isShowingDrafts ? presentedDrafts.count : presentedConversations.count)
             ))
         }
         runServerSearch()

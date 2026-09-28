@@ -12,6 +12,18 @@ extension MailViewModel {
         ListColumn.scopeName(scope, domains: domains, mailboxes: mailboxes)
     }
 
+    /// The window title: the account at All domains, else the domain or the
+    /// mailbox address. See ``ListColumn/windowTitle(_:accountLabel:scopeName:)``.
+    var windowTitle: String {
+        ListColumn.windowTitle(scope, accountLabel: accountLabel, scopeName: listScopeName)
+    }
+
+    /// The Drafts list as the search field narrows it — filtered locally over
+    /// the scope's cached drafts, derived on read so it follows both.
+    var presentedDrafts: [DraftSummary] {
+        ListColumn.filterDrafts(drafts, query: searchQuery)
+    }
+
     /// The toolbar search field's placeholder.
     var searchPrompt: String {
         ListColumn.searchPrompt(scope, scopeName: listScopeName)

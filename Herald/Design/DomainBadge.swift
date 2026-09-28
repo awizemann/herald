@@ -128,6 +128,11 @@ struct DomainBadge: View {
     let monogram: String
     let tint: MailTheme.AccountTint
     var size: Size = .row
+    /// Set when the badge sits on a SELECTED `List` row (a conversation row,
+    /// the sidebar). The letters then draw `.primary`, which flips to white
+    /// with the focused accent selection; the fixed `ink` they draw everywhere
+    /// else is about 3:1 on that fill. Unselected rows keep the design's `ink`.
+    var isSelected = false
 
     enum Size {
         /// 16pt — a conversation row.
@@ -157,7 +162,7 @@ struct DomainBadge: View {
     var body: some View {
         Text(monogram)
             .textStyle(MailTheme.Typography.badge)
-            .foregroundStyle(MailTheme.Color.ink)
+            .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.Color.ink))
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .frame(minWidth: size.diameter, minHeight: size.diameter)

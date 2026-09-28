@@ -18,7 +18,7 @@ struct LabelChip: View {
 
     var body: some View {
         Text(label.name)
-            .font(.caption2)
+            .font(MailTheme.Typography.rowChip)
             .fontWeight(.medium)
             .foregroundStyle(MailTheme.chipLabelForeground)
             .lineLimit(1)
@@ -38,6 +38,9 @@ struct LabelChip: View {
 struct LabelChipRow: View {
     let labels: [MailLabel]
     var limit: Int = MailTheme.maxRowLabelChips
+    /// The row it sits on is selected: the "+n" chip's neutral fill turns
+    /// hierarchical so its `.secondary` count stays readable on the selection.
+    var isSelected = false
 
     var body: some View {
         if !labels.isEmpty {
@@ -47,12 +50,12 @@ struct LabelChipRow: View {
                 }
                 if labels.count > limit {
                     Text("+\(labels.count - limit)")
-                        .font(.caption2)
+                        .font(MailTheme.Typography.rowChip)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, MailTheme.Spacing.xs)
                         .padding(.vertical, MailTheme.Spacing.xxs)
-                        .background(MailTheme.chipBackground, in: Capsule())
+                        .background(MailTheme.rowChipBackground(isSelected: isSelected), in: Capsule())
                         .accessibilityHidden(true)
                 }
                 Spacer(minLength: 0)

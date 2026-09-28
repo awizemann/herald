@@ -37,13 +37,17 @@ struct ListHeaderBand: View {
             }
             // The chip is taller than the caption; a fixed floor keeps the band
             // from jumping when a label opens or closes.
-            .frame(minHeight: MailTheme.Spacing.lg + MailTheme.Spacing.xxs, alignment: .leading)
+            .frame(minHeight: Self.captionRowMinHeight, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, ListColumn.Layout.headerTopPadding)
         .padding(.horizontal, ListColumn.Layout.headerHorizontalPadding)
         .padding(.bottom, ListColumn.Layout.headerBottomPadding)
     }
+
+    /// The caption row's floor: the label chip's height (18pt), so the band
+    /// does not jump when a label opens or closes.
+    static let captionRowMinHeight = MailTheme.Spacing.lg + MailTheme.Spacing.xxs
 }
 
 /// The header title as a real `Menu` — so it opens from the keyboard, reads as
@@ -77,7 +81,7 @@ struct FolderMenu: View {
                     .textStyle(MailTheme.Typography.paneTitle)
                     .foregroundStyle(MailTheme.Color.ink)
                 Image(systemName: "chevron.down")
-                    .font(.body.weight(.semibold))
+                    .font(MailTheme.Typography.menuChevronGlyph)
                     .foregroundStyle(MailTheme.Color.ink2)
             }
             .padding(.horizontal, MailTheme.Spacing.xs)
@@ -123,7 +127,7 @@ struct LabelFilterChip: View {
                 .lineLimit(1)
             Button(action: clear) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
+                    .font(MailTheme.Typography.inlineGlyph)
                     .foregroundStyle(MailTheme.Color.ink2)
                     // The chip is ~18pt tall; the hit area reaches 28pt without
                     // growing the chip (the padding is taken back for layout).
@@ -187,18 +191,20 @@ struct ListEmptyStateView: View {
 /// speaks the attribution itself (`ListColumn.Attribution.spoken`).
 ///
 /// Drawn inside `List` rows, so its text uses the HIERARCHICAL styles, which
-/// flip with the system selection (the R1 List-row rule).
+/// flip with the system selection (the R1 List-row rule); the badge and the
+/// "No mailbox" tag, which carry fixed colours, swap on `isSelected`.
 struct RowAttributionView: View {
     let attribution: ListColumn.Attribution
     let tint: MailTheme.AccountTint?
+    var isSelected = false
 
     var body: some View {
         HStack(spacing: ListColumn.Layout.attributionGap) {
             if attribution.isUnassigned {
-                NoMailboxTag()
+                NoMailboxTag(isSelected: isSelected)
             } else {
                 if let monogram = attribution.monogram, let tint {
-                    DomainBadge(monogram: monogram, tint: tint, size: .row)
+                    DomainBadge(monogram: monogram, tint: tint, size: .row, isSelected: isSelected)
                 }
                 if let mailbox = attribution.mailbox {
                     Text(mailbox)
@@ -219,7 +225,13 @@ struct RowAttributionView: View {
 /// "No mailbox" — a draft (or an unassigned message) that no mailbox owns,
 /// where a badge and a mailbox would otherwise sit. Outlined, never filled:
 /// it names an absence, not an account.
+///
+/// The outline is the fixed `line` token, which vanishes on the focused accent
+/// selection; a selected row draws it `.tertiary` instead, which flips with
+/// the selection like the tag's own text.
 struct NoMailboxTag: View {
+    var isSelected = false
+
     var body: some View {
         Text(ListColumn.noMailboxTitle)
             .textStyle(MailTheme.Typography.tag)
@@ -227,7 +239,7 @@ struct NoMailboxTag: View {
             .padding(.horizontal, MailTheme.Spacing.xs)
             .overlay {
                 RoundedRectangle(cornerRadius: MailTheme.Radius.badgeSmall)
-                    .strokeBorder(MailTheme.Color.line)
+                    .strokeBorder(isSelected ? AnyShapeStyle(.tertiary) : AnyShapeStyle(MailTheme.Color.line))
             }
     }
 }

@@ -111,7 +111,18 @@ enum MailTheme {
 
     /// Background of a neutral chip (attachment, message count) — the design's
     /// neutral chip fill. One token, so every chip in the app moves together.
+    /// Fixed and opaque, so NOT for a chip on a selected `List` row — see
+    /// ``rowChipBackground(isSelected:)``.
     static let chipBackground: AnyShapeStyle = AnyShapeStyle(Color.lineSoft)
+
+    /// The neutral chip fill for a chip drawn INSIDE a `List` row (the count
+    /// pill, the "+n" label overflow). Unselected it is ``chipBackground``; on
+    /// a selected row it turns hierarchical (`.quaternary`), which flips with
+    /// the selection like the chip's `.secondary` text does — the opaque
+    /// `lineSoft` stayed near-white under white text on the accent fill.
+    static func rowChipBackground(isSelected: Bool) -> AnyShapeStyle {
+        isSelected ? AnyShapeStyle(.quaternary) : chipBackground
+    }
 
     /// Fill behind a selected row in a list that is not a `List`.
     static let selectionHighlight = Color.select
@@ -120,13 +131,22 @@ enum MailTheme {
     /// colour (Differentiate Without Color).
     static let selectionBorderWidth: CGFloat = 1
 
-    // Text drawn INSIDE `List` rows (conversation, draft and thread-message
-    // rows) uses the HIERARCHICAL styles — `.primary` / `.secondary` /
+    // Text drawn INSIDE `List` rows (conversation, draft, thread-message and
+    // sidebar rows) uses the HIERARCHICAL styles — `.primary` / `.secondary` /
     // `.tertiary` for the ink / ink2 / ink3 roles — never the fixed ink tokens:
     // only the system styles flip to the emphasised (white) variant on a
     // selected row, and a fixed ink would stay dark on the blue selection.
     // Surfaces outside a `List` (the list header band, empty states, the
     // thread header) read `Color.ink*` directly.
+    //
+    // Anything else FIXED in a row must swap on `isSelected` too: the unread
+    // dot and the thread avatar's dot (accent → `.primary`, the avatar's
+    // background ring dropped), a draft's red "Draft", the domain badge's
+    // letters (`ink` → `.primary`, ``DomainBadge/isSelected``), the "No
+    // mailbox" tag's `line` outline, and neutral chip fills
+    // (``rowChipBackground(isSelected:)``). The one exception is a run that
+    // brings its OWN opaque fill — a search match — which keeps a fixed ink on
+    // it (see ``searchMatchForeground``).
 
     // MARK: Search
 
@@ -134,11 +154,16 @@ enum MailTheme {
     /// design's `match` token, which carries its own dark value.
     nonisolated static let searchMatchBackground: SwiftUI.Color = Color.match
 
-    /// Foreground of a matched run. Lifted to `.primary` because the snippet it
-    /// most often sits in is drawn `.secondary`; paired with the bold weight the
-    /// highlighter also applies, so the mark is never colour alone. Hierarchical
-    /// for the `List`-row reason given under Surfaces.
-    nonisolated static let searchMatchForeground: SwiftUI.Color = .primary
+    /// Foreground of a matched run: the fixed `ink`, lifted above the
+    /// `.secondary` snippet it most often sits in and paired with the bold
+    /// weight the highlighter also applies, so the mark is never colour alone.
+    ///
+    /// Deliberately NOT hierarchical, unlike the rest of a `List` row: the run
+    /// carries its own OPAQUE `match` fill, which does not change on a selected
+    /// row, so a `.primary` that flipped to white there would sit white on pale
+    /// yellow. `ink` on `match` clears AA in both appearances (each token has
+    /// its own dark value), selected or not.
+    nonisolated static let searchMatchForeground: SwiftUI.Color = Color.ink
 
     // MARK: Account tints
 
@@ -452,6 +477,30 @@ enum MailTheme {
         static let chip = Style(.textMedium, size: 11, relativeTo: .subheadline)
         /// Serif 18 — a list empty state's title ("Nothing in Sent").
         static let emptyTitle = Style(.serifSubhead, size: 18, relativeTo: .title3)
+        /// 14 semibold — the sidebar's level-2 domain header (handoff: 14/600).
+        static let sidebarHeader = Style(.textSemibold, size: 14, relativeTo: .headline)
+        /// 11 semibold — a thread row's 28pt avatar initials.
+        static let avatarInitials = Style(.textSemibold, size: 11, relativeTo: .caption)
+
+        // System-font sizes the handoff does not restyle: small SF Symbols
+        // sized against the text beside them, and a few bars that predate the
+        // type scale. Named so no view spells `.caption` itself; moving one onto
+        // the bundled scale is a deliberate size change, made here.
+
+        /// An inline glyph at caption size — a row's paperclip, a chip's ×.
+        static let inlineGlyph = Font.caption
+        /// The list header's folder-menu chevron.
+        static let menuChevronGlyph = Font.body.weight(.semibold)
+        /// A back link's chevron (the thread view's "‹ Inbox").
+        static let backChevronGlyph = Font.body.weight(.medium)
+        /// A row label chip's name and the "+n" overflow chip beside it.
+        static let rowChip = Font.caption2
+        /// The server-search status bar under the list.
+        static let statusBar = Font.caption
+        /// The sidebar's sync status when it reports a problem: bold, because
+        /// caption-sized `danger` on the sidebar material misses 4.5:1 at
+        /// regular weight.
+        static let statusProblem = Font.caption.bold()
 
         /// 44pt light — the onboarding welcome glyph (an SF Symbol, so system).
         static let heroGlyph = Font.system(size: 44, weight: .light)

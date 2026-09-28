@@ -93,7 +93,7 @@ struct DraftRow: View {
             VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
                 HStack(spacing: ListColumn.Layout.attributionGap) {
                     if !attribution.isEmpty {
-                        RowAttributionView(attribution: attribution, tint: accountTint)
+                        RowAttributionView(attribution: attribution, tint: accountTint, isSelected: isSelected)
                     }
                     // `danger` names what the row IS; on a selected row it
                     // yields to the selection's own text colour, since a fixed
@@ -119,7 +119,7 @@ struct DraftRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if draft.hasAttachments {
                         Image(systemName: "paperclip")
-                            .font(.caption)
+                            .font(MailTheme.Typography.inlineGlyph)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }

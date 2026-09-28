@@ -112,6 +112,7 @@ struct ConversationListView: View {
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
+        .accessibilityIdentifier(AccessibilityID.MailList.list)
         // The row's own `minHeight` cannot win this one: macOS `List` is an
         // NSTableView that caches a measured height per row identity, and a
         // freshly inserted row it has not measured yet is drawn at
@@ -305,7 +306,7 @@ struct SearchStatusBar: View {
                     .accessibilityHidden(true)
             }
             Text(description)
-                .font(.caption)
+                .font(MailTheme.Typography.statusBar)
                 .foregroundStyle(isFailure ? MailTheme.failure : .secondary)
                 .lineLimit(1)
             Spacer(minLength: 0)
@@ -427,7 +428,7 @@ struct ConversationRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if row.latest.hasAttachments {
                         Image(systemName: "paperclip")
-                            .font(.caption)
+                            .font(MailTheme.Typography.inlineGlyph)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
@@ -440,7 +441,7 @@ struct ConversationRow: View {
                 }
                 // Last line, under the snippet: labels are metadata about the
                 // thread, not part of what it says.
-                LabelChipRow(labels: labels)
+                LabelChipRow(labels: labels, isSelected: isSelected)
             }
             // COMBINE, not `contain`: as a container VoiceOver stopped on each
             // Text separately and the row's own label — the only place
@@ -482,7 +483,7 @@ struct ConversationRow: View {
     private var firstLine: some View {
         HStack(spacing: ListColumn.Layout.attributionGap) {
             if !attribution.isEmpty {
-                RowAttributionView(attribution: attribution, tint: accountTint)
+                RowAttributionView(attribution: attribution, tint: accountTint, isSelected: isSelected)
             }
             Text(Self.displayParticipants(for: row))
                 .textStyle(row.isUnread ? MailTheme.Typography.headline : MailTheme.Typography.bodyMedium)
@@ -510,7 +511,7 @@ struct ConversationRow: View {
             RowDateLabel(date: row.latest.displayDate)
             HStack(spacing: 0) {
                 if row.messageCount > 1 {
-                    CountPill(count: row.messageCount)
+                    CountPill(count: row.messageCount, isSelected: isSelected)
                 }
                 // Its own element on purpose: it is a control, and folding it
                 // into the row would cost the only way to star without the mouse.
@@ -576,15 +577,19 @@ struct ConversationRow: View {
         // The chips are `accessibilityHidden`, so this is the ONLY place a
         // VoiceOver user hears which labels a row carries.
         if let phrase = LabelChipRow.accessibilityPhrase(for: labels) { parts.append(phrase) }
-        parts.append(row.latest.snippet)
+        // The CLEANED preview the row draws, not the raw server snippet (quoted
+        // history, "On … wrote:", entities) that sighted users never see.
+        parts.append(SnippetCleaner.clean(row.latest.snippet))
         return parts.joined(separator: ", ")
     }
 }
 
 /// A thread's message count on its row (mono 10 on the neutral chip fill).
-/// Spoken in the row summary, so hidden here.
+/// Spoken in the row summary, so hidden here. On a selected row the fill turns
+/// hierarchical with the text (``MailTheme/rowChipBackground(isSelected:)``).
 struct CountPill: View {
     let count: Int
+    var isSelected = false
 
     var body: some View {
         Text("\(count)")
@@ -592,7 +597,7 @@ struct CountPill: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, MailTheme.Spacing.xs + MailTheme.Spacing.xxs)
             .padding(.vertical, MailTheme.Spacing.xxs / 2)
-            .background(MailTheme.chipBackground, in: Capsule())
+            .background(MailTheme.rowChipBackground(isSelected: isSelected), in: Capsule())
             .accessibilityHidden(true)
     }
 }

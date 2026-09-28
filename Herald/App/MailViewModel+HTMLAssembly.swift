@@ -343,7 +343,7 @@ extension MailViewModel {
         \(MailTheme.Web.fontFaceRule)
         body { font-family: var(--reading-font); font-size: \(MailTheme.Web.readingFontSize)px;
                line-height: \(MailTheme.Web.readingLineHeight);
-               margin: 16px; word-break: break-word; color: var(--fg); background: var(--bg);
+               margin: \(Int(ReadingPaneEdgeAlignment.webContentCSSMargin))px; word-break: break-word; color: var(--fg); background: var(--bg);
                /* Redesign R6 (handoff §3.1 "Reading pane"): the message body
                   wrapper caps at 600px so a line doesn't run edge-to-edge in a
                   wide pane — the signature preview's own box is already

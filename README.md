@@ -5,7 +5,7 @@ workspace that runs in your own Cloudflare account.
 
 **[awizemann.github.io/herald](https://awizemann.github.io/herald/)**
 
-![Herald showing a threaded conversation in a shared inbox](docs/images/hero-thread-mailbox.png)
+![Herald main window: domains sidebar, unified inbox and reading pane](docs/images/hero-window.jpg)
 
 > Herald is compatible with HQBase. It is an independent project, built by one of HQBase's
 > users, and is **not affiliated with or endorsed by the HQBase project.** "HQBase" is a

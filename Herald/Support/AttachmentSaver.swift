@@ -55,21 +55,21 @@ enum AttachmentSaver {
         case failed(String)
     }
 
-    static func save(_ attachment: Attachment, using api: any MailAPIClient) async -> Outcome {
+    static func save(_ attachment: Attachment, accountID: String, using api: any MailAPIClient) async -> Outcome {
         // Staged FIRST, and pinned: the cache is the one download (previewing and
         // then saving used to fetch the same attachment twice), and its filename
         // is the one the extension correction resolved from the actual bytes — so
         // the panel proposes the name the file will really need.
         let source: URL
         do {
-            source = try await AttachmentFile.shared.url(for: attachment, using: api, pinned: true)
+            source = try await AttachmentFile.shared.url(for: attachment, accountID: accountID, using: api, pinned: true)
         } catch {
             logger.error(
                 "Attachment \(attachment.id, privacy: .public) download failed: \(error.localizedDescription, privacy: .private)"
             )
             return .failed(error.localizedDescription)
         }
-        defer { Task { await AttachmentFile.shared.unpin(attachment.id) } }
+        defer { Task { await AttachmentFile.shared.unpin(attachment.id, accountID: accountID) } }
 
         return await save(stagedFile: source, logID: attachment.id)
     }
@@ -79,8 +79,7 @@ enum AttachmentSaver {
     /// attached this window session (compose attachments have no GET).
     static func save(stagedFile source: URL, logID: String = "local") async -> Outcome {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = source.lastPathComponent
-        panel.canCreateDirectories = true
+        configure(panel, proposing: source.lastPathComponent)
         guard await panel.begin() == .OK, let url = panel.url else { return .cancelled }
 
         do {
@@ -96,6 +95,14 @@ enum AttachmentSaver {
             )
             return .failed(error.localizedDescription)
         }
+    }
+
+    /// The single-file save panel: opens in ~/Downloads with the cached file's
+    /// name; the user may pick anywhere else.
+    static func configure(_ panel: NSSavePanel, proposing filename: String) {
+        panel.nameFieldStringValue = filename
+        panel.directoryURL = AttachmentStorage.downloadsDirectory
+        panel.canCreateDirectories = true
     }
 
     /// Copies `source` to `destination`, quarantined, replacing whatever is

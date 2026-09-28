@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
 
 private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", category: "Attachments")
 
-/// Downloads a received attachment once and keeps the staged file for the rest of
-/// the launch, so Quick Look and a drag to Finder share one download.
+/// Downloads a received attachment once into the Application Support cache
+/// (`<root>/<account id>/<attachment id>/<filename>`), so Quick Look, a drag to
+/// Finder and Download all share one download — and a file already on disk from
+/// an earlier launch is reused rather than fetched again.
 ///
 /// An actor because two chips (or a Quick Look and a drag of the same chip) can
 /// ask at the same time; `inFlight` makes the second caller join the first
@@ -19,8 +21,45 @@ actor AttachmentFile {
     /// Injectable so the eviction rules are testable without staging seventeen files.
     private let cacheLimit: Int
 
-    init(cacheLimit: Int = 16) {
+    /// `AttachmentStorage.attachments` in the app; a throwaway folder in tests, so
+    /// a test run never touches the running app's cache.
+    nonisolated let root: URL
+    private var prunedOnce = false
+
+    init(cacheLimit: Int = 16, root: URL = AttachmentStorage.attachments) {
         self.cacheLimit = cacheLimit
+        self.root = root
+    }
+
+    /// The per-attachment folder. Ids are server-issued, so both path
+    /// components are sanitized; `..` cannot survive `sanitized`.
+    nonisolated func folder(accountID: String, attachmentID: String) -> URL {
+        root.appendingPathComponent(AttachmentSaver.sanitized(accountID), isDirectory: true)
+            .appendingPathComponent(AttachmentSaver.sanitized(attachmentID), isDirectory: true)
+    }
+
+    /// Deletes one account's cached attachments (sign-out). Pinned entries go too:
+    /// the account is gone, and so is every panel that could show its files.
+    func removeAccount(_ accountID: String) {
+        let prefix = "\(accountID)/"
+        for key in order where key.hasPrefix(prefix) { staged[key] = nil }
+        order.removeAll { $0.hasPrefix(prefix) }
+        for key in pins.keys where key.hasPrefix(prefix) { pins[key] = nil }
+        try? FileManager.default.removeItem(
+            at: root.appendingPathComponent(AttachmentSaver.sanitized(accountID), isDirectory: true)
+        )
+    }
+
+    /// Once per launch: entries older than `AttachmentStorage.staleAge` belong to
+    /// no one (a previous launch, or an account signed out while offline).
+    private func pruneOnce() {
+        guard !prunedOnce else { return }
+        prunedOnce = true
+        AttachmentStorage.pruneStale(in: root, olderThan: AttachmentStorage.staleAge, depth: 1)
+    }
+
+    private nonisolated static func key(_ accountID: String, _ attachmentID: String) -> String {
+        "\(accountID)/\(attachmentID)"
     }
 
     private var staged: [String: URL] = [:]
@@ -36,11 +75,15 @@ actor AttachmentFile {
     /// Eviction used to be able to delete the file a Quick Look panel was showing
     /// (the panel goes blank) or the file Finder was still copying out of a drag,
     /// simply because sixteen other attachments were opened after it.
-    func pin(_ id: String) {
-        pins[id, default: 0] += 1
+    func pin(_ id: String, accountID: String) {
+        pins[Self.key(accountID, id), default: 0] += 1
     }
 
-    func unpin(_ id: String) {
+    func unpin(_ id: String, accountID: String) {
+        unpin(key: Self.key(accountID, id))
+    }
+
+    private func unpin(key id: String) {
         guard let count = pins[id] else { return }
         if count <= 1 {
             pins[id] = nil
@@ -59,47 +102,97 @@ actor AttachmentFile {
     /// that hands the URL over: pinning from the caller after `url(for:)`
     /// returned left two actor hops in which a concurrent download's eviction
     /// could still delete the file being handed out.
-    func url(for attachment: Attachment, using api: any MailAPIClient, pinned: Bool = false) async throws -> URL {
-        if let existing = staged[attachment.id], FileManager.default.fileExists(atPath: existing.path) {
-            if pinned { pin(attachment.id) }
+    func url(
+        for attachment: Attachment,
+        accountID: String,
+        using api: any MailAPIClient,
+        pinned: Bool = false
+    ) async throws -> URL {
+        pruneOnce()
+        let key = Self.key(accountID, attachment.id)
+        if let existing = staged[key], FileManager.default.fileExists(atPath: existing.path) {
+            touch(key)
+            if pinned { pins[key, default: 0] += 1 }
             return existing
         }
-        if let running = inFlight[attachment.id] {
+        if let running = inFlight[key] {
             let url = try await running.value
-            if pinned { pin(attachment.id) }
+            if pinned { pins[key, default: 0] += 1 }
             return url
         }
+        let folder = folder(accountID: accountID, attachmentID: attachment.id)
         // The bookkeeping happens INSIDE the task, not around the `await`: a caller
         // that cancels (a Finder drag let go early) would otherwise clear `inFlight`
         // while this download keeps running, so the file it writes is never
-        // recorded — leaked for the launch — and the next ask downloads it again.
+        // recorded — leaked — and the next ask downloads it again.
         let task = Task<URL, any Error> { [api] in
             do {
+                // A copy from an earlier launch is reused: same account, same
+                // server-issued id, same bytes.
+                if let cached = Self.existingFile(in: folder) {
+                    await self.finish(key, with: cached)
+                    return cached
+                }
                 let payload = try await api.attachmentData(id: attachment.id)
                 let filename = Self.filename(
                     for: attachment,
                     contentType: MIMESniffer.resolve(declaredType: attachment.contentType, data: payload.data)
                 )
-                // The download can be tens of MiB; staging it is blocking work.
+                // The download can be tens of MiB; writing it is blocking work.
                 let url = try await Task.detached(priority: .userInitiated) { @Sendable [payload] in
-                    let url = try AttachmentScratchpad.stage(payload.data, filename: filename)
-                    AttachmentSaver.quarantine(url)
-                    return url
+                    try Self.write(payload.data, filename: filename, into: folder)
                 }.value
-                await self.finish(attachment.id, with: url)
+                await self.finish(key, with: url)
                 return url
             } catch {
-                await self.finish(attachment.id, with: nil)
+                await self.finish(key, with: nil)
                 throw error
             }
         }
-        inFlight[attachment.id] = task
+        inFlight[key] = task
         let url = try await task.value
         // Back inside the actor: the pin lands before any other caller can run,
         // so `finish`'s eviction cannot take this file between here and the
         // caller's first use of it.
-        if pinned { pin(attachment.id) }
+        if pinned { pins[key, default: 0] += 1 }
         return url
+    }
+
+    /// Writes into a fresh `.partial` sibling and renames it into place, so a
+    /// crash mid-write never leaves a truncated file that a later launch would
+    /// reuse as the attachment.
+    private nonisolated static func write(_ data: Data, filename: String, into folder: URL) throws -> URL {
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: folder)
+        let partial = folder.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).partial", isDirectory: true)
+        try fileManager.createDirectory(at: partial, withIntermediateDirectories: true)
+        do {
+            let file = partial.appendingPathComponent(filename)
+            try data.write(to: file, options: .atomic)
+            AttachmentSaver.quarantine(file)
+            try fileManager.moveItem(at: partial, to: folder)
+        } catch {
+            try? fileManager.removeItem(at: partial)
+            throw error
+        }
+        return folder.appendingPathComponent(filename)
+    }
+
+    /// The one visible file in an attachment folder, if a previous launch left it.
+    private nonisolated static func existingFile(in folder: URL) -> URL? {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?
+            .filter { !$0.hasPrefix(".") } ?? []
+        guard names.count == 1 else { return nil }
+        let url = folder.appendingPathComponent(names[0])
+        // Refreshed so the stale-age prune measures from the last use.
+        try? FileManager.default.setAttributes([.modificationDate: Date.now], ofItemAtPath: folder.path)
+        return url
+    }
+
+    private func touch(_ key: String) {
+        order.removeAll { $0 == key }
+        order.append(key)
     }
 
     private func finish(_ id: String, with url: URL?) {
@@ -128,7 +221,11 @@ actor AttachmentFile {
                 continue
             }
             order.remove(at: index)
-            if let stale = staged.removeValue(forKey: candidate) { AttachmentScratchpad.discard(stale) }
+            if let stale = staged.removeValue(forKey: candidate) {
+                let folder = stale.deletingLastPathComponent()
+                // Only ever a folder under this cache's root.
+                if AttachmentStorage.url(folder, isInside: root) { try? FileManager.default.removeItem(at: folder) }
+            }
         }
     }
 
@@ -189,7 +286,7 @@ enum AttachmentDrag {
     /// which would mean downloading every attachment the user merely brushes past.
     /// Registering a file representation instead defers the download to the moment
     /// Finder actually asks for the bytes.
-    static func itemProvider(for attachment: Attachment, api: any MailAPIClient) -> NSItemProvider {
+    static func itemProvider(for attachment: Attachment, accountID: String, api: any MailAPIClient) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.suggestedName = AttachmentSaver.sanitized(attachment.filename)
         provider.registerFileRepresentation(
@@ -205,12 +302,14 @@ enum AttachmentDrag {
                     // asynchronously after `completion`, and an eviction in that
                     // window would delete the file out from under the copy. The
                     // pin is dropped after a grace period, not at `completion`.
-                    let url = try await AttachmentFile.shared.url(for: attachment, using: api, pinned: true)
+                    let url = try await AttachmentFile.shared.url(
+                        for: attachment, accountID: accountID, using: api, pinned: true
+                    )
                     // Detached, and never cancelled with the drag: cancelling the
                     // unpin would leak the pin and wedge the cache at its limit.
                     Task.detached {
                         try? await Task.sleep(for: .seconds(dragPinGrace))
-                        await AttachmentFile.shared.unpin(attachment.id)
+                        await AttachmentFile.shared.unpin(attachment.id, accountID: accountID)
                     }
                     // `false`: the file is the cache's, not the drop's, so the
                     // receiver must copy it rather than move it out from under us.

@@ -524,7 +524,7 @@ private struct AttachmentBar: View {
     /// The file Quick Look is showing. Set on the way in, cleared by the panel.
     @State private var previewURL: URL?
     /// The attachment whose staged file the open Quick Look panel is holding.
-    @State private var pinnedPreviewID: String?
+    @State private var pinnedPreview: (id: String, accountID: String)?
     /// Attachments whose download Quick Look is waiting on, so each chip can say
     /// so instead of looking like a click that did nothing.
     @State private var loadingIDs: Set<String> = []
@@ -606,7 +606,7 @@ private struct AttachmentBar: View {
         )
         // Dragging the card drags the FILE: the provider downloads only when the
         // drop target actually asks for the bytes, so a stray drag costs nothing.
-        .onDrag { AttachmentDrag.itemProvider(for: attachment, api: model.api) }
+        .onDrag { AttachmentDrag.itemProvider(for: attachment, accountID: model.accountID, api: model.api) }
     }
 
     private func downloadAll() {
@@ -631,7 +631,9 @@ private struct AttachmentBar: View {
             defer { loadingIDs.remove(attachment.id) }
             do {
                 // Pinned inside the actor, in the same step that stages it.
-                let url = try await AttachmentFile.shared.url(for: attachment, using: model.api, pinned: true)
+                let url = try await AttachmentFile.shared.url(
+                    for: attachment, accountID: model.accountID, using: model.api, pinned: true
+                )
                 // The user may have moved to another message while this
                 // downloaded; opening Quick Look on the previous message's file
                 // would be a panel they never asked for. `attachments` is the
@@ -641,12 +643,12 @@ private struct AttachmentBar: View {
                 else { return }
                 // The pin is held for as long as the panel shows the file and
                 // released in `previewURL`'s change handler. The hand-over of
-                // `pinnedPreviewID` happens with NO await in between, so a
+                // `pinnedPreview` happens with NO await in between, so a
                 // concurrent `releasePin()` cannot drop the same pin twice.
-                let previous = pinnedPreviewID
-                pinnedPreviewID = attachment.id
+                let previous = pinnedPreview
+                pinnedPreview = (attachment.id, model.accountID)
                 previewURL = url
-                if let previous { await AttachmentFile.shared.unpin(previous) }
+                if let previous { await AttachmentFile.shared.unpin(previous.id, accountID: previous.accountID) }
             } catch {
                 model.actionError = error.localizedDescription
             }
@@ -656,8 +658,8 @@ private struct AttachmentBar: View {
     /// Drops the pin when Quick Look closes (it writes `nil` back through the
     /// binding) or when the preview moves to another attachment.
     private func releasePin() {
-        guard let pinned = pinnedPreviewID else { return }
-        pinnedPreviewID = nil
-        Task { await AttachmentFile.shared.unpin(pinned) }
+        guard let pinned = pinnedPreview else { return }
+        pinnedPreview = nil
+        Task { await AttachmentFile.shared.unpin(pinned.id, accountID: pinned.accountID) }
     }
 }

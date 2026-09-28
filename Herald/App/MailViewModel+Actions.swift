@@ -205,7 +205,7 @@ extension MailViewModel {
     /// Runs the save panel and writes the attachment. The API client stays private
     /// to the view-model; views ask for the action, not the bytes.
     func saveAttachment(_ attachment: Attachment) async {
-        switch await AttachmentSaver.save(attachment, using: api) {
+        switch await AttachmentSaver.save(attachment, accountID: accountID, using: api) {
         case .saved:
             // No props: the filename, its size and its type are all off limits.
             record(.attachmentSaved)
@@ -221,13 +221,14 @@ extension MailViewModel {
     func saveAllAttachments(_ attachments: [Attachment], progress: @escaping (Int, Int) -> Void) async {
         guard !attachments.isEmpty, let folder = await AttachmentBatchSaver.chooseFolder() else { return }
         let api = api
+        let accountID = accountID
         // Pinned from download until the copy is done, so the staging cache
         // cannot evict a file between the two.
         let report = await AttachmentBatchSaver.save(
             attachments,
             into: folder,
-            fetch: { try await AttachmentFile.shared.url(for: $0, using: api, pinned: true) },
-            release: { await AttachmentFile.shared.unpin($0.id) },
+            fetch: { try await AttachmentFile.shared.url(for: $0, accountID: accountID, using: api, pinned: true) },
+            release: { await AttachmentFile.shared.unpin($0.id, accountID: accountID) },
             progress: progress
         )
         for _ in report.saved { record(.attachmentSaved) }

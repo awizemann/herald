@@ -32,14 +32,20 @@ enum AttachmentBatchSaver {
     /// Asks for the destination folder. `nil` = the user cancelled.
     static func chooseFolder() async -> URL? {
         let panel = NSOpenPanel()
+        configure(panel)
+        guard await panel.begin() == .OK else { return nil }
+        return panel.url
+    }
+
+    /// The Download All folder chooser, opening in ~/Downloads.
+    static func configure(_ panel: NSOpenPanel) {
+        panel.directoryURL = AttachmentStorage.downloadsDirectory
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Download"
         panel.message = "Choose a folder for the attachments."
-        guard await panel.begin() == .OK else { return nil }
-        return panel.url
     }
 
     /// Fetches each attachment (through `fetch`, the staged-cache download in the

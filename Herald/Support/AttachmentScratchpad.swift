@@ -1,47 +1,115 @@
+import Darwin
 import Foundation
 import OSLog
 import os
 
 private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", category: "Attachments")
 
-/// The one temporary directory attachments are staged in: pasted images on their
-/// way up, downloaded attachments on their way to Quick Look or to Finder.
+/// Where attachment bytes live on disk: `Application Support/<bundle id>/`,
+/// inside the sandbox container.
 ///
-/// Everything here is disposable. The directory is emptied once per launch (on
-/// first use) rather than at quit, because a crash never runs a quit handler and
-/// mail attachments are the last bytes that should silently pile up in `/tmp`.
-enum AttachmentScratchpad {
-    /// `<temp>/com.wizemann.herald/Attachments`. Inside the sandbox container, so
-    /// no entitlement is involved and nothing else can read it. The container is
-    /// per bundle id, and Debug builds have their own (`com.wizemann.herald.debug`,
-    /// U6a), so a dev copy or UI-test run emptying this at launch never touches the
-    /// release app's staged files; the fixed path component is the same in both.
-    ///
-    /// Symlinks are resolved HERE, on the temp directory that always exists, so
-    /// ``contains(_:)`` compares like with like: `/var/folders/…` for a path that
-    /// does not exist yet against `/private/var/folders/…` for one that does is a
-    /// mismatch that would quietly refuse to clean a file up.
-    nonisolated static let directory: URL = FileManager.default.temporaryDirectory
+/// Why not the temp directory any more (2026-09-28): the old scratchpad
+/// (`<tmp>/com.wizemann.herald/Attachments`) was EMPTIED WHOLESALE by the first
+/// stage of every launch. Every process with the same bundle id shares the
+/// container — the unit-test host is the Debug app itself — so a test run (or a
+/// second copy) wiped the file a live Quick Look panel was showing, and the panel
+/// fell over. Nothing here is ever wiped wholesale now: a process deletes only
+/// what it staged, plus entries old enough to be nobody's (``pruneStale``).
+enum AttachmentStorage {
+    /// `Application Support/<bundle id>`. The container is per bundle id already;
+    /// the bundle-id component keeps the layout conventional and Debug/Release apart
+    /// should the app ever run unsandboxed.
+    nonisolated static let root: URL = {
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )) ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base.resolvingSymlinksInPath()
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.wizemann.herald", isDirectory: true)
+    }()
+
+    /// Downloaded (received) attachments: `<root>/Attachments/<account id>/<attachment id>/<filename>`.
+    nonisolated static let attachments = root.appendingPathComponent("Attachments", isDirectory: true)
+
+    /// Compose-side copies and pasted images: `<root>/Compose/<uuid>/<filename>`.
+    nonisolated static let compose = root.appendingPathComponent("Compose", isDirectory: true)
+
+    /// The pre-2026-09-28 temp scratchpad, removed once per launch.
+    nonisolated static let legacyTemp = FileManager.default.temporaryDirectory
         .resolvingSymlinksInPath()
         .appendingPathComponent("com.wizemann.herald", isDirectory: true)
-        .appendingPathComponent("Attachments", isDirectory: true)
 
-    /// Emptied exactly once per launch, the first time anyone stages a file.
+    /// Anything not touched for this long belongs to no live panel, window or
+    /// drag, in this process or another one.
+    nonisolated static let staleAge: TimeInterval = 2 * 24 * 60 * 60
+
+    /// Deletes the direct children of `directory` (recursively descending
+    /// `depth` levels) whose modification date is older than `age`. Stale
+    /// entries are always safe to delete: the store is a rebuildable cache.
+    nonisolated static func pruneStale(in directory: URL, olderThan age: TimeInterval, depth: Int = 0, now: Date = .now) {
+        let fileManager = FileManager.default
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: []
+        ) else { return }
+        for child in children {
+            if depth > 0 {
+                pruneStale(in: child, olderThan: age, depth: depth - 1, now: now)
+                // An account folder left empty goes too.
+                if (try? fileManager.contentsOfDirectory(atPath: child.path))?.isEmpty == true {
+                    try? fileManager.removeItem(at: child)
+                }
+                continue
+            }
+            let modified = (try? child.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, now.timeIntervalSince(modified) > age {
+                try? fileManager.removeItem(at: child)
+            }
+        }
+    }
+
+    /// Whether `url` really lives under `directory`, compared on resolved paths
+    /// so `../` games and the `/private` symlink cannot smuggle a path in.
+    nonisolated static func url(_ url: URL, isInside directory: URL) -> Bool {
+        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let candidate = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return candidate.hasPrefix(root + "/")
+    }
+
+    /// The user's real `~/Downloads`. `FileManager`'s `.downloadsDirectory`
+    /// answers the SANDBOX container's copy; the panels want the real folder,
+    /// which they are entitled to show.
+    nonisolated static var downloadsDirectory: URL {
+        if let home = getpwuid(getuid())?.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: home), isDirectory: true)
+                .appendingPathComponent("Downloads", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+    }
+}
+
+/// Compose-side staging: pasted images on their way up and the composer's local
+/// copies of files the user attached. Lives in ``AttachmentStorage/compose``.
+///
+/// Each file sits in its own UUID folder, deleted by its owner (Remove, window
+/// close, a finished upload). There is no launch-time wipe — that deleted other
+/// processes' live files — only a once-per-launch prune of folders untouched
+/// for ``AttachmentStorage/staleAge`` (what a crash leaves behind).
+enum AttachmentScratchpad {
+    nonisolated static var directory: URL { AttachmentStorage.compose }
+
+    /// Pruned exactly once per launch, the first time anyone stages a file.
     private nonisolated static let prepared = OSAllocatedUnfairLock(initialState: false)
 
-    /// Creates (and, on the first call of this launch, empties) the directory.
-    ///
-    /// The wipe happens INSIDE the lock: two windows staging at once would
-    /// otherwise let the second write its file into the directory the first is
-    /// still deleting. The critical section is one `removeItem`, not I/O the user waits on.
+    /// Creates the directory; on the first call of this launch also prunes stale
+    /// folders and removes the legacy temp scratchpad.
     nonisolated static func prepare() throws {
         try prepared.withLock { done in
-            let fileManager = FileManager.default
             if !done {
-                try? fileManager.removeItem(at: directory)
                 done = true
+                AttachmentStorage.pruneStale(in: directory, olderThan: AttachmentStorage.staleAge)
+                try? FileManager.default.removeItem(at: AttachmentStorage.legacyTemp)
             }
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
     }
 
@@ -74,11 +142,7 @@ enum AttachmentScratchpad {
         }
     }
 
-    /// Whether `url` really lives under the scratchpad, compared on resolved
-    /// paths so `/tmp/../` games and the `/private` symlink cannot smuggle a path in.
     nonisolated static func contains(_ url: URL) -> Bool {
-        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
-        let candidate = url.resolvingSymlinksInPath().standardizedFileURL.path
-        return candidate.hasPrefix(root + "/")
+        AttachmentStorage.url(url, isInside: directory)
     }
 }

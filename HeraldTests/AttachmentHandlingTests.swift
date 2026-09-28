@@ -1,9 +1,15 @@
+import AppKit
 import Foundation
 import HeraldKit
 import Testing
 @testable import Herald
 // `Testing` exports an `Attachment` of its own; this names ours for the file.
 import struct HeraldKit.Attachment
+
+private func testCacheRoot() -> URL {
+    FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("attachment-cache-tests-\(UUID().uuidString)", isDirectory: true)
+}
 
 private func part(
     id: String = "att_1",
@@ -102,15 +108,16 @@ struct AttachmentEvictionTests {
     /// Quick Look panel (or a drag Finder is still copying) would be deleted.
     @Test func aPinnedFileSurvivesEvictionAndGoesWhenUnpinned() async throws {
         let api = FakeMailAPIClient()
-        let cache = AttachmentFile(cacheLimit: 2)
+        let cache = AttachmentFile(cacheLimit: 2, root: testCacheRoot())
         let first = part(id: "a1", filename: "a1.txt", contentType: "text/plain")
 
-        let pinnedURL = try await cache.url(for: first, using: api)
-        await cache.pin(first.id)
+        let pinnedURL = try await cache.url(for: first, accountID: "acct", using: api)
+        await cache.pin(first.id, accountID: "acct")
 
         for index in 2...4 {
             _ = try await cache.url(
                 for: part(id: "a\(index)", filename: "a\(index).txt", contentType: "text/plain"),
+                accountID: "acct",
                 using: api
             )
         }
@@ -122,8 +129,10 @@ struct AttachmentEvictionTests {
 
         // Unpinned, it is once again the oldest entry and the next download over
         // the limit takes it.
-        await cache.unpin(first.id)
-        _ = try await cache.url(for: part(id: "a5", filename: "a5.txt", contentType: "text/plain"), using: api)
+        await cache.unpin(first.id, accountID: "acct")
+        _ = try await cache.url(
+            for: part(id: "a5", filename: "a5.txt", contentType: "text/plain"), accountID: "acct", using: api
+        )
         #expect(!FileManager.default.fileExists(atPath: pinnedURL.path), "An unpinned file is evictable again")
     }
 
@@ -131,23 +140,118 @@ struct AttachmentEvictionTests {
     /// the cache would then never shed anything while a panel is open.
     @Test func unpinnedFilesStillEvictAroundAPin() async throws {
         let api = FakeMailAPIClient()
-        let cache = AttachmentFile(cacheLimit: 2)
+        let cache = AttachmentFile(cacheLimit: 2, root: testCacheRoot())
         let pinned = part(id: "a1", filename: "a1.txt", contentType: "text/plain")
-        let pinnedURL = try await cache.url(for: pinned, using: api)
-        await cache.pin(pinned.id)
+        let pinnedURL = try await cache.url(for: pinned, accountID: "acct", using: api)
+        await cache.pin(pinned.id, accountID: "acct")
 
         let second = part(id: "a2", filename: "a2.txt", contentType: "text/plain")
-        let secondURL = try await cache.url(for: second, using: api)
+        let secondURL = try await cache.url(for: second, accountID: "acct", using: api)
         for index in 3...5 {
             _ = try await cache.url(
                 for: part(id: "a\(index)", filename: "a\(index).txt", contentType: "text/plain"),
+                accountID: "acct",
                 using: api
             )
         }
 
         #expect(FileManager.default.fileExists(atPath: pinnedURL.path))
         #expect(!FileManager.default.fileExists(atPath: secondURL.path), "Unpinned entries must still be evicted")
-        await cache.unpin(pinned.id)
+        await cache.unpin(pinned.id, accountID: "acct")
+    }
+}
+
+@Suite("Attachment cache location")
+struct AttachmentCacheLocationTests {
+    /// Fails if the cache is back in the temp directory (where a shared,
+    /// wiped-per-launch scratchpad deleted files under live Quick Look panels).
+    @Test func theAppCacheLivesUnderApplicationSupport() throws {
+        let appSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+        ).resolvingSymlinksInPath()
+        #expect(AttachmentStorage.url(AttachmentStorage.attachments.appendingPathComponent("x"), isInside: appSupport))
+        #expect(AttachmentStorage.url(AttachmentScratchpad.directory.appendingPathComponent("x"), isInside: appSupport))
+        let temp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        #expect(!AttachmentStorage.url(AttachmentStorage.attachments.appendingPathComponent("x"), isInside: temp))
+        #expect(AttachmentFile.shared.root == AttachmentStorage.attachments)
+        #expect(AttachmentStorage.attachments.path.contains(Bundle.main.bundleIdentifier ?? "\u{0}"))
+    }
+
+    /// Fails if the file is stored under an id or without the extension Quick
+    /// Look needs to pick a previewer, or outside its account's folder.
+    @Test func theCachedFileKeepsItsNameAndExtensionPerAccount() async throws {
+        let root = testCacheRoot()
+        let cache = AttachmentFile(root: root)
+        let url = try await cache.url(
+            for: part(id: "p1", filename: "Q3 Proposal.pdf", contentType: "application/pdf"),
+            accountID: "acct-1",
+            using: FakeMailAPIClient()
+        )
+        #expect(url.lastPathComponent == "Q3 Proposal.pdf")
+        #expect(url.pathExtension == "pdf")
+        #expect(AttachmentStorage.url(url, isInside: root.appendingPathComponent("acct-1")))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// Fails if a later launch (a fresh actor) downloads again instead of reusing
+    /// the file on disk.
+    @Test func aFreshCacheReusesTheFileOnDisk() async throws {
+        let root = testCacheRoot()
+        let api = FakeMailAPIClient()
+        let attachment = part(id: "p1", filename: "a.txt", contentType: "text/plain")
+        let first = try await AttachmentFile(root: root).url(for: attachment, accountID: "a", using: api)
+        let second = try await AttachmentFile(root: root).url(for: attachment, accountID: "a", using: api)
+        #expect(first == second)
+        #expect(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// Fails if sign-out leaves the account's attachments on disk, or takes
+    /// another account's with it.
+    @Test func removingAnAccountClearsOnlyItsCache() async throws {
+        let root = testCacheRoot()
+        let cache = AttachmentFile(root: root)
+        let api = FakeMailAPIClient()
+        let gone = try await cache.url(for: part(id: "p1", filename: "a.txt", contentType: "text/plain"), accountID: "a", using: api)
+        let kept = try await cache.url(for: part(id: "p1", filename: "a.txt", contentType: "text/plain"), accountID: "b", using: api)
+        await cache.removeAccount("a")
+        #expect(!FileManager.default.fileExists(atPath: gone.path))
+        #expect(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    /// Fails if the stale prune deletes a recent entry or keeps an old one.
+    @Test func pruneRemovesOnlyStaleEntries() throws {
+        let root = testCacheRoot()
+        let fileManager = FileManager.default
+        let old = root.appendingPathComponent("acct/old", isDirectory: true)
+        let fresh = root.appendingPathComponent("acct/fresh", isDirectory: true)
+        try fileManager.createDirectory(at: old, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: fresh, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.modificationDate: Date.now.addingTimeInterval(-10 * 86_400)], ofItemAtPath: old.path)
+        AttachmentStorage.pruneStale(in: root, olderThan: AttachmentStorage.staleAge, depth: 1)
+        #expect(!fileManager.fileExists(atPath: old.path))
+        #expect(fileManager.fileExists(atPath: fresh.path))
+    }
+}
+
+@Suite("Attachment save panels")
+@MainActor
+struct AttachmentPanelTests {
+    /// Fails if the save panel opens anywhere but the real ~/Downloads (the
+    /// sandbox container's Downloads is not the user's folder).
+    @Test func theSavePanelDefaultsToDownloads() {
+        let panel = NSSavePanel()
+        AttachmentSaver.configure(panel, proposing: "Q3 Proposal.pdf")
+        #expect(panel.directoryURL?.standardizedFileURL == AttachmentStorage.downloadsDirectory.standardizedFileURL)
+        #expect(panel.nameFieldStringValue == "Q3 Proposal.pdf")
+        #expect(!AttachmentStorage.downloadsDirectory.path.contains("/Library/Containers/"))
+        #expect(AttachmentStorage.downloadsDirectory.lastPathComponent == "Downloads")
+    }
+
+    @Test func downloadAllDefaultsToDownloads() {
+        let panel = NSOpenPanel()
+        AttachmentBatchSaver.configure(panel)
+        #expect(panel.directoryURL?.standardizedFileURL == AttachmentStorage.downloadsDirectory.standardizedFileURL)
+        #expect(panel.canChooseDirectories && !panel.canChooseFiles)
     }
 }
 

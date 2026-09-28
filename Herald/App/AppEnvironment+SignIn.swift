@@ -764,6 +764,9 @@ extension AppEnvironment {
         // Signing the same origin back in during the revoke round trip would
         // otherwise have its freshly synced rows deleted underneath it.
         guard graphs[accountID] == nil else { return }
+        // The downloaded-attachment cache is rebuildable and the account's
+        // mail must not outlive it on disk.
+        await AttachmentFile.shared.removeAccount(accountID)
         // Whether or not the revoke landed, this session is done with the
         // account: its banners must not route a click back to it. After the
         // revoke, so a click held DURING the round trip is dropped too.

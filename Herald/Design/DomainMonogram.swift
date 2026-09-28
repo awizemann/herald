@@ -20,14 +20,37 @@ nonisolated enum DomainMonogram {
     }
 
     /// 2–3 letters, trimmed and uppercased. `nil` for anything else (wrong
-    /// length, or a character that is not a letter/digit — punctuation would
-    /// not read as a monogram) so a rejected entry is treated exactly like no
-    /// override rather than being stored malformed.
+    /// length, or a character that is not an ASCII letter/digit — punctuation
+    /// would not read as a monogram) so a rejected entry is treated exactly
+    /// like no override rather than being stored malformed.
+    ///
+    /// Restricted to ASCII `A`–`Z`/`0`–`9` (audit F3 #8): `Character.isLetter`
+    /// alone accepts any Unicode letter, including an accented one built from
+    /// a combining sequence (`é` — one `Character`, several Unicode scalars)
+    /// — legible in some faces and not others, unlike a plain "AC". Every
+    /// accepted character round-trips through the design's mono/sans faces
+    /// exactly the same way.
     static func normalizeOverride(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard (2...3).contains(trimmed.count) else { return nil }
-        guard trimmed.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+        guard trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return nil }
         return trimmed
+    }
+
+    /// Whether committing `raw` (the Settings monogram field's typed value,
+    /// on every keystroke) should reach storage: a value that validates
+    /// (``normalizeOverride(_:)``), or an empty field — which clears the
+    /// override — is the only thing that should. A mid-edit invalid
+    /// keystroke (too short, a rejected character) is left alone rather than
+    /// clearing a stored override out from under the user.
+    ///
+    /// Extracted from the field's own `commit(_:)` (audit F3 #11) so the rule
+    /// is tested directly rather than a test re-implementing these same two
+    /// lines under its own name, which would pass even if the field's real
+    /// logic diverged from it.
+    static func wouldCommitOverride(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || normalizeOverride(trimmed) != nil
     }
 
     /// Assigns every domain in one account its badge text.

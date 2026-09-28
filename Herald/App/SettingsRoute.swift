@@ -14,7 +14,11 @@ import HeraldKit
 /// account no longer shows (hidden, lost access, or a different account now in
 /// front) never leaves the detail pane on a page with nothing behind it — and
 /// the stored route is left alone, so a domain whose mailboxes simply have not
-/// loaded yet still opens once they do.
+/// loaded yet still opens once they do. The one exception is an EXPLICIT
+/// ``AppEnvironment/hideDomain(_:accountID:)``, which rewrites the stored
+/// route itself when it points inside the domain being hidden — a user
+/// action, not a transient loading gap, so leaving the raw route behind would
+/// resurrect it on the next Restore instead of staying on Account.
 nonisolated enum SettingsRoute: Hashable, Sendable {
     case general
     case notifications
@@ -187,6 +191,11 @@ nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
     let name: String
     let monogram: String
     let mailboxCount: Int
+    /// True when the domain is still derivable (`mailboxCount > 0`) but every
+    /// one of its mailboxes is server-disabled (``Mailbox/isEnabled``) — the
+    /// row says "Disabled on the server" instead of a mailbox count nobody
+    /// can actually see mail from (audit F3 #3).
+    let allMailboxesDisabled: Bool
     let hiddenAt: Date?
 
     /// Every domain hidden for this account, newest hide first (ties broken by
@@ -196,6 +205,11 @@ nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
     /// no longer derivable from `mailboxes` gets its monogram derived fresh
     /// from whatever name this function falls back to, since it has no seat at
     /// that clash-resolution table any more.
+    ///
+    /// `mailboxes` must be the SUPERSET including server-disabled ones (pass
+    /// `MailViewModel.monogramMailboxes`, not `.mailboxes`) — a hidden domain
+    /// whose mailboxes are all disabled on the server is otherwise invisible
+    /// here too and falls all the way to the id-only fallback.
     @MainActor static func hidden(
         mailboxes: [Mailbox],
         accountID: String,
@@ -203,6 +217,7 @@ nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
     ) -> [HiddenDomainItem] {
         let domains = MailDomain.domains(from: mailboxes)
         let byID = Dictionary(uniqueKeysWithValues: domains.map { ($0.id, $0) })
+        let mailboxByID = Dictionary(uniqueKeysWithValues: mailboxes.map { ($0.id, $0) })
         var overrides: [MailDomain.ID: String] = [:]
         for domain in domains {
             if let raw = DomainPreferences.monogramOverride(accountID: accountID, domainID: domain.id, in: defaults) {
@@ -217,11 +232,15 @@ nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
                     ?? DomainPreferences.hiddenName(accountID: accountID, domainID: id, in: defaults)
                     ?? id
                 let monogram = domain.flatMap { monograms[$0.id] } ?? DomainMonogram.derive(from: name)
+                let allDisabled = domain.map { d in
+                    !d.mailboxIDs.isEmpty && d.mailboxIDs.allSatisfy { mailboxByID[$0]?.isEnabled == false }
+                } ?? false
                 return HiddenDomainItem(
                     id: id,
                     name: name,
                     monogram: monogram,
                     mailboxCount: domain?.mailboxIDs.count ?? 0,
+                    allMailboxesDisabled: allDisabled,
                     hiddenAt: DomainPreferences.hiddenAt(accountID: accountID, domainID: id, in: defaults)
                 )
             }

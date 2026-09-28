@@ -148,6 +148,37 @@ struct DomainRemoveSettingsPageTests {
         #expect(items.first?.mailboxCount == 0)
     }
 
+    /// Audit F3 #3: a hidden domain whose mailboxes are all server-disabled
+    /// must still be derivable (it says so), not fall to the "0 mailboxes"
+    /// id-only path — that path is for a domain truly gone from the cache.
+    /// `mail.mailboxes` (enabled only) can't tell those two apart; the fix
+    /// passes `monogramMailboxes` (enabled + disabled) through `hiddenDomains`.
+    @Test("A hidden domain fully disabled on the server says so, not \"0 mailboxes\"")
+    func hiddenDomainAllMailboxesDisabledSaysSo() async throws {
+        let disabledMailbox = MailboxAddress(
+            id: "adr_m1", mailboxID: "m1", mailDomainID: "dom_acme", address: "sales@acme.co",
+            displayName: "", receiveEnabled: true, sendEnabled: true, isPrimary: true, domainEnabled: false
+        )
+        let mailbox = Mailbox(
+            id: "m1", address: "sales@acme.co", addresses: [disabledMailbox], displayName: "",
+            isActive: true, accessLevel: .manager, createdAt: .now, updatedAt: .now
+        )
+        #expect(!mailbox.isEnabled, "the fixture must actually be server-disabled")
+
+        let (environment, account) = try await Self.environment(mailboxes: [mailbox])
+        // `mailboxes` (enabled only) is empty, so this must hide via the ONE
+        // write path directly against stored prefs — `hideDomain` itself only
+        // reads `mail.domains`, which a disabled domain never enters either.
+        await environment.updateDomainPreferences(accountID: account.id) { defaults in
+            DomainPreferences.setHidden(true, accountID: account.id, domainID: "dom_acme", in: defaults, name: "acme.co")
+        }
+
+        let hidden = environment.hiddenDomains(accountID: account.id)
+        #expect(hidden.count == 1)
+        #expect(hidden.first?.mailboxCount == 1, "the mailbox is still cached, just disabled")
+        #expect(hidden.first?.allMailboxesDisabled == true)
+    }
+
     /// The list orders newest hide first.
     @Test("Hidden domains list newest hide first")
     func hiddenDomainsOrderedNewestFirst() {
@@ -182,12 +213,46 @@ struct DomainRemoveSettingsPageTests {
 
         await environment.hideDomain("dom_acme", accountID: account.id)
         #expect(environment.resolvedSettingsRoute == .account, "Never left resolving to a page for a now-hidden domain")
-        // The REQUEST itself is left alone, not overwritten — restoring within
-        // the same session brings the page back rather than parking on Account.
-        #expect(environment.settingsRoute == .domain("dom_acme", .remove))
+        // Audit F3 #4: the RAW route is rewritten too, not just left to
+        // resolve away — otherwise `SettingsView`'s selection setter (which
+        // compares against the raw route) treated a click on the already-
+        // highlighted Account row as a no-op, so nothing ever moved the raw
+        // route off the hidden domain, and a later Restore jumped straight
+        // back to its Remove-domain page instead of staying on Account.
+        #expect(environment.settingsRoute == .account, "hideDomain rewrites a route pointing inside the hidden domain")
 
         await environment.restoreDomain("dom_acme", accountID: account.id)
-        #expect(environment.resolvedSettingsRoute == .domain("dom_acme", .remove))
+        #expect(environment.resolvedSettingsRoute == .account, "Restoring does not resurrect a route hiding already moved off")
+    }
+
+    /// Hiding a domain while Settings is on one of its OTHER pages (not
+    /// `.remove`) must rewrite that too — the domain, not just the one page,
+    /// is what left the sidebar.
+    @Test("Hiding a domain rewrites the raw route from any of its pages, not just Remove domain")
+    func hidingCurrentDomainFromOverviewPageNavigatesAway() async throws {
+        let (environment, account) = try await Self.environment(
+            mailboxes: [Self.mailbox("m1", "sales@acme.co", domainID: "dom_acme")]
+        )
+        environment.settingsRoute = .domain("dom_acme", .overview)
+
+        await environment.hideDomain("dom_acme", accountID: account.id)
+
+        #expect(environment.settingsRoute == .account)
+    }
+
+    /// Hiding a DIFFERENT domain than the one Settings is showing must not
+    /// touch the raw route at all.
+    @Test("Hiding an unrelated domain leaves the current route alone")
+    func hidingUnrelatedDomainLeavesRouteAlone() async throws {
+        let (environment, account) = try await Self.environment(mailboxes: [
+            Self.mailbox("m1", "sales@acme.co", domainID: "dom_acme"),
+            Self.mailbox("m2", "ops@north.io", domainID: "dom_north"),
+        ])
+        environment.settingsRoute = .domain("dom_acme", .overview)
+
+        await environment.hideDomain("dom_north", accountID: account.id)
+
+        #expect(environment.settingsRoute == .domain("dom_acme", .overview))
     }
 
     // MARK: - HQBase Admin URL (N5)
@@ -204,5 +269,31 @@ struct DomainRemoveSettingsPageTests {
     func adminURLRefusesNonHTTPS() {
         let account = Account(origin: URL(string: "http://mail.example.com")!, clientID: "cid", scopes: [])
         #expect(AppEnvironment.hqBaseAdminURL(for: account) == nil)
+    }
+
+    // Audit F3 #2: `URLComponents.host` strips an IPv6 literal's brackets, so
+    // rebuilding a fresh `URLComponents` from `.scheme`/`.host`/`.port` (the
+    // old shape) silently produced no usable URL for one of these origins.
+    @Test("An IPv6-literal origin's brackets survive — the fix reuses the original parse rather than `.host`")
+    func adminURLKeepsIPv6Brackets() {
+        let account = Account(origin: URL(string: "https://[2001:db8::1]:8443")!, clientID: "cid", scopes: [])
+        let url = AppEnvironment.hqBaseAdminURL(for: account)
+        #expect(url?.absoluteString == "https://[2001:db8::1]:8443")
+    }
+
+    @Test("Userinfo on the origin is dropped, never carried into the URL that leaves the app")
+    func adminURLDropsUserinfo() {
+        let account = Account(origin: URL(string: "https://alan:hunter2@mail.example.com")!, clientID: "cid", scopes: [])
+        let url = AppEnvironment.hqBaseAdminURL(for: account)
+        #expect(url?.absoluteString == "https://mail.example.com")
+        #expect(url?.user == nil)
+        #expect(url?.password == nil)
+    }
+
+    @Test("A path, query and fragment on the origin are all dropped — origin root only")
+    func adminURLDropsPathQueryFragment() {
+        let account = Account(origin: URL(string: "https://mail.example.com/admin/panel?x=1#frag")!, clientID: "cid", scopes: [])
+        let url = AppEnvironment.hqBaseAdminURL(for: account)
+        #expect(url?.absoluteString == "https://mail.example.com")
     }
 }

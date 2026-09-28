@@ -245,13 +245,33 @@ final class SignatureSettingsModel {
 
     /// Opens the create sheet. `preferring` pre-selects a scope — the domain
     /// page's "New Signature" (R8) wants its own domain chosen rather than
-    /// whatever sorts first — falling back to the first offered scope when the
-    /// preferred one is not (yet) among ``scopeOptions`` (e.g. a domain with no
-    /// signature-manageable mailbox loaded before the list did).
+    /// whatever sorts first.
+    ///
+    /// Never substitutes a different scope (audit F3 #6): a `preferring`
+    /// scope not (yet) among ``scopeOptions`` (e.g. a domain with no
+    /// signature-manageable mailbox loaded before the list did) used to fall
+    /// back to `scopeOptions.first` — a signature could be created under the
+    /// WRONG scope from a domain page with no indication it happened. Now the
+    /// sheet simply does not open; callers gate the button itself on
+    /// ``offersScope(_:)`` so this is unreachable in practice, but the
+    /// guard stays here too since a silent no-op beats a silent wrong write.
     func beginCreate(preferring scope: SignatureScopeRef? = nil) {
         actionError = nil
-        let preferred = scope.flatMap { requested in scopeOptions.first { $0.ref == requested }?.ref }
-        editor = SignatureEditor(existing: nil, scope: preferred ?? scopeOptions.first?.ref)
+        if let scope {
+            guard offersScope(scope) else { return }
+            editor = SignatureEditor(existing: nil, scope: scope)
+            return
+        }
+        editor = SignatureEditor(existing: nil, scope: scopeOptions.first?.ref)
+    }
+
+    /// Whether `scope` is currently offered. What a caller pre-selecting a
+    /// scope (``beginCreate(preferring:)``) should gate its "New Signature"
+    /// button on, rather than the looser `scopeOptions.isEmpty` check, which
+    /// stayed enabled — and silently substituted a scope — whenever OTHER
+    /// scopes were offered but not the caller's own.
+    func offersScope(_ scope: SignatureScopeRef) -> Bool {
+        scopeOptions.contains { $0.ref == scope }
     }
 
     func beginEdit(_ signature: Signature) {

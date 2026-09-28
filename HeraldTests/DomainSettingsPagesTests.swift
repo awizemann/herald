@@ -83,6 +83,43 @@ import Testing
         #expect(DomainPreferences.countInBadge(accountID: account.id, domainID: domainID, in: environment.defaults) == false)
     }
 
+    /// Audit F3 #9: a monogram write (`reloads: false`) still bumps the
+    /// observed revision (a reader still repaints) but does NOT pay for a
+    /// full `reloadConversations` + `reloadDrafts` — unlike Include in All
+    /// domains / Count in badge (`reloads` defaulted to `true`), which change
+    /// what "All domains" and its drafts actually list.
+    @Test("reloads: false repaints observers but skips the conversation/draft reload; the default still runs it")
+    func reloadsFalseSkipsListReload() async throws {
+        let (environment, account) = try await Self.environment(
+            mailboxes: [Self.mailbox("m1", "sales@acme.co", domainID: "dom_acme")]
+        )
+        let domainID = "dom_acme"
+        let model = try #require(environment.graphs[account.id]?.mail)
+        let conversationsBefore = model.conversationReloadCount
+        let draftsBefore = model.draftReloadCount
+
+        let invalidated = Mutex(false)
+        withObservationTracking {
+            _ = environment.domainPreferencesObserved()
+        } onChange: {
+            invalidated.withLock { $0 = true }
+        }
+
+        await environment.updateDomainPreferences(accountID: account.id, reloads: false) { defaults in
+            DomainPreferences.setMonogramOverride("XY", accountID: account.id, domainID: domainID, in: defaults)
+        }
+
+        #expect(invalidated.withLock { $0 }, "A reader of the observed defaults must still be told the write happened")
+        #expect(model.conversationReloadCount == conversationsBefore, "reloads: false must not reload conversations")
+        #expect(model.draftReloadCount == draftsBefore, "reloads: false must not reload drafts")
+
+        await environment.updateDomainPreferences(accountID: account.id) { defaults in
+            DomainPreferences.setIncludeInAll(false, accountID: account.id, domainID: domainID, in: defaults)
+        }
+        #expect(model.conversationReloadCount > conversationsBefore, "the default (reloads: true) still reloads")
+        #expect(model.draftReloadCount > draftsBefore)
+    }
+
     /// The notify toggle writes an EXPLICIT true/false (never clears back to
     /// "follow global" from the switch itself) and the write is visible through
     /// the effective-value rule immediately.
@@ -108,24 +145,19 @@ import Testing
 
     // MARK: - Monogram field validation
 
-    /// The field's own rule (mirroring what the storage layer already
-    /// enforces): a value that validates, or an empty field, is the only thing
-    /// that should ever reach `updateDomainPreferences` — everything else (a
-    /// mid-edit keystroke) is left alone. Exercises `DomainMonogram.normalizeOverride`
-    /// the same way the field's `commit(_:)` does, since the write itself is
-    /// private to the view.
+    /// The field's own commit decision (`DomainMonogramField.commit(_:)`)
+    /// calls `DomainMonogram.wouldCommitOverride(_:)` directly (audit F3 #11)
+    /// — this exercises THAT function, not a second re-implementation of its
+    /// two lines under a different name, which would keep passing even if the
+    /// field's real logic diverged from it.
     @Test("Only a validating value or an empty field would commit; a mid-edit keystroke would not")
     func monogramFieldCommitRule() {
-        func wouldCommit(_ raw: String) -> Bool {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty || DomainMonogram.normalizeOverride(trimmed) != nil
-        }
-        #expect(wouldCommit("") == true, "Clearing the field commits (clears the override)")
-        #expect(wouldCommit("AC") == true)
-        #expect(wouldCommit("NOR") == true)
-        #expect(wouldCommit("A") == false, "One letter, mid-typing, must not clear a stored override")
-        #expect(wouldCommit("ABCD") == false)
-        #expect(wouldCommit("A!") == false)
+        #expect(DomainMonogram.wouldCommitOverride("") == true, "Clearing the field commits (clears the override)")
+        #expect(DomainMonogram.wouldCommitOverride("AC") == true)
+        #expect(DomainMonogram.wouldCommitOverride("NOR") == true)
+        #expect(DomainMonogram.wouldCommitOverride("A") == false, "One letter, mid-typing, must not clear a stored override")
+        #expect(DomainMonogram.wouldCommitOverride("ABCD") == false)
+        #expect(DomainMonogram.wouldCommitOverride("A!") == false)
     }
 
     /// End to end: writing a validating override through `updateDomainPreferences`
@@ -246,21 +278,41 @@ import Testing
     }
 
     /// A preferred scope the account cannot currently manage (not among
-    /// `scopeOptions` — e.g. its mailboxes have not loaded yet) falls back to
-    /// the first offered scope rather than silently filing under an option the
-    /// picker does not even show.
-    @Test("A preferred scope not currently offered falls back to the first option")
-    func newSignatureFallsBackWhenPreferredScopeIsUnavailable() async throws {
+    /// `scopeOptions` — e.g. its mailboxes have not loaded yet) must NEVER be
+    /// silently substituted for a different scope (audit F3 #6): a signature
+    /// created under a scope the caller did not ask for, with no indication
+    /// it happened, is worse than the sheet simply not opening. Callers
+    /// (the domain page's "New Signature") gate the button itself on
+    /// ``SignatureSettingsModel/offersScope(_:)`` so this stays unreachable
+    /// in the UI, but the model guards it too.
+    @Test("A preferred scope not currently offered opens no sheet at all")
+    func newSignatureRefusesWhenPreferredScopeIsUnavailable() async {
         let service = FakeSignatureManaging(listResult: .success([]))
         let model = SignatureSettingsModel(
             service: service,
             mailboxes: { [SignatureSettingsTests.mailbox(id: "m1", address: "sales@acme.co", domainID: "dom_acme")] }
         )
         await model.load()
-        let firstOption = try #require(model.scopeOptions.first?.ref)
+        #expect(!model.scopeOptions.isEmpty, "the fixture must offer SOME scope, just not the requested one")
 
         model.beginCreate(preferring: SignatureScopeRef(type: .domain, id: "dom_nowhere"))
-        #expect(model.editor?.scope == firstOption)
+        #expect(model.editor == nil, "no sheet, under no scope, rather than a silently substituted one")
+    }
+
+    /// ``SignatureSettingsModel/offersScope(_:)`` is what a domain page's
+    /// "New Signature" button disables on — exact per-domain, not the looser
+    /// "is anything offered at all" `scopeOptions.isEmpty`.
+    @Test("offersScope is exact to the requested domain, not just non-empty scopeOptions")
+    func offersScopeIsExactToTheRequestedDomain() async {
+        let service = FakeSignatureManaging(listResult: .success([]))
+        let model = SignatureSettingsModel(
+            service: service,
+            mailboxes: { [SignatureSettingsTests.mailbox(id: "m1", address: "sales@acme.co", domainID: "dom_acme")] }
+        )
+        await model.load()
+
+        #expect(model.offersScope(SignatureScopeRef(type: .domain, id: "dom_acme")))
+        #expect(!model.offersScope(SignatureScopeRef(type: .domain, id: "dom_nowhere")))
     }
 
     /// The domain Signatures page's own filter: only that domain's group, never

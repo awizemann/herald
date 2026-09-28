@@ -237,10 +237,10 @@ nonisolated enum DomainPreferences {
         return ids
     }
 
-    /// Removes every `domain.<accountID>.*` key. Not called from sign-out by
-    /// this phase (R2 is additive-only, no wiring into existing flows) — a
-    /// later phase decides whether/when a signed-out account's domain prefs
-    /// should be purged and calls this itself.
+    /// Removes every `domain.<accountID>.*` key. Called from sign-out via
+    /// `PreferenceHygiene.purgeAccount(_:from:)` (`AppEnvironment+SignIn.swift`)
+    /// — a signed-out account's domain prefs are purged along with the rest
+    /// of its Herald-only state.
     static func purgeAll(accountID: String, from defaults: UserDefaults) {
         let prefix = "domain.\(escapeKeyComponent(accountID))."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {

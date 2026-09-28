@@ -178,8 +178,14 @@ struct MailCommands: Commands {
             Button("Add Account…") { environment.presentsAddAccount = true }
             // Names the account: with several signed in, an unqualified "Sign
             // Out" is ambiguous about which server it burns.
+            // Routes through Settings › Account's confirmation rather than
+            // signing out directly — the same dialog the sidebar used to skip
+            // (audit F3 #1). Sign-out purges Herald-only preferences too, so a
+            // stray ⌘-triggered menu click must never skip the "are you sure".
             Button(environment.signOutMenuTitle) {
-                Task { await environment.signOut(accountID: environment.selectedAccountID) }
+                guard let accountID = environment.selectedAccountID else { return }
+                environment.showSettings(.account, accountID: accountID) { openSettings() }
+                environment.requestSettingsSignOut(accountID: accountID)
             }
             .disabled(environment.mail == nil)
         }

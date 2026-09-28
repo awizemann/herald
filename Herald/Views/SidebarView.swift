@@ -542,14 +542,16 @@ private struct SidebarChevron: View {
 }
 
 /// "DOMAINS", "LABELS" — the handoff's uppercase caption, not the source
-/// list's default header.
+/// list's default header. `ink2`, not the handoff's `ink3`: ink3 on the
+/// sidebar fill is ~4.3:1 for 11pt text, under AA (same fix as Settings'
+/// `SettingsSidebarHeader`).
 private struct SidebarSectionHeader: View {
     let title: String
 
     var body: some View {
         Text(title)
             .textStyle(MailTheme.Typography.section)
-            .foregroundStyle(MailTheme.Color.ink3)
+            .foregroundStyle(MailTheme.Color.ink2)
             .accessibilityAddTraits(.isHeader)
     }
 }

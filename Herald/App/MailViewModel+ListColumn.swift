@@ -55,10 +55,13 @@ extension MailViewModel {
         let overrides = level == .domainAndMailbox
             ? DomainBadgeResolver.monogramOverrides(for: monogramDomains, accountID: accountID, in: observedDefaults)
             : [:]
+        let tints = level == .domainAndMailbox
+            ? DomainBadgeResolver.tintOverrides(for: monogramDomains, accountID: accountID, in: observedDefaults)
+            : [:]
         return ListColumn.AttributionIndex.make(
             // `monogramDomains`: clashes resolve over disabled domains too.
             level: level, mailboxes: mailboxes, domains: monogramDomains,
-            monogramOverrides: overrides
+            monogramOverrides: overrides, tintOverrides: tints
         )
     }
 

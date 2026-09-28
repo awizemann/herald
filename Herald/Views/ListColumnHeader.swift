@@ -204,7 +204,11 @@ struct RowAttributionView: View {
                 NoMailboxTag(isSelected: isSelected)
             } else {
                 if let monogram = attribution.monogram, let tint {
-                    DomainBadge(monogram: monogram, tint: tint, size: .row, isSelected: isSelected)
+                    DomainBadge(
+                        monogram: monogram,
+                        tint: DomainBadgeResolver.tint(domainOverride: attribution.tintOverride, accountTint: tint),
+                        size: .row, isSelected: isSelected
+                    )
                 }
                 if let mailbox = attribution.mailbox {
                     Text(mailbox)

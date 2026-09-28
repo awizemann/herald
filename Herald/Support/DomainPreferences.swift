@@ -79,6 +79,12 @@ nonisolated enum DomainPreferences {
         key("monogram", accountID: accountID, domainID: domainID)
     }
 
+    /// `domain.<accountID>.<domainID>.tint` — the domain badge's optional
+    /// colour override (a token name from ``AccountTintAssignment/tokenNames``).
+    static func tintKey(accountID: String, domainID: String) -> String {
+        key("tint", accountID: accountID, domainID: domainID)
+    }
+
     static func includeInAllKey(accountID: String, domainID: String) -> String {
         key("includeInAll", accountID: accountID, domainID: domainID)
     }
@@ -132,6 +138,31 @@ nonisolated enum DomainPreferences {
             return
         }
         defaults.set(normalized, forKey: key)
+    }
+
+    // MARK: - Tint override
+
+    /// The domain badge's colour override, or `nil` = draw in the account's
+    /// tint (the default, and the spec's §2 rule). A deliberate deviation from
+    /// §2 ("only accounts get a hue"): with one account and many domains every
+    /// badge would otherwise be the same colour. A stored value that is not
+    /// one of the account-tint token names reads back as `nil` (unset).
+    /// Resolve the colour actually drawn with
+    /// ``DomainBadgeResolver/tintName(domainOverride:accountTintName:)``.
+    static func tintOverride(accountID: String, domainID: String, in defaults: UserDefaults) -> String? {
+        guard let raw = defaults.string(forKey: tintKey(accountID: accountID, domainID: domainID)),
+              AccountTintAssignment.tokenNames.contains(raw) else { return nil }
+        return raw
+    }
+
+    /// `nil` (or a name outside the token set) clears the override.
+    static func setTintOverride(_ name: String?, accountID: String, domainID: String, in defaults: UserDefaults) {
+        let key = tintKey(accountID: accountID, domainID: domainID)
+        guard let name, AccountTintAssignment.tokenNames.contains(name) else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        defaults.set(name, forKey: key)
     }
 
     // MARK: - Toggles

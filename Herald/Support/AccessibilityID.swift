@@ -90,6 +90,8 @@ nonisolated enum AccessibilityID {
         static let signOut = "settings.account.signOut"
         /// Settings › Domain › Overview's monogram override field.
         static let domainMonogram = "settings.domain.monogram"
+        static let domainTintSwatchPrefix = "settings.domain.tint."
+        static let domainTintReset = "settings.domain.tint.reset"
         static let domainIncludeInAll = "settings.domain.includeInAll"
         static let domainCountInBadge = "settings.domain.countInBadge"
         static let domainNotify = "settings.domain.notify"

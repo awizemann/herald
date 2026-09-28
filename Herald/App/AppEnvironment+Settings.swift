@@ -119,6 +119,33 @@ extension AppEnvironment {
         graphs[accountID]?.mail.accountTintDidChange()
     }
 
+    // MARK: - Domain colour
+
+    /// The colour a DOMAIN badge draws in: the domain's override (Settings ›
+    /// Domain › Overview › Colour) else the account tint —
+    /// ``DomainBadgeResolver/tint(domainID:accountID:accountTint:in:)``, the
+    /// single rule. Observed on both inputs, so it repaints on either write.
+    /// Account avatars use ``accountTint(for:)``, never this.
+    func domainTint(for accountID: Account.ID, domainID: MailDomain.ID) -> MailTheme.AccountTint {
+        DomainBadgeResolver.tint(
+            domainID: domainID, accountID: accountID,
+            accountTint: accountTint(for: accountID), in: domainPreferencesObserved()
+        )
+    }
+
+    /// The domain's stored colour override, or `nil` (= account tint). Observed.
+    func domainTintOverride(for accountID: Account.ID, domainID: MailDomain.ID) -> String? {
+        DomainPreferences.tintOverride(accountID: accountID, domainID: domainID, in: domainPreferencesObserved())
+    }
+
+    /// Records (or with `nil`, clears — Reset) a domain's colour. Repaint-only:
+    /// no list or count depends on it.
+    func setDomainTint(_ name: String?, for accountID: Account.ID, domainID: MailDomain.ID) async {
+        await updateDomainPreferences(accountID: accountID, reloads: false) { defaults in
+            DomainPreferences.setTintOverride(name, accountID: accountID, domainID: domainID, in: defaults)
+        }
+    }
+
     // MARK: - Domain preferences
 
     /// The ONE write path for Herald-only per-domain preferences

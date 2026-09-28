@@ -66,7 +66,7 @@ private struct SettingsSidebar: View {
                     .padding(.horizontal, MailTheme.Spacing.md)
                     .accessibilityHidden(true)
                 if let openDomain, let accountID {
-                    SettingsDomainHeader(item: openDomain, tint: environment.accountTint(for: accountID), back: back)
+                    SettingsDomainHeader(item: openDomain, tint: environment.domainTint(for: accountID, domainID: openDomain.id), back: back)
                 }
             }
         }
@@ -138,7 +138,7 @@ private struct SettingsRootRows: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } icon: {
-                        DomainBadge(monogram: item.monogram, tint: environment.accountTint(for: accountID), size: .sidebar)
+                        DomainBadge(monogram: item.monogram, tint: environment.domainTint(for: accountID, domainID: item.id), size: .sidebar)
                     }
                     .badge(Text(Image(systemName: MailTheme.Symbol.drillDown)))
                     .tag(SettingsRoute.domain(item.id, .overview))

@@ -179,7 +179,7 @@ struct SidebarView: View {
             .tag(MailViewModel.SidebarRow.allDomains)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allDomains")
             ForEach(shown) { domain in
-                domainRow(domain, tint: tint, monogram: monograms[domain.id] ?? DomainMonogram.derive(from: domain.name))
+                domainRow(domain, tint: domainTint(domain.id, accountTint: tint, preferences: preferences), monogram: monograms[domain.id] ?? DomainMonogram.derive(from: domain.name))
             }
         } header: {
             HStack {
@@ -204,6 +204,16 @@ struct SidebarView: View {
                 SidebarSectionHeader(title: MailTheme.labelsSectionTitle)
             }
         }
+    }
+
+    /// The badge colour for one domain: its override, else the account tint.
+    private func domainTint(
+        _ domainID: MailDomain.ID, accountTint: MailTheme.AccountTint, preferences: UserDefaults? = nil
+    ) -> MailTheme.AccountTint {
+        DomainBadgeResolver.tint(
+            domainID: domainID, accountID: model.accountID, accountTint: accountTint,
+            in: preferences ?? environment.domainPreferencesObserved()
+        )
     }
 
     private func domainRow(_ domain: MailDomain, tint: MailTheme.AccountTint, monogram: String) -> some View {
@@ -376,7 +386,10 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 0) {
                 SidebarBackLink(title: "Domains", action: back)
                 HStack(spacing: Self.itemGap) {
-                    DomainBadge(monogram: monograms[domainID] ?? DomainMonogram.derive(from: name), tint: tint, size: .header)
+                    DomainBadge(
+                        monogram: monograms[domainID] ?? DomainMonogram.derive(from: name),
+                        tint: domainTint(domainID, accountTint: tint), size: .header
+                    )
                     Text(name)
                         .textStyle(MailTheme.Typography.sidebarHeader)
                         .foregroundStyle(MailTheme.Color.ink)
@@ -411,7 +424,7 @@ struct SidebarView: View {
                     if let domainID {
                         DomainBadge(
                             monogram: monograms[domainID] ?? DomainMonogram.derive(from: domainName ?? ""),
-                            tint: tint, size: .header
+                            tint: domainTint(domainID, accountTint: tint), size: .header
                         )
                     }
                     (Text(parts.local).font(MailTheme.Typography.headline.font)

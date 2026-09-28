@@ -307,12 +307,38 @@ private struct AccountTintPicker: View {
     let accountID: Account.ID
 
     var body: some View {
-        let current = environment.accountTintName(for: accountID)
+        TintSwatchPicker(
+            current: environment.accountTintName(for: accountID),
+            isOverridden: environment.hasAccountTintOverride(accountID),
+            label: "Account colour",
+            resetHelp: "Go back to this account’s automatic colour",
+            swatchIDPrefix: AccessibilityID.Settings.tintSwatchPrefix,
+            resetID: AccessibilityID.Settings.tintReset,
+            pick: { environment.setAccountTint($0, for: accountID) }
+        )
+    }
+}
+
+/// The eight account-tint swatches + Reset — shared by Settings › Account's
+/// colour and Settings › Domain › Overview's colour override. Stateless:
+/// the caller says which token is current, whether Reset applies, and what a
+/// pick (`nil` = Reset) does.
+struct TintSwatchPicker: View {
+    let current: String
+    let isOverridden: Bool
+    /// The group's spoken name, e.g. "Account colour"; Reset reads "Reset {label}".
+    let label: String
+    let resetHelp: String
+    let swatchIDPrefix: String
+    let resetID: String
+    let pick: (String?) -> Void
+
+    var body: some View {
         HStack(spacing: 0) {
             ForEach(MailTheme.accountTints) { tint in
                 let isCurrent = tint.name == current
                 Button {
-                    environment.setAccountTint(tint.name, for: accountID)
+                    pick(tint.name)
                 } label: {
                     Circle()
                         .fill(tint.solid)
@@ -336,20 +362,20 @@ private struct AccountTintPicker: View {
                 .help(tint.displayName)
                 .accessibilityLabel(tint.displayName)
                 .accessibilityAddTraits(isCurrent ? .isSelected : [])
-                .accessibilityIdentifier(AccessibilityID.Settings.tintSwatchPrefix + tint.name)
+                .accessibilityIdentifier(swatchIDPrefix + tint.name)
             }
             // No foreground override: a fixed colour would hide the dimming
             // that says Reset is unavailable until a colour has been picked.
-            Button("Reset") { environment.setAccountTint(nil, for: accountID) }
+            Button("Reset") { pick(nil) }
                 .buttonStyle(.borderless)
                 .padding(.leading, MailTheme.Spacing.sm)
-                .disabled(!environment.hasAccountTintOverride(accountID))
-                .help("Go back to this account’s automatic colour")
-                .accessibilityLabel("Reset account colour")
-                .accessibilityIdentifier(AccessibilityID.Settings.tintReset)
+                .disabled(!isOverridden)
+                .help(resetHelp)
+                .accessibilityLabel("Reset \(label.lowercased())")
+                .accessibilityIdentifier(resetID)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Account colour")
+        .accessibilityLabel(label)
     }
 }
 

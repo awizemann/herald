@@ -46,6 +46,10 @@ nonisolated enum ListColumn {
         /// What VoiceOver reads for it — the full address, since "sales at"
         /// alone says less than the badge beside it does on screen.
         var spoken: String?
+        /// The domain's colour override (a tint token name), or `nil` = the
+        /// account tint. The row resolves it with
+        /// ``DomainBadgeResolver/tint(domainOverride:accountTint:)``.
+        var tintOverride: String?
 
         static let none = Attribution()
 
@@ -61,6 +65,8 @@ nonisolated enum ListColumn {
         let monograms: [Mailbox.ID: String]
         let localParts: [Mailbox.ID: String]
         let addresses: [Mailbox.ID: String]
+        /// Per-mailbox domain colour override (fanned out from the domain).
+        var tintOverrides: [Mailbox.ID: String] = [:]
 
         static let empty = AttributionIndex(level: .none, monograms: [:], localParts: [:], addresses: [:])
 
@@ -71,10 +77,12 @@ nonisolated enum ListColumn {
             level: AttributionLevel,
             mailboxes: [Mailbox],
             domains: [MailDomain],
-            monogramOverrides: [MailDomain.ID: String]
+            monogramOverrides: [MailDomain.ID: String],
+            tintOverrides domainTints: [MailDomain.ID: String] = [:]
         ) -> AttributionIndex {
             guard level != .none else { return .empty }
             var monograms: [Mailbox.ID: String] = [:]
+            var tints: [Mailbox.ID: String] = [:]
             if level == .domainAndMailbox {
                 // ONE clash resolution over every domain, fanned out to each
                 // domain's mailboxes. Going through the badge resolver per
@@ -82,7 +90,11 @@ nonisolated enum ListColumn {
                 let assigned = DomainMonogram.assign(domains: domains, overrides: monogramOverrides)
                 for domain in domains {
                     let monogram = assigned[domain.id] ?? DomainMonogram.derive(from: domain.name)
-                    for id in domain.mailboxIDs { monograms[id] = monogram }
+                    let tint = domainTints[domain.id]
+                    for id in domain.mailboxIDs {
+                        monograms[id] = monogram
+                        if let tint { tints[id] = tint }
+                    }
                 }
             }
             var localParts: [Mailbox.ID: String] = [:]
@@ -91,7 +103,9 @@ nonisolated enum ListColumn {
                 localParts[mailbox.id] = ListColumn.localPart(of: mailbox.address)
                 addresses[mailbox.id] = mailbox.address
             }
-            return AttributionIndex(level: level, monograms: monograms, localParts: localParts, addresses: addresses)
+            return AttributionIndex(
+                level: level, monograms: monograms, localParts: localParts, addresses: addresses, tintOverrides: tints
+            )
         }
 
         /// A row's attribution by its mailbox id.
@@ -111,7 +125,8 @@ nonisolated enum ListColumn {
             return Attribution(
                 monogram: level == .domainAndMailbox ? monograms[mailboxID] : nil,
                 mailbox: local,
-                spoken: addresses[mailboxID]
+                spoken: addresses[mailboxID],
+                tintOverride: level == .domainAndMailbox ? tintOverrides[mailboxID] : nil
             )
         }
     }

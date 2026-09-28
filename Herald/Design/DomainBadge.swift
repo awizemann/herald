@@ -27,6 +27,49 @@ nonisolated enum DomainBadgeResolver {
         let tintName: String
     }
 
+    // MARK: - Tint (the single rule)
+
+    /// THE domain-badge colour rule: the domain's own override (Settings ›
+    /// Domain › Overview › Colour) when it names a valid token, else the
+    /// owning account's tint. Every badge call site goes through this (or
+    /// ``tint(domainOverride:accountTint:)``) so there is one rule. Account
+    /// avatars do NOT — they always draw the account tint.
+    static func tintName(domainOverride: String?, accountTintName: String) -> String {
+        if let domainOverride, AccountTintAssignment.tokenNames.contains(domainOverride) { return domainOverride }
+        return accountTintName
+    }
+
+    /// ``tintName(domainOverride:accountTintName:)`` for a view that already
+    /// holds the account's resolved `MailTheme.AccountTint`.
+    static func tint(domainOverride: String?, accountTint: MailTheme.AccountTint) -> MailTheme.AccountTint {
+        let name = tintName(domainOverride: domainOverride, accountTintName: accountTint.name)
+        return MailTheme.accountTint(named: name) ?? accountTint
+    }
+
+    /// Reads the override out of `defaults` (pass
+    /// `environment.domainPreferencesObserved()` so it repaints).
+    static func tint(
+        domainID: String, accountID: String, accountTint: MailTheme.AccountTint, in defaults: UserDefaults
+    ) -> MailTheme.AccountTint {
+        tint(
+            domainOverride: DomainPreferences.tintOverride(accountID: accountID, domainID: domainID, in: defaults),
+            accountTint: accountTint
+        )
+    }
+
+    /// Every domain's stored colour override, for a caller resolving many at once.
+    static func tintOverrides(
+        for domains: [MailDomain], accountID: String, in defaults: UserDefaults
+    ) -> [MailDomain.ID: String] {
+        var overrides: [MailDomain.ID: String] = [:]
+        for domain in domains {
+            if let override = DomainPreferences.tintOverride(accountID: accountID, domainID: domain.id, in: defaults) {
+                overrides[domain.id] = override
+            }
+        }
+        return overrides
+    }
+
     /// The pure half. `domains` is whatever the caller already derived with
     /// `MailDomain.domains(from:)` — resolving it again per call for every
     /// mailbox drawn on screen would be wasted work in a view that draws many
@@ -36,7 +79,8 @@ nonisolated enum DomainBadgeResolver {
         domains: [MailDomain],
         monogramOverrides: [MailDomain.ID: String],
         accountID: String,
-        tintOverride: String?
+        tintOverride: String?,
+        domainTintOverrides: [MailDomain.ID: String] = [:]
     ) -> Info? {
         guard let domain = domains.first(where: { $0.mailboxIDs.contains(mailboxID) }) else { return nil }
         let monograms = DomainMonogram.assign(domains: domains, overrides: monogramOverrides)
@@ -44,8 +88,11 @@ nonisolated enum DomainBadgeResolver {
         // it was handed; the fallback only guards a future change to that
         // contract from silently dropping the badge instead of failing a test.
         let monogram = monograms[domain.id] ?? DomainMonogram.derive(from: domain.name)
-        let tintName = AccountTintAssignment.token(forAccountID: accountID, override: tintOverride)
-        return Info(monogram: monogram, domainName: domain.name, tintName: tintName)
+        let resolvedTint = Self.tintName(
+            domainOverride: domainTintOverrides[domain.id],
+            accountTintName: AccountTintAssignment.token(forAccountID: accountID, override: tintOverride)
+        )
+        return Info(monogram: monogram, domainName: domain.name, tintName: resolvedTint)
     }
 
     /// The convenience most SwiftUI call sites want: derives the domains from
@@ -63,7 +110,8 @@ nonisolated enum DomainBadgeResolver {
         return resolve(
             mailboxID: mailboxID, domains: domains,
             monogramOverrides: monogramOverrides(for: domains, accountID: accountID, in: defaults),
-            accountID: accountID, tintOverride: tintOverride
+            accountID: accountID, tintOverride: tintOverride,
+            domainTintOverrides: tintOverrides(for: domains, accountID: accountID, in: defaults)
         )
     }
 
@@ -86,7 +134,12 @@ nonisolated enum DomainBadgeResolver {
             monogramOverrides: monogramOverrides(for: domains, accountID: accountID, in: defaults),
             accountID: accountID, tintOverride: nil
         ) else { return nil }
-        return Info(monogram: resolved.monogram, domainName: resolved.domainName, tintName: tintName)
+        let domainOverride = domains.first { $0.mailboxIDs.contains(mailboxID) }
+            .flatMap { DomainPreferences.tintOverride(accountID: accountID, domainID: $0.id, in: defaults) }
+        return Info(
+            monogram: resolved.monogram, domainName: resolved.domainName,
+            tintName: Self.tintName(domainOverride: domainOverride, accountTintName: tintName)
+        )
     }
 
     /// Every domain's stored monogram override, for ``DomainMonogram/assign(domains:overrides:)``.
@@ -116,7 +169,9 @@ nonisolated enum DomainBadgeResolver {
 }
 
 /// A domain's badge: the monogram on a wash of the owning ACCOUNT's tint
-/// (handoff §2 — "Domain → badge… The tile is a wash of the account's tint").
+/// (handoff §2 — "Domain → badge… The tile is a wash of the account's tint"),
+/// or the domain's own colour override when set (see
+/// ``DomainBadgeResolver/tintName(domainOverride:accountTintName:)``).
 /// One reusable piece other phases draw too (the sidebar's 18pt row, a domain
 /// settings header's 22–24pt tile) rather than each hand-rolling the wash and
 /// radius pairing.

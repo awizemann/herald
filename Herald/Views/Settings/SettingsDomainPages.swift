@@ -37,7 +37,10 @@ struct DomainOverviewSettingsPage: View {
                         source: .herald
                     ) {
                         HStack(spacing: MailTheme.Spacing.sm) {
-                            DomainBadge(monogram: item.monogram, tint: environment.accountTint(for: accountID), size: .sidebar)
+                            DomainBadge(
+                                monogram: item.monogram,
+                                tint: environment.domainTint(for: accountID, domainID: item.id), size: .sidebar
+                            )
                             DomainMonogramField(
                                 accountID: accountID,
                                 item: item,
@@ -46,6 +49,23 @@ struct DomainOverviewSettingsPage: View {
                                 ) ?? ""
                             )
                         }
+                    }
+                    SettingsRow(
+                        title: "Colour",
+                        note: "Auto: the account’s colour.",
+                        source: .herald
+                    ) {
+                        TintSwatchPicker(
+                            current: environment.domainTint(for: accountID, domainID: item.id).name,
+                            isOverridden: environment.domainTintOverride(for: accountID, domainID: item.id) != nil,
+                            label: "Domain colour",
+                            resetHelp: "Go back to the account’s colour",
+                            swatchIDPrefix: AccessibilityID.Settings.domainTintSwatchPrefix,
+                            resetID: AccessibilityID.Settings.domainTintReset,
+                            pick: { name in
+                                Task { await environment.setDomainTint(name, for: accountID, domainID: item.id) }
+                            }
+                        )
                     }
                 }
             }
@@ -711,7 +731,13 @@ struct HiddenDomainsSection: View {
                         .padding(.horizontal, MailTheme.Spacing.lg)
                 } else {
                     ForEach(items) { item in
-                        HiddenDomainRow(item: item, tint: tint) {
+                        HiddenDomainRow(
+                            item: item,
+                            tint: DomainBadgeResolver.tint(
+                                domainID: item.id, accountID: accountID, accountTint: tint,
+                                in: environment.domainPreferencesObserved()
+                            )
+                        ) {
                             Task { await environment.restoreDomain(item.id, accountID: accountID) }
                         }
                     }

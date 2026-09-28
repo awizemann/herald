@@ -531,6 +531,8 @@ private struct AttachmentBar: View {
 
     /// "Download All" in progress: (finished, total). `nil` while idle.
     @State private var downloadAllProgress: DownloadAllProgress?
+    /// From the click to the batch's end, panel included: re-entry guard.
+    @State private var isDownloadingAll = false
     @State private var cardsHeight: CGFloat = 0
 
     /// Three rows of cards before the section scrolls instead of growing.
@@ -578,6 +580,7 @@ private struct AttachmentBar: View {
                     .textStyle(MailTheme.Typography.caption)
             } else {
                 DownloadAllButton { downloadAll() }
+                    .disabled(isDownloadingAll)
             }
         }
         .foregroundStyle(MailTheme.Color.ink3)
@@ -607,8 +610,13 @@ private struct AttachmentBar: View {
     }
 
     private func downloadAll() {
+        // Set synchronously: the folder panel is async, and a second click
+        // while it (or the batch) is up must not start another batch.
+        guard !isDownloadingAll else { return }
+        isDownloadingAll = true
         let batch = attachments
         Task {
+            defer { isDownloadingAll = false }
             await model.saveAllAttachments(batch) { finished, total in
                 downloadAllProgress = finished < total ? DownloadAllProgress(finished: finished, total: total) : nil
             }

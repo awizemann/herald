@@ -46,7 +46,8 @@ enum AttachmentBatchSaver {
     /// app) and copies it into `folder`.
     ///
     /// - Parameter release: called after each successful fetch, once its copy is over.
-    /// - Parameter progress: called after each file with (finished, total).
+    /// - Parameter progress: called with (0, total) before the first fetch, then
+    ///   after each file with (finished, total).
     static func save(
         _ attachments: [Attachment],
         into folder: URL,
@@ -55,6 +56,11 @@ enum AttachmentBatchSaver {
         progress: (Int, Int) -> Void = { _, _ in }
     ) async -> Report {
         var report = Report()
+        // Reported before the first fetch: the bar switches to "0 of N" (and
+        // drops the Download All button) the moment the folder is chosen, not
+        // after the first file lands — a second click in between started a
+        // second batch.
+        progress(0, attachments.count)
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
         for (index, attachment) in attachments.enumerated() {
@@ -79,7 +85,11 @@ enum AttachmentBatchSaver {
     }
 
     /// Copies `source` into `folder` under a free name; returns where it landed.
-    nonisolated static func copy(_ source: URL, into folder: URL) throws -> URL {
+    nonisolated static func copy(
+        _ source: URL,
+        into folder: URL,
+        copyFile: (URL, URL) throws -> Void = { try FileManager.default.copyItem(at: $0, to: $1) }
+    ) throws -> URL {
         let name = AttachmentSaver.sanitized(source.lastPathComponent)
         let destination = folder.appendingPathComponent(
             uniqueName(for: name) { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
@@ -87,9 +97,11 @@ enum AttachmentBatchSaver {
         // Staged beside the destination and moved in: a half-written file must
         // never sit in the user's folder under the real name.
         let staging = folder.appendingPathComponent(".\(UUID().uuidString).\(destination.lastPathComponent)")
-        try FileManager.default.copyItem(at: source, to: staging)
-        AttachmentSaver.quarantine(staging)
         do {
+            // Inside the `do`: a copy that throws partway leaves a partial
+            // staging file, which the catch removes.
+            try copyFile(source, staging)
+            AttachmentSaver.quarantine(staging)
             try FileManager.default.moveItem(at: staging, to: destination)
         } catch {
             try? FileManager.default.removeItem(at: staging)

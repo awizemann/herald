@@ -70,4 +70,21 @@ nonisolated enum RecipientTokens {
         let pending = String(typed[typed.index(after: last)...]).trimmingCharacters(in: .whitespaces)
         return (commit, pending)
     }
+
+    /// What Delete on an empty token input does.
+    enum DeleteAction: Equatable {
+        /// Not ours: there is pending text, or no token.
+        case ignore
+        /// Select this token (the first Delete).
+        case select(Int)
+        /// Remove this token (Delete with a token selected — the last one, or
+        /// whichever the user clicked).
+        case remove(Int)
+    }
+
+    static func deleteAction(pendingIsEmpty: Bool, tokenCount: Int, selected: Int?) -> DeleteAction {
+        guard pendingIsEmpty, tokenCount > 0 else { return .ignore }
+        if let selected, (0..<tokenCount).contains(selected) { return .remove(selected) }
+        return .select(tokenCount - 1)
+    }
 }

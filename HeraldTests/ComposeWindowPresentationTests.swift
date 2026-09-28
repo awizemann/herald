@@ -19,13 +19,34 @@ struct ComposeWindowPresentationTests {
 
     /// "Draft saved" must never show for a message the server has never
     /// seen, nor while edits are waiting for the next autosave.
-    @Test func saveCaptionOnlyClaimsSavedWhenTheServerHasEverything() {
+    @Test func saveCaptionOnlyClaimsSavedWhenTheServerHasEverything() async {
+        let outbox = FakeOutbox()
+        // The server answers with a stored draft, as the real one does.
+        await outbox.setNormalizer { sent in
+            ComposeDraft(
+                id: sent.id, mode: sent.mode, mailboxID: sent.mailboxID, fromAddress: sent.fromAddress,
+                to: sent.to, cc: sent.cc, bcc: sent.bcc, subject: sent.subject, body: sent.body,
+                signature: sent.signature, sendAttemptKey: sent.sendAttemptKey,
+                serverDraft: Draft(
+                    id: "draft-1", version: 1, updatedAt: MailFixtures.epoch, attachments: [],
+                    content: DraftInput(mailboxID: "mbA", from: sent.fromAddress, to: sent.to, subject: sent.subject, text: sent.body)
+                ),
+                isDirty: false
+            )
+        }
         let model = ComposeViewModel(
             context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
-            outbox: FakeOutbox()
+            outbox: outbox,
+            autosaveDelay: .seconds(3600)
         )
         #expect(model.saveStatusCaption == nil, "a never-saved message claimed to be saved")
         model.subject = "Lunch"
         #expect(model.saveStatusCaption == nil, "unsaved edits claimed to be saved")
+
+        await model.saveNow()
+        #expect(model.saveStatusCaption == "Draft saved", "a draft the server holds in full must say so")
+
+        model.subject = "Lunch?"
+        #expect(model.saveStatusCaption == nil, "an edit after the save un-claims it")
     }
 }

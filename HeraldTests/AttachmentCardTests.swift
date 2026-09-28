@@ -95,7 +95,33 @@ struct DownloadAllTests {
         #expect(report.failed == ["broken.pdf"])
         #expect(report.failureMessage == "Herald could not download 1 of 3 attachments: broken.pdf.")
         #expect(released == ["a", "c"])
-        #expect(progress == [1, 2, 3])
+        #expect(progress == [0, 1, 2, 3], "0 of N is reported before the first fetch")
+    }
+
+    /// A copy that throws partway (disk full) after writing some bytes: fails
+    /// if the hidden staging file is left behind in the user's folder, for
+    /// the batch copy and the single-file install alike.
+    @Test func aFailingCopyLeavesNoStagingFile() throws {
+        let folder = try scratchFolder()
+        let sources = try scratchFolder()
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: sources)
+        }
+        let source = sources.appendingPathComponent("big.pdf")
+        try Data("payload".utf8).write(to: source)
+        let partialCopy: (URL, URL) throws -> Void = { _, staging in
+            try Data("pay".utf8).write(to: staging)
+            throw FetchFailed()
+        }
+
+        #expect(throws: FetchFailed.self) {
+            try AttachmentBatchSaver.copy(source, into: folder, copyFile: partialCopy)
+        }
+        #expect(throws: FetchFailed.self) {
+            try AttachmentSaver.install(source, at: folder.appendingPathComponent("big.pdf"), copyFile: partialCopy)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
     }
 
     @Test func aTotalFailureSaysSoAndSuccessSaysNothing() {

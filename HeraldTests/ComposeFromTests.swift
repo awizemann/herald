@@ -351,4 +351,85 @@ struct ComposeFromTests {
         model.subject = "  Q3 plan "
         #expect(model.windowTitle == "Q3 plan")
     }
+
+    // MARK: - Review fixes (2026-09-28)
+
+    /// Text typed after the last token and never committed is work: fails if
+    /// ⌘W closes without asking, or if Save Draft saves without it.
+    @Test func pendingRecipientTextIsUnsavedWorkAndSaveDraftKeepsIt() async {
+        let outbox = FakeOutbox()
+        let model = Self.composer(outbox: outbox)
+        model.setPendingText("ada@example.com", for: .to)
+        #expect(model.hasUnsavedChanges)
+        model.requestClose()
+        #expect(model.confirmsClose, "closing with a typed address must ask first")
+
+        await model.saveAndClose()
+        #expect(await outbox.lastSaved?.to == ["ada@example.com"])
+        #expect(model.isClosed)
+    }
+
+    /// The window going away (flushAndStop) saves pending text too.
+    @Test func flushOnCloseCommitsPendingRecipientText() async {
+        let outbox = FakeOutbox()
+        let model = Self.composer(outbox: outbox)
+        model.subject = "Hi"
+        model.setPendingText("bob@example.com", for: .cc)
+        await model.flushAndStop()
+        #expect(await outbox.lastSaved?.cc == ["bob@example.com"])
+    }
+
+    /// Fails if Delete with a CLICKED middle token selects the last one (or
+    /// removes the last) instead of removing the one the user picked.
+    @Test func deleteRemovesTheSelectedTokenNotTheLast() {
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: true, tokenCount: 3, selected: 1) == .remove(1))
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: true, tokenCount: 3, selected: nil) == .select(2))
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: true, tokenCount: 3, selected: 2) == .remove(2))
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: true, tokenCount: 3, selected: 7) == .select(2), "stale index")
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: false, tokenCount: 3, selected: 1) == .ignore)
+        #expect(RecipientTokens.deleteAction(pendingIsEmpty: true, tokenCount: 0, selected: nil) == .ignore)
+    }
+
+    /// The binding setter reports a commit (so a menu Paste can resync the
+    /// field editor) and only then.
+    @Test func setPendingTextReportsWhenItCommitted() {
+        let model = Self.composer()
+        #expect(!model.setPendingText("ada@exa", for: .to))
+        #expect(model.setPendingText("ada@example.com, bob@example.com", for: .to))
+        #expect(model.pendingText(for: .to) == "bob@example.com")
+    }
+
+    /// A From change whose signature fetch FAILS must still drop a
+    /// hand-picked signature from the old address: fails if it survives.
+    @Test func fromChangeWithFailedSignatureFetchResetsToAutomatic() async {
+        let outbox = FakeOutbox()
+        let info = Self.signature("sig_info", .mailbox, label: "info@acme.co")
+        await outbox.setSignatures(SignatureCandidates(automaticSignatureID: nil, signatures: [info]))
+        let model = Self.composer(outbox: outbox)
+        await model.loadSignatures()
+        model.signatureTag = "selected:sig_info"
+
+        await outbox.setSignatures(nil) // the next fetch fails
+        let ops = model.fromCandidates.first { $0.address == "ops@north.io" }!
+        #expect(model.selectFrom(ops))
+        await model.loadSignatures()
+        #expect(model.draft.signature == .automatic)
+    }
+
+    /// The Send button and ⌘⇧D share one rule: a reply may go with no
+    /// recipients (the server routes it to the original sender), a new
+    /// message may not. Fails if the button disagrees with `send()`.
+    @Test func sendButtonAndSendAgreeOnAReplyWithNoRecipients() async {
+        let outbox = FakeOutbox()
+        let message = Self.detail(id: "m", mailbox: "mbInfo", to: ["info@acme.co"])
+        let reply = Self.composer(kind: .reply, outbox: outbox, message: message)
+        reply.toText = ""
+        reply.ccText = ""
+        #expect(reply.isSendEnabled)
+        #expect(await reply.send())
+
+        let fresh = Self.composer()
+        #expect(!fresh.isSendEnabled)
+        #expect(!(await fresh.send()))
+    }
 }

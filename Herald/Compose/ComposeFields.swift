@@ -231,19 +231,27 @@ struct RecipientTokenField: View {
                 tokens.isEmpty && field == .to ? "Name or address" : "",
                 text: Binding(
                     get: { model.pendingText(for: field) },
-                    set: { selectedToken = nil; model.setPendingText($0, for: field) }
+                    set: { typed in
+                        selectedToken = nil
+                        // A menu or context-menu Paste lands here, not in the
+                        // ⌘V proxy: when the split committed tokens, the field
+                        // editor still shows the raw text. Pushed after the
+                        // binding write finishes (the editor ignores a rewrite
+                        // from inside its own edit).
+                        if model.setPendingText(typed, for: field) {
+                            Task { @MainActor in ComposeFieldEditor.sync(to: model.pendingText(for: field)) }
+                        }
+                    }
                 )
             )
             .textFieldStyle(.plain)
             .textStyle(MailTheme.Typography.body)
             .frame(minWidth: 120)
             .focused(focus, equals: ComposeFocus(field))
+            // Tab commits through the focus change (ComposeWindow's
+            // `onChange(of: focus)`); the field editor consumes Tab before any
+            // `.onKeyPress` would see it.
             .onSubmit { model.commitPending(field) }
-            .onKeyPress(.tab) {
-                // Commit, then let Tab move focus as usual.
-                model.commitPending(field)
-                return .ignored
-            }
             .accessibilityLabel(label)
             .accessibilityHint(model.hint(for: field) ?? "")
             .accessibilityIdentifier(identifier)
@@ -272,19 +280,24 @@ struct RecipientTokenField: View {
         .accessibilityLabel(label)
     }
 
-    /// First Delete selects the last token, the second removes it. Returns
+    /// Delete on an empty input (``RecipientTokens/deleteAction``). Returns
     /// whether the key was used.
     private func deleteOnEmpty() -> Bool {
-        guard model.pendingText(for: field).isEmpty,
-              let last = model.tokens(for: field).last
-        else { return false }
-        if selectedToken == last.index {
+        switch RecipientTokens.deleteAction(
+            pendingIsEmpty: model.pendingText(for: field).isEmpty,
+            tokenCount: model.tokens(for: field).count,
+            selected: selectedToken
+        ) {
+        case .ignore:
+            return false
+        case .select(let index):
+            selectedToken = index
+            return true
+        case .remove(let index):
             selectedToken = nil
-            model.removeLastToken(in: field)
-        } else {
-            selectedToken = last.index
+            model.removeToken(at: index, in: field)
+            return true
         }
-        return true
     }
 }
 

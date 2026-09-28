@@ -100,15 +100,21 @@ enum AttachmentSaver {
 
     /// Copies `source` to `destination`, quarantined, replacing whatever is
     /// there only once the copy is complete.
-    nonisolated static func install(_ source: URL, at destination: URL) throws {
+    nonisolated static func install(
+        _ source: URL,
+        at destination: URL,
+        copyFile: (URL, URL) throws -> Void = { try FileManager.default.copyItem(at: $0, to: $1) }
+    ) throws {
         // Written beside the destination and swapped in: deleting the
         // existing file first would destroy the user's copy if the write
         // then failed halfway (an attachment can be tens of MiB).
         let staging = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(UUID().uuidString).\(destination.lastPathComponent)")
-        try FileManager.default.copyItem(at: source, to: staging)
-        quarantine(staging)
         do {
+            // Inside the `do`: a copy that throws partway (disk full) can
+            // leave a partial hidden staging file, removed below like any other.
+            try copyFile(source, staging)
+            quarantine(staging)
             if FileManager.default.fileExists(atPath: destination.path) {
                 _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
             } else {

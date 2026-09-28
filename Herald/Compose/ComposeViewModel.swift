@@ -327,7 +327,11 @@ final class ComposeViewModel {
         // A sent or discarded composer owns nothing anymore: the programmatic
         // dismissal that follows `send()` still passes through windowShouldClose,
         // and must never turn into a "save or discard?" sheet (real-run finding).
-        guard !isClosed, draft.isDirty else { return false }
+        guard !isClosed else { return false }
+        // Text typed after the last token is not in the draft yet, but it is
+        // work the user would lose: the close paths commit it before saving.
+        if hasPendingRecipientText { return true }
+        guard draft.isDirty else { return false }
         return draft.to != initialDraft.to
             || draft.fromAddress != initialDraft.fromAddress
             || draft.mailboxID != initialDraft.mailboxID
@@ -412,6 +416,11 @@ final class ComposeViewModel {
 
     func pendingText(for field: Field) -> String { pendingTexts[field] ?? "" }
 
+    /// Whether any field holds uncommitted (non-blank) recipient text.
+    var hasPendingRecipientText: Bool {
+        pendingTexts.values.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     /// The committed tokens of a field, parsed from its string.
     func tokens(for field: Field) -> [RecipientToken] {
         RecipientTokens.tokens(in: text(for: field), names: knownNames)
@@ -419,10 +428,14 @@ final class ComposeViewModel {
 
     /// The token field's text input. Typing a separator commits everything
     /// before it; the fragment after stays pending.
-    func setPendingText(_ typed: String, for field: Field) {
+    /// Returns whether the split rewrote the pending text (something
+    /// committed), so the caller can push the new value into the field editor.
+    @discardableResult
+    func setPendingText(_ typed: String, for field: Field) -> Bool {
         let split = RecipientTokens.splitTyped(typed)
         if !split.commit.isEmpty { setText(RecipientTokens.committing(split.commit, onto: text(for: field)), for: field) }
         pendingTexts[field] = split.pending
+        return split.pending != typed
     }
 
     /// Commits a field's pending text as token(s).
@@ -509,7 +522,16 @@ final class ComposeViewModel {
     var isSendEnabled: Bool {
         guard !isSendBlocked else { return false }
         let all = [Field.to, .cc, .bcc].flatMap { recipients(in: $0) }
-        return !all.isEmpty && all.allSatisfy(EmailAddress.isValid)
+        return Self.hasEnoughRecipients(count: all.count, isReply: draft.mode.replyToMessageID != nil)
+            && all.allSatisfy(EmailAddress.isValid)
+    }
+
+    /// The ONE recipient-count rule, shared by the Send button and ``send()``
+    /// (so the button and ⌘⇧D agree): a reply may go with none — the server
+    /// routes an omitted `to` to the original's Reply-To/sender — anything
+    /// else needs at least one.
+    nonisolated static func hasEnoughRecipients(count: Int, isReply: Bool) -> Bool {
+        count > 0 || isReply
     }
 
     func hint(for field: Field) -> String? {
@@ -704,6 +726,15 @@ final class ComposeViewModel {
             }
         } catch {
             logger.warning("Signatures unavailable: \(error.logCode, privacy: .public)")
+            // The new address's list is unknowable, so a hand-picked signature
+            // from the OLD address cannot be shown valid — and the server would
+            // refuse it. Fall back to automatic, as the success path would.
+            guard address == draft.fromAddress, revalidatesSignatureOnLoad else { return }
+            revalidatesSignatureOnLoad = false
+            if case .selected = draft.signature {
+                draft.signature = .automatic
+                edited(true)
+            }
         }
     }
 
@@ -974,6 +1005,7 @@ final class ComposeViewModel {
     /// autosave delay — which is most closes, since the last thing the user does
     /// is type — threw away everything typed since the previous save.
     func flushAndStop() async {
+        if !isClosed { commitAllPending() }
         cancelAutosave()
         autosaveTask = nil
         // Whatever else happens, the window is going away: the poll must get its
@@ -1040,7 +1072,7 @@ final class ComposeViewModel {
             record(.sendFailed(kind: .invalidRecipient))
             return false
         }
-        if draft.allRecipients.isEmpty, draft.mode.replyToMessageID == nil {
+        if !Self.hasEnoughRecipients(count: draft.allRecipients.count, isReply: draft.mode.replyToMessageID != nil) {
             status = .failed(OutboxError.noRecipients.localizedDescription)
             record(.sendFailed(kind: .noRecipients))
             return false
@@ -1121,6 +1153,7 @@ final class ComposeViewModel {
 
     /// Closes without deleting the server draft — "Save" in the close sheet.
     func saveAndClose() async {
+        commitAllPending()
         cancelAutosave()
         // The close sheet's Save Draft on a composer whose account is gone:
         // nothing can be saved, and the window must say so — `saveNow` returns

@@ -97,6 +97,12 @@ nonisolated enum AccessibilityID {
         static let domainMailboxTable = "settings.domain.mailboxTable"
         /// Settings › Domain › Signatures' "New Signature" button.
         static let domainNewSignature = "settings.domain.newSignature"
+        /// Settings › Domain › Remove domain's "Hide Domain" button.
+        static let hideDomain = "settings.domain.hide"
+        /// Its "Open in HQBase Admin ↗" button.
+        static let openAdmin = "settings.domain.openAdmin"
+        /// Each Hidden Domains row's Restore button: `restoreDomainPrefix + <domainID>`.
+        static let restoreDomainPrefix = "settings.domain.restore."
     }
 
     /// The conversation list (middle column).

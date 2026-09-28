@@ -19,6 +19,7 @@ struct DomainPreferencesTests {
         #expect(DomainPreferences.notifyKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.notify")
         #expect(DomainPreferences.hiddenKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.hidden")
         #expect(DomainPreferences.hiddenAtKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.hiddenAt")
+        #expect(DomainPreferences.hiddenNameKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.hiddenName")
     }
 
     /// `accountID`/`domainID` are percent-escaped (`.` → `%2E`, `%` → `%25`)
@@ -138,6 +139,31 @@ struct DomainPreferencesTests {
         DomainPreferences.setHidden(true, accountID: "a", domainID: "d", in: defaults, now: second)
 
         #expect(DomainPreferences.hiddenAt(accountID: "a", domainID: "d", in: defaults) == second)
+    }
+
+    /// R9: the name captured at hide time (the Hidden Domains list's fallback
+    /// once the domain's mailboxes are gone from the account's cache) rounds
+    /// through the same hide/restore lifecycle as `hidden`/`hiddenAt` — set
+    /// together, cleared together.
+    @Test("A hidden name is stored alongside hidden/hiddenAt and cleared on restore")
+    func hiddenNameRoundTrips() {
+        let defaults = makeDefaults()
+        #expect(DomainPreferences.hiddenName(accountID: "a", domainID: "d", in: defaults) == nil)
+
+        DomainPreferences.setHidden(true, accountID: "a", domainID: "d", in: defaults, name: "acme.co")
+        #expect(DomainPreferences.hiddenName(accountID: "a", domainID: "d", in: defaults) == "acme.co")
+
+        DomainPreferences.setHidden(false, accountID: "a", domainID: "d", in: defaults)
+        #expect(DomainPreferences.hiddenName(accountID: "a", domainID: "d", in: defaults) == nil, "Restoring clears it too")
+    }
+
+    /// Hiding with no name (the caller had none to offer) must not write a
+    /// stale empty string that would outrank the id fallback later.
+    @Test("Hiding with no name leaves hiddenName unset")
+    func hidingWithNoNameLeavesHiddenNameUnset() {
+        let defaults = makeDefaults()
+        DomainPreferences.setHidden(true, accountID: "a", domainID: "d", in: defaults)
+        #expect(DomainPreferences.hiddenName(accountID: "a", domainID: "d", in: defaults) == nil)
     }
 
     // MARK: - hiddenDomainIDs(accountID:in:)

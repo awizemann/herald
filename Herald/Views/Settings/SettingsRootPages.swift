@@ -242,6 +242,16 @@ struct AccountSettingsPage: View {
                     }
                 }
             }
+            // R9: a domain's own Remove-domain page (where the design puts this
+            // list) is only reachable from a domain the sidebar still shows —
+            // hide every domain on the account and the Domains section, and
+            // every domain's Remove-domain page, disappear with them. Shown
+            // here too, but ONLY once there is something to restore, so the
+            // common case (nothing hidden) does not carry a second empty
+            // "Hidden domains" card the design never puts on this page.
+            if !environment.hiddenDomains(accountID: account.id).isEmpty {
+                HiddenDomainsSection(accountID: account.id, tint: environment.accountTint(for: account.id))
+            }
             SettingsCard {
                 HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
                     VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {

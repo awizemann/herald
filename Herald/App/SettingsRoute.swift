@@ -173,3 +173,65 @@ nonisolated struct SettingsDomainItem: Hashable, Sendable, Identifiable {
             .map { SettingsDomainItem(domain: $0, monogram: monograms[$0.id] ?? DomainMonogram.derive(from: $0.name)) }
     }
 }
+
+/// A hidden domain as the "HIDDEN DOMAINS" list shows it (R9, handoff §3.2
+/// "Remove domain"): enough to draw and restore the row even after the
+/// domain's mailboxes have left the account's current snapshot — at that
+/// point only ``DomainPreferences/hiddenDomainIDs(accountID:in:)`` still knows
+/// it existed, so `mailboxCount` reads 0 and `name` falls back to whatever was
+/// captured at hide time (``DomainPreferences/hiddenName(accountID:domainID:in:)``),
+/// then to the raw id — this list never drops a domain the user can still
+/// restore, it only runs out of details to show about it.
+nonisolated struct HiddenDomainItem: Hashable, Sendable, Identifiable {
+    let id: MailDomain.ID
+    let name: String
+    let monogram: String
+    let mailboxCount: Int
+    let hiddenAt: Date?
+
+    /// Every domain hidden for this account, newest hide first (ties broken by
+    /// id for a stable order in tests and in the list itself). Monograms are
+    /// resolved across every CURRENT domain (hidden ones included, matching
+    /// ``SettingsDomainItem/visible(mailboxes:accountID:defaults:)``); a domain
+    /// no longer derivable from `mailboxes` gets its monogram derived fresh
+    /// from whatever name this function falls back to, since it has no seat at
+    /// that clash-resolution table any more.
+    @MainActor static func hidden(
+        mailboxes: [Mailbox],
+        accountID: String,
+        defaults: UserDefaults
+    ) -> [HiddenDomainItem] {
+        let domains = MailDomain.domains(from: mailboxes)
+        let byID = Dictionary(uniqueKeysWithValues: domains.map { ($0.id, $0) })
+        var overrides: [MailDomain.ID: String] = [:]
+        for domain in domains {
+            if let raw = DomainPreferences.monogramOverride(accountID: accountID, domainID: domain.id, in: defaults) {
+                overrides[domain.id] = raw
+            }
+        }
+        let monograms = DomainMonogram.assign(domains: domains, overrides: overrides)
+        return DomainPreferences.hiddenDomainIDs(accountID: accountID, in: defaults)
+            .map { id -> HiddenDomainItem in
+                let domain = byID[id]
+                let name = domain?.name
+                    ?? DomainPreferences.hiddenName(accountID: accountID, domainID: id, in: defaults)
+                    ?? id
+                let monogram = domain.flatMap { monograms[$0.id] } ?? DomainMonogram.derive(from: name)
+                return HiddenDomainItem(
+                    id: id,
+                    name: name,
+                    monogram: monogram,
+                    mailboxCount: domain?.mailboxIDs.count ?? 0,
+                    hiddenAt: DomainPreferences.hiddenAt(accountID: accountID, domainID: id, in: defaults)
+                )
+            }
+            .sorted { lhs, rhs in
+                switch (lhs.hiddenAt, rhs.hiddenAt) {
+                case let (l?, r?) where l != r: l > r
+                case (nil, .some): false
+                case (.some, nil): true
+                default: lhs.id < rhs.id
+                }
+            }
+    }
+}

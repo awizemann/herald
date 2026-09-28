@@ -160,6 +160,15 @@ final class MailViewModel {
         }
     }
 
+    /// The event vocabulary's name for a scope — its kind, never its id.
+    nonisolated static func scopeKind(for scope: Scope) -> UsageScopeKind {
+        switch scope {
+        case .allDomains: .allDomains
+        case .domain: .domain
+        case .mailbox: .mailbox
+        }
+    }
+
     /// The event vocabulary's name for a list folder.
     nonisolated static func viewKind(for folder: Folder) -> UsageViewKind {
         switch folder {
@@ -354,6 +363,10 @@ final class MailViewModel {
         // means a new wire name and a new fixture id — an analytics change that
         // belongs with the rest of the vocabulary. Its source is still consumed
         // above, so a click cannot leave a stale `via` behind.
+        if let via, target.scope != old.scope {
+            // Before the view it produces, so a funnel reads "moved, then saw".
+            record(.scopeChanged(to: Self.scopeKind(for: target.scope), via: via))
+        }
         if let via, target.scope != old.scope || target.folder != old.folder {
             recordViewShown(Self.viewKind(for: target.folder), via: via)
         }

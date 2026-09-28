@@ -369,6 +369,58 @@ private struct UsageHarness {
 }
 
 @MainActor
+@Suite(.scratchDefaults) struct UsageScopeChangeTests {
+
+    /// Drilling through the sidebar's three levels and back out is how a person
+    /// moves between domains. Fails if a drill in, a back, or the All domains
+    /// row is silent, if a folder change is miscounted as a scope change, or if
+    /// the event ever carries more than the scope's kind.
+    @Test func sidebarDrillInAndOutRecordsEachScopeChange() async throws {
+        let harness = try await UsageHarness.make()
+        await harness.model.start()
+        try await harness.store.upsertMailboxes([UsageHarness.mailbox("mbA")], accountID: "acct")
+        await harness.model.reloadMailboxes()
+        let domain = try #require(harness.model.domains.first)
+
+        harness.model.activate(.domain(domain.id))
+        harness.model.activate(.mailbox("mbA"))
+        harness.model.activate(.folder(.conversation(.trash)))
+        harness.model.sidebarBack()
+        harness.model.sidebarBack()
+        harness.model.activate(.domain(domain.id))
+        harness.model.activate(.allDomains)
+
+        let scopes = await harness.recorded().filter { $0.name == "scope_changed" }
+        #expect(scopes == [
+            .scopeChanged(to: .domain, via: .sidebar),
+            .scopeChanged(to: .mailbox, via: .sidebar),
+            .scopeChanged(to: .domain, via: .sidebar),
+            .scopeChanged(to: .allDomains, via: .sidebar),
+            .scopeChanged(to: .domain, via: .sidebar),
+            .scopeChanged(to: .allDomains, via: .sidebar),
+        ])
+    }
+
+    /// A scope correction nobody asked for (a restored mailbox that no longer
+    /// exists) is not the user changing domains. Fails if it is reported.
+    @Test func aSilentScopeCorrectionIsNotReported() async throws {
+        let defaults = ScratchDefaults.make()
+        NavigationPersistence.save(
+            MailViewModel.Location(scope: .mailbox("gone"), folder: .inbox, labelID: nil),
+            accountID: "acct", to: defaults
+        )
+        let harness = try await UsageHarness.make(navigationDefaults: defaults)
+        await harness.model.start()
+        try await harness.store.upsertMailboxes([UsageHarness.mailbox("mbA")], accountID: "acct")
+        await harness.model.reloadMailboxes()
+        #expect(harness.model.scope == .allDomains)
+
+        let names = await harness.recorded().map(\.name)
+        #expect(!names.contains("scope_changed"))
+    }
+}
+
+@MainActor
 @Suite(.scratchDefaults) struct UsageSearchTests {
 
     /// A search is what the user COMMITTED, not what the debounce pushed. Fails if

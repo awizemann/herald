@@ -68,6 +68,14 @@ nonisolated enum UsageViewTrigger: String, Sendable, Hashable, CaseIterable {
     case launch, sidebar, search, notification, shortcut, other
 }
 
+/// Which sidebar level a scope change lands on — the scope's KIND only, never
+/// which domain or mailbox (those are identifiers).
+nonisolated enum UsageScopeKind: String, Sendable, Hashable, CaseIterable {
+    case allDomains = "all_domains"
+    case domain
+    case mailbox
+}
+
 nonisolated enum UsageSyncTrigger: String, Sendable, Hashable, CaseIterable {
     case manual, auto, launch
 }
@@ -269,6 +277,9 @@ nonisolated enum UsageValue: Sendable, Hashable {
 /// until it is.
 nonisolated enum UsageEvent: Sendable, Hashable {
     case viewShown(view: UsageViewKind, via: UsageViewTrigger)
+    /// The window's scope moved (sidebar drill in / back out, the All domains
+    /// row, a notification landing elsewhere). Only the destination's kind.
+    case scopeChanged(to: UsageScopeKind, via: UsageViewTrigger)
     case syncCompleted(trigger: UsageSyncTrigger, changed: Bool)
     case syncFailed(kind: UsageMailErrorKind, trigger: UsageSyncTrigger)
     case messageActionPerformed(action: UsageMessageAction, scope: UsageActionScope, count: UsageBucket)
@@ -292,11 +303,6 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case accountRemoved
     case accountSwitched(accounts: UsageBucket)
     case notificationsToggled(enabled: Bool)
-    /// NO LONGER EMITTED: per-mailbox colours were removed in the redesign
-    /// (R3b). Kept because `mailbox_color_changed` is part of the approved,
-    /// fixture-pinned wire vocabulary — dropping the case is a vocabulary
-    /// change, which belongs with the rest of the vocabulary's next revision.
-    case mailboxColorChanged
     case updateCheckRequested
     case launchFailed(kind: UsageLaunchFailureKind)
 
@@ -305,6 +311,7 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     var name: String {
         switch self {
         case .viewShown: "view_shown"
+        case .scopeChanged: "scope_changed"
         case .syncCompleted: "sync_completed"
         case .syncFailed: "sync_failed"
         case .messageActionPerformed: "message_action_performed"
@@ -324,7 +331,6 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .accountRemoved: "account_removed"
         case .accountSwitched: "account_switched"
         case .notificationsToggled: "notifications_toggled"
-        case .mailboxColorChanged: "mailbox_color_changed"
         case .updateCheckRequested: "update_check_requested"
         case .launchFailed: "launch_failed"
         }
@@ -336,6 +342,8 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         switch self {
         case .viewShown(let view, let via):
             ["view": .string(view.rawValue), "via": .string(via.rawValue)]
+        case .scopeChanged(let to, let via):
+            ["to": .string(to.rawValue), "via": .string(via.rawValue)]
         case .syncCompleted(let trigger, let changed):
             ["trigger": .string(trigger.rawValue), "changed": .bool(changed)]
         case .syncFailed(let kind, let trigger):
@@ -365,7 +373,7 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .sendFailed(let kind):
             ["kind": .string(kind.rawValue)]
         case .composeDiscarded, .draftDeleted, .attachmentSaved, .remoteMediaLoaded,
-            .accountRemoved, .mailboxColorChanged, .updateCheckRequested:
+            .accountRemoved, .updateCheckRequested:
             [:]
         case .accountAdded(let outcome, let kind):
             {

@@ -22,6 +22,7 @@ import Testing
     static let viaTriggers: Set<String> = [
         "launch", "sidebar", "search", "notification", "shortcut", "other",
     ]
+    static let scopeKinds: Set<String> = ["all_domains", "domain", "mailbox"]
     static let syncTriggers: Set<String> = ["manual", "auto", "launch"]
     static let messageActions: Set<String> = [
         "read", "unread", "star", "unstar", "archive", "unarchive", "trash", "restore",
@@ -53,6 +54,7 @@ import Testing
     /// A key mapped to `nil` is a non-string (Bool) prop.
     static let vocabulary: [String: [String: Set<String>?]] = [
         "view_shown": ["view": views, "via": viaTriggers],
+        "scope_changed": ["to": scopeKinds, "via": viaTriggers],
         "sync_completed": ["trigger": syncTriggers, "changed": Set<String>?.none],
         "sync_failed": ["kind": mailErrorKinds, "trigger": syncTriggers],
         "message_action_performed": [
@@ -80,7 +82,6 @@ import Testing
         "account_removed": [:],
         "account_switched": ["accounts": buckets],
         "notifications_toggled": ["enabled": Set<String>?.none],
-        "mailbox_color_changed": [:],
         "update_check_requested": [:],
         "launch_failed": ["kind": launchFailureKinds],
     ]
@@ -155,6 +156,7 @@ import Testing
         #expect(Set(UsageBucket.allCases.map(\.rawValue)) == Self.buckets)
         #expect(Set(UsageViewKind.allCases.map(\.rawValue)) == Self.views)
         #expect(Set(UsageViewTrigger.allCases.map(\.rawValue)) == Self.viaTriggers)
+        #expect(Set(UsageScopeKind.allCases.map(\.rawValue)) == Self.scopeKinds)
         #expect(Set(UsageSyncTrigger.allCases.map(\.rawValue)) == Self.syncTriggers)
         #expect(Set(UsageMessageAction.allCases.map(\.rawValue)) == Self.messageActions)
         #expect(Set(UsageActionScope.allCases.map(\.rawValue)) == Self.actionScopes)

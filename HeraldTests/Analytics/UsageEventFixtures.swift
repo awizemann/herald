@@ -36,7 +36,7 @@ nonisolated enum UsageEventFixtures {
         .accountRemoved,
         .accountSwitched(accounts: .twentyPlus),
         .notificationsToggled(enabled: true),
-        .mailboxColorChanged,
+        .scopeChanged(to: .allDomains, via: .sidebar),
         .updateCheckRequested,
         .launchFailed(kind: .cache),
     ]
@@ -67,7 +67,7 @@ nonisolated enum UsageEventFixtures {
         case .accountRemoved: 17
         case .accountSwitched: 18
         case .notificationsToggled: 19
-        case .mailboxColorChanged: 20
+        case .scopeChanged: 20
         case .updateCheckRequested: 21
         case .launchFailed: 22
         }

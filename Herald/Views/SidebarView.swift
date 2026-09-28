@@ -40,7 +40,7 @@ struct SidebarView: View {
         let level = model.sidebarLevel
         let preferences = environment.domainPreferencesObserved()
         let tint = environment.accountTint(for: model.accountID)
-        let monograms = DomainBadgeResolver.monograms(for: model.domains, accountID: model.accountID, in: preferences)
+        let monograms = DomainBadgeResolver.monograms(for: model.monogramDomains, accountID: model.accountID, in: preferences)
         let density = ListDensity(rawValue: densityRaw) ?? .comfortable
         List(selection: selection) {
             switch level {

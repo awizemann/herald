@@ -54,7 +54,7 @@ extension MailViewModel {
         guard level != .none else { return .empty }
         var overrides: [MailDomain.ID: String] = [:]
         if level == .domainAndMailbox {
-            for domain in domains {
+            for domain in monogramDomains {
                 if let override = DomainPreferences.monogramOverride(
                     accountID: accountID, domainID: domain.id, in: defaults
                 ) {
@@ -63,7 +63,8 @@ extension MailViewModel {
             }
         }
         return ListColumn.AttributionIndex.make(
-            level: level, mailboxes: mailboxes, domains: domains,
+            // `monogramDomains`: clashes resolve over disabled domains too.
+            level: level, mailboxes: mailboxes, domains: monogramDomains,
             monogramOverrides: overrides, accountID: accountID
         )
     }

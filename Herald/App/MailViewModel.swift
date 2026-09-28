@@ -192,6 +192,14 @@ final class MailViewModel {
     /// their mail (sync is untouched), so every "every mailbox" fast path must
     /// check this is empty before taking it.
     private var disabledMailboxes: [Mailbox] = []
+    /// Every cached mailbox, disabled ones included — for monogram assignment
+    /// ONLY (``monogramDomains``, the reading pane's badge). Nothing listed,
+    /// counted or sent from reads this.
+    var monogramMailboxes: [Mailbox] { mailboxes + disabledMailboxes }
+    /// The domains of ``monogramMailboxes``. Monogram clashes are resolved over
+    /// these, so a domain the server disables never changes the letters
+    /// another domain shows — the same promise hiding a domain keeps.
+    private(set) var monogramDomains: [MailDomain] = []
     /// The account's domains, derived from ``mailboxes`` on every mailbox
     /// reload (``MailDomain/domains(from:)``) — a domain scope is the set of
     /// its mailboxes' ids, and nothing about it lives on the server.
@@ -1484,6 +1492,9 @@ final class MailViewModel {
                 }
             case .changed(let changes):
                 if !changes.isEmpty { passChangedAnything = true }
+                // A mailbox the same pass switched off must be silenced
+                // before its mail is announced.
+                if await touchesMailbox(changes) { await reloadMailboxes() }
                 // Before the reloads: the banner is about what ARRIVED, and the
                 // reload path can take several store round trips.
                 await notifyNewMail(changes)
@@ -1642,6 +1653,15 @@ final class MailViewModel {
         return .domain(domain.id)
     }
 
+    /// Whether a change names a cached mailbox row (inserted or updated). One
+    /// read of the account's (small) mailbox list.
+    private func touchesMailbox(_ changes: ChangeSet) async -> Bool {
+        guard !changes.isEmpty,
+              let ids = try? await store.mailboxes(accountID: accountID).map(\.id)
+        else { return false }
+        return !changes.touched.isDisjoint(with: ids)
+    }
+
     /// Reloads only the slices a change actually touched.
     ///
     /// The ``ChangeSet`` carries bare ids, so each one is resolved against the
@@ -1761,14 +1781,26 @@ final class MailViewModel {
     func reloadMailboxes() async {
         do {
             let loaded = try await store.mailboxes(accountID: accountID)
+            let wasLoaded = !monogramMailboxes.isEmpty
+            let wasDisabled = Set(disabledMailboxes.map(\.id))
             // THE filter for server-disabled mailboxes and domains (see
             // ``mailboxes``). A scope standing on one that just went away falls
             // back to All domains in `correctStaleScope()`, like a hidden domain.
             mailboxes = loaded.filter(\.isEnabled)
             disabledMailboxes = loaded.filter { !$0.isEnabled }
             domains = MailDomain.domains(from: mailboxes)
+            monogramDomains = MailDomain.domains(from: loaded)
             mailboxNames = Self.makeMailboxNames(loaded)
+            let before = location
             correctStaleScope()
+            // A server-side flip changes what a still-valid scope (All domains,
+            // a domain keeping other mailboxes) lists, and nothing else would
+            // reload it: the change that carried it names only the mailbox.
+            // A scope correction already reloads through `navigate`.
+            if wasLoaded, Set(disabledMailboxes.map(\.id)) != wasDisabled, location == before {
+                await reloadConversations()
+                await reloadDrafts()
+            }
         } catch {
             logger.error("Mailbox load failed: \(error.localizedDescription, privacy: .private)")
         }
@@ -2210,19 +2242,19 @@ final class MailViewModel {
         EmailAddress.dedupe((mailboxes + disabledMailboxes).flatMap { [$0.address] + $0.addresses.map(\.address) })
     }
 
-    /// The mailbox a message from `mailboxID` is sent from: that mailbox, or
-    /// the first enabled one when it is unknown or disabled at the server — a
-    /// disabled mailbox's address is never offered.
-    func sendingMailbox(for mailboxID: String?) -> Mailbox? {
-        mailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first
-    }
-
     /// The address a message from `mailboxID` should be sent from: the mailbox's
-    /// primary send-enabled address, falling back to its main address.
+    /// primary send-enabled address, falling back to its main address. A
+    /// disabled mailbox still answers with its OWN address (a stored draft
+    /// keeps the From that matches its mailbox — the server refuses the send);
+    /// ``composeContext(for:)`` keeps new mail and replies off disabled ones.
     func sendAddress(forMailbox mailboxID: String?) -> String {
-        guard let mailbox = sendingMailbox(for: mailboxID) else { return "" }
+        guard let mailbox = monogramMailboxes.first(where: { $0.id == mailboxID }) ?? mailboxes.first else {
+            return ""
+        }
         return mailbox.sendableAddresses.first?.address ?? mailbox.address
     }
+
+    static let disabledMailboxReplyError = "This mailbox is turned off on the server, so you can't reply from it."
 
     /// Resolves a compose request into everything the composer needs.
     ///
@@ -2272,10 +2304,15 @@ final class MailViewModel {
             }
         }
         var mailboxID = message?.summary.mailboxID ?? request.mailboxID
-        // A mailbox disabled at the server sends from the enabled one its From
-        // address comes from, so the draft and its From agree.
         if let id = mailboxID, disabledMailboxes.contains(where: { $0.id == id }) {
-            mailboxID = sendingMailbox(for: id)?.id ?? id
+            // A reply or forward belongs to its mailbox: sending it from
+            // another one would silently change who the customer hears from.
+            guard request.kind == .new else {
+                actionError = Self.disabledMailboxReplyError
+                return nil
+            }
+            // A brand-new message has no such tie: the first enabled mailbox.
+            mailboxID = mailboxes.first?.id
         }
         return ComposeContext(
             id: request.id,

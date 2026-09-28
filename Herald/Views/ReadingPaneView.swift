@@ -51,7 +51,7 @@ struct ReadingPaneView: View {
                 labels: model.selectedMessageLabels,
                 mailboxAddress: model.selectedMessage.map {
                     ReadingPaneMailboxAddress.resolve(
-                        for: $0, mailboxes: model.mailboxes, accountID: model.accountID,
+                        for: $0, mailboxes: model.monogramMailboxes, accountID: model.accountID,
                         tintName: model.accountTint?.name, in: model.defaults
                     )
                 }

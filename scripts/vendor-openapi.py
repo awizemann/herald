@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Normalise the vendored HQBase Mail API v1 spec for swift-openapi-generator.
 
-Two independent rewrites, both working around swift-openapi-generator 1.7 gaps.
+Three independent rewrites: two work around swift-openapi-generator 1.7 gaps,
+the third keeps Herald compatible with older HQBase servers.
 
 1. NULLABLE PROPERTIES. The upstream spec expresses nullable properties as OAS 3.1
 `anyOf: [ {..}, {type: "null"} ]`. swift-openapi-generator 1.7 does not support
@@ -27,6 +28,13 @@ properties are all optional; the "at least one" rule is a server-side validation
 that the client cannot usefully enforce at the type level anyway (the server
 answers 400 SIGNATURE_INVALID).
 
+3. KEEP OPTIONAL. Fields upstream added later than the servers Herald still
+supports. Upstream may list them as `required` (its own server always sends
+them), but an older server omits them — and a REQUIRED field generates a
+non-optional Swift property whose absence fails the whole decode (keyNotFound),
+i.e. every sync against that server. Each name in `KEEP_OPTIONAL` is dropped
+from its schema's `required` list; `Mapping.swift` supplies the default.
+
 Usage (idempotent):
     python3 scripts/vendor-openapi.py [path-to-openapi.json]
 
@@ -39,6 +47,12 @@ import sys
 from pathlib import Path
 
 DEFAULT = Path(__file__).resolve().parent.parent / "HeraldKit/Sources/HeraldAPI/openapi.json"
+
+# schema name -> properties that must stay optional (see rewrite 3 above).
+KEEP_OPTIONAL = {
+    # Domain-level "Active" switch; absent on servers that predate it (= enabled).
+    "MailboxAddress": ["domainEnabled"],
+}
 
 
 def is_null_schema(schema):
@@ -99,15 +113,33 @@ def walk(node, changed, collapsed):
     return node
 
 
+def keep_optional(spec, kept):
+    """Remove each KEEP_OPTIONAL property from its schema's `required` list."""
+    schemas = spec.get("components", {}).get("schemas", {})
+    for schema_name, names in KEEP_OPTIONAL.items():
+        schema = schemas.get(schema_name)
+        if not isinstance(schema, dict) or not isinstance(schema.get("required"), list):
+            continue
+        for name in names:
+            if name in schema["required"]:
+                schema["required"].remove(name)
+                kept.append(f"{schema_name}.{name}")
+        if not schema["required"]:
+            del schema["required"]
+
+
 def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT
     spec = json.loads(path.read_text())
     changed = []
     collapsed = []
     spec = walk(spec, changed, collapsed)
+    kept = []
+    keep_optional(spec, kept)
     path.write_text(json.dumps(spec, indent=2) + "\n")
     print(f"{path}: relaxed {len(changed)} nullable properties: {sorted(set(changed))}")
     print(f"{path}: collapsed {len(collapsed)} at-least-one-of objects: {collapsed}")
+    print(f"{path}: kept {len(kept)} properties optional: {kept}")
 
 
 if __name__ == "__main__":

@@ -147,11 +147,13 @@ nonisolated struct SettingsDomainItem: Hashable, Sendable, Identifiable {
     var id: MailDomain.ID { domain.id }
 
     /// The account's domains that Settings lists — every derived domain except
-    /// the hidden ones (R9's Hidden Domains list is where those come back).
+    /// the hidden ones (R9's Hidden Domains list is where those come back) and
+    /// those with no mailbox left enabled at the server (``Mailbox/isEnabled``;
+    /// only the server can switch them back on). Pass EVERY cached mailbox.
     ///
-    /// Monograms are assigned across ALL of the account's domains, hidden ones
-    /// included, so hiding a domain never changes the letters another domain
-    /// already shows everywhere else. Main-actor because `MailDomain.domains`
+    /// Monograms are assigned across ALL of the account's domains, hidden and
+    /// server-disabled ones included, so neither changes the letters another
+    /// domain already shows everywhere else. Main-actor because `MailDomain.domains`
     /// is (HeraldKit is default-MainActor).
     @MainActor static func visible(
         mailboxes: [Mailbox],
@@ -166,7 +168,7 @@ nonisolated struct SettingsDomainItem: Hashable, Sendable, Identifiable {
             }
         }
         let monograms = DomainMonogram.assign(domains: domains, overrides: overrides)
-        return domains
+        return MailDomain.domains(from: mailboxes.filter(\.isEnabled))
             .filter { !DomainPreferences.isHidden(accountID: accountID, domainID: $0.id, in: defaults) }
             .map { SettingsDomainItem(domain: $0, monogram: monograms[$0.id] ?? DomainMonogram.derive(from: $0.name)) }
     }

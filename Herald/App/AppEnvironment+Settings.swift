@@ -50,7 +50,7 @@ extension AppEnvironment {
     /// The account's domains the Settings sidebar lists — hidden ones excluded.
     func settingsDomains(accountID: Account.ID) -> [SettingsDomainItem] {
         SettingsDomainItem.visible(
-            mailboxes: graphs[accountID]?.mail.mailboxes ?? [],
+            mailboxes: graphs[accountID]?.mail.monogramMailboxes ?? [],
             accountID: accountID,
             defaults: domainPreferencesObserved()
         )

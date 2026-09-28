@@ -20,7 +20,7 @@ struct TriageButtons: View {
     var body: some View {
         if model.offersArchiveAction {
             Button { Task { await model.performOnSelection(.archive) } } label: {
-                Image(systemName: "archivebox")
+                Image(systemName: MailTheme.Symbol.archive)
                     .iconButtonStyle("Archive")
             }
             .disabled(model.selectedThreadID == nil)
@@ -37,7 +37,7 @@ struct TriageButtons: View {
 
         if model.offersTrashAction {
             Button { Task { await model.performOnSelection(.trash) } } label: {
-                Image(systemName: "trash")
+                Image(systemName: MailTheme.Symbol.trash)
                     .iconButtonStyle("Move to Trash")
             }
             .disabled(model.selectedThreadID == nil)
@@ -58,19 +58,19 @@ struct ReplyForwardButtons: View {
 
     var body: some View {
         Button { model.requestCompose(.reply) } label: {
-            Image(systemName: "arrowshape.turn.up.left")
+            Image(systemName: MailTheme.Symbol.reply)
                 .iconButtonStyle("Reply")
         }
         .disabled(model.selectedMessageID == nil)
 
         Button { model.requestCompose(.replyAll) } label: {
-            Image(systemName: "arrowshape.turn.up.left.2")
+            Image(systemName: MailTheme.Symbol.replyAll)
                 .iconButtonStyle("Reply All")
         }
         .disabled(model.selectedMessageID == nil)
 
         Button { model.requestCompose(.forward) } label: {
-            Image(systemName: "arrowshape.turn.up.right")
+            Image(systemName: MailTheme.Symbol.forward)
                 .iconButtonStyle("Forward")
         }
         .disabled(model.selectedMessageID == nil)

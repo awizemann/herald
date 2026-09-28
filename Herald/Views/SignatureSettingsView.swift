@@ -51,7 +51,7 @@ struct SignatureSettingsPane: View {
         Form {
             if let actionError = model.actionError {
                 Section {
-                    Label(actionError, systemImage: "exclamationmark.triangle")
+                    Label(actionError, systemImage: MailTheme.Symbol.warning)
                         .foregroundStyle(MailTheme.failure)
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
@@ -179,12 +179,12 @@ struct SignatureStateMessagePane: View {
             ) {}
         case .unsupportedByServer:
             SignatureMessagePane(
-                symbol: "exclamationmark.triangle",
+                symbol: MailTheme.Symbol.warning,
                 title: "Server too old",
                 message: "This server cannot manage signatures. It needs HQBase 1.4.2 or newer."
             ) {}
         case .failed(let message):
-            SignatureMessagePane(symbol: "exclamationmark.triangle", title: "Signatures could not be loaded", message: message) {
+            SignatureMessagePane(symbol: MailTheme.Symbol.warning, title: "Signatures could not be loaded", message: message) {
                 Button("Try Again") { Task { await model.load() } }
             }
         }
@@ -251,7 +251,7 @@ private struct SignatureRow: View {
                 Button {
                     model.pendingDeletion = signature
                 } label: {
-                    Image(systemName: "trash")
+                    Image(systemName: MailTheme.Symbol.trash)
                 }
                 // An icon-only button is an unlabelled element to VoiceOver and
                 // has no Voice Control name; both come from here.
@@ -355,7 +355,7 @@ private struct SignatureEditorSheet: View {
             .frame(minHeight: 160)
 
             if let fieldError = editor.fieldError {
-                Label(fieldError, systemImage: "exclamationmark.triangle")
+                Label(fieldError, systemImage: MailTheme.Symbol.warning)
                     .foregroundStyle(MailTheme.failure)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)

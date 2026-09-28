@@ -42,7 +42,49 @@ enum MailTheme {
     /// The Drafts sidebar item. Its own tokens rather than a `title(for:)` case,
     /// because there is no folder value to switch on.
     nonisolated static let draftsTitle = "Drafts"
-    nonisolated static let draftsSymbol = "doc.text"
+    nonisolated static let draftsSymbol = Symbol.drafts
+
+    // MARK: Symbols
+
+    /// The SF Symbol map (handoff §5), one name per ROLE. Views spell a role,
+    /// never a symbol string, so a role that changes glyph changes everywhere.
+    /// Folder glyphs go through ``symbol(for:)``; these are the rest.
+    nonisolated enum Symbol {
+        static let drafts = "doc.text"
+        static let allDomains = "tray.2"
+        static let mailbox = "at"
+        static let label = "tag"
+        static let newMessage = "square.and.pencil"
+        static let refresh = "arrow.clockwise"
+        static let reply = "arrowshape.turn.up.left"
+        static let replyAll = "arrowshape.turn.up.left.2"
+        static let forward = "arrowshape.turn.up.right"
+        static let attachment = "paperclip"
+        static let sessionLock = "lock.fill"
+        /// Warning glyph — always the FILLED triangle (§5), inline errors too.
+        static let warning = "exclamationmark.triangle.fill"
+        static let remoteImages = "photo"
+        static let drillDown = "chevron.right"
+        static let back = "chevron.left"
+        static let accountSwitcher = "chevron.up.chevron.down"
+        static let domainSettings = "gearshape"
+        static let receiveSendOn = "checkmark.circle.fill"
+        static let receiveSendOff = "nosign"
+        static let hiddenDomain = "eye.slash"
+        static let openAdmin = "arrow.up.right.square"
+        static let folderMenu = "chevron.down"
+        static let currentItem = "checkmark"
+        static let clearLabelFilter = "xmark.circle.fill"
+        static let quickLook = "eye"
+        static let download = "arrow.down.circle"
+        static let downloadAll = "arrow.down.circle"
+        static let removeAttachment = "xmark"
+        static let archive = "archivebox"
+        static let trash = "trash"
+        static let send = "paperplane.fill"
+        static let nothingSelected = "envelope.open"
+        static let noResults = "magnifyingglass"
+    }
 
     // MARK: Colour tokens
 
@@ -259,7 +301,7 @@ enum MailTheme {
 
     /// The sidebar's Labels section header and its row symbol.
     static let labelsSectionTitle = "Labels"
-    static let labelSymbol = "tag"
+    static let labelSymbol = Symbol.label
 
     /// How many label chips a conversation row draws before it collapses the rest
     /// into a "+n" chip. A row that carries six labels must not push the sender
@@ -275,6 +317,10 @@ enum MailTheme {
     /// Minimum hit target for an icon-only control (the intrinsic ~18pt glyph is
     /// too small to click reliably and fails pointer-accessibility guidance).
     static let hitTarget: CGFloat = 28
+
+    /// An icon-only button's frame (handoff §1 "Hit target"): 30 wide × 28
+    /// tall — the 28pt minimum, a touch wider so adjacent glyphs don't crowd.
+    static let iconButtonSize = CGSize(width: 30, height: 28)
 
     /// Height of the sidebar's sync-status slot. FIXED and always occupied: the
     /// status used to appear and disappear, pushing the whole folder list down
@@ -620,7 +666,7 @@ extension View {
     /// Standard treatment for an icon-only button: real hit target, help tag and
     /// accessibility label always travel together.
     func iconButtonStyle(_ label: String) -> some View {
-        frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+        frame(width: MailTheme.iconButtonSize.width, height: MailTheme.iconButtonSize.height)
             .contentShape(Rectangle())
             .help(label)
             .accessibilityLabel(label)

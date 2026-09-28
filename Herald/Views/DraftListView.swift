@@ -118,7 +118,7 @@ struct DraftRow: View {
                 }
                 HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if draft.hasAttachments {
-                        Image(systemName: "paperclip")
+                        Image(systemName: MailTheme.Symbol.attachment)
                             .font(MailTheme.Typography.inlineGlyph)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)

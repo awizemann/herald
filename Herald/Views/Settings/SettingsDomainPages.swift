@@ -382,7 +382,7 @@ struct DomainMailboxRow: View {
     // draws in `ink2`, same as the "Off" state, which already passed.
     private func status(_ on: Bool, onLabel: String, offLabel: String) -> some View {
         HStack(spacing: MailTheme.Spacing.xxs) {
-            Image(systemName: on ? "checkmark.circle.fill" : "nosign")
+            Image(systemName: on ? MailTheme.Symbol.receiveSendOn : MailTheme.Symbol.receiveSendOff)
                 .foregroundStyle(on ? MailTheme.Color.ok : MailTheme.Color.ink3)
             Text(on ? "On" : "Off")
                 .textStyle(MailTheme.Typography.caption)
@@ -446,7 +446,7 @@ private struct DomainSignatureList: View {
     private var readyContent: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.md) {
             if let actionError = model.actionError {
-                Label(actionError, systemImage: "exclamationmark.triangle")
+                Label(actionError, systemImage: MailTheme.Symbol.warning)
                     .foregroundStyle(MailTheme.failure)
                     .textStyle(MailTheme.Typography.caption)
                     .fixedSize(horizontal: false, vertical: true)
@@ -538,7 +538,7 @@ private struct DomainSignatureRow: View {
                     Button("Delete", role: .destructive) { model.pendingDeletion = signature }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                        .frame(width: MailTheme.iconButtonSize.width, height: MailTheme.iconButtonSize.height)
                         .contentShape(Rectangle())
                 }
                 .menuStyle(.button)
@@ -622,7 +622,7 @@ struct DomainRemoveSettingsPage: View {
                         Button {
                             environment.openHQBaseAdmin(for: account)
                         } label: {
-                            Label("Open in HQBase Admin", systemImage: "arrow.up.right.square")
+                            Label("Open in HQBase Admin", systemImage: MailTheme.Symbol.openAdmin)
                         }
                         .buttonStyle(SettingsOutlineButtonStyle())
                         .disabled(adminURL == nil)

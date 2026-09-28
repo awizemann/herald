@@ -59,7 +59,7 @@ struct LaunchFailure: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Herald could not start", systemImage: "exclamationmark.triangle")
+            Label("Herald could not start", systemImage: MailTheme.Symbol.warning)
         } description: {
             Text(message)
         } actions: {
@@ -181,7 +181,7 @@ struct MailWindow: View {
         // "Get New Mail".
         ToolbarItem {
             Button { Task { await model.refresh() } } label: {
-                Image(systemName: "arrow.clockwise")
+                Image(systemName: MailTheme.Symbol.refresh)
                     .iconButtonStyle("Refresh")
             }
             .accessibilityIdentifier(AccessibilityID.Toolbar.refresh)
@@ -200,7 +200,7 @@ struct MailWindow: View {
             ReauthBanner(accountID: model.accountID)
         case .failed(let message):
             BannerView(
-                systemImage: "exclamationmark.triangle.fill",
+                systemImage: MailTheme.Symbol.warning,
                 tint: MailTheme.failure,
                 text: "Sync problem: \(message)",
                 identifiers: (AccessibilityID.SyncFailedBanner.container, AccessibilityID.SyncFailedBanner.message)
@@ -236,7 +236,7 @@ struct ReauthBanner: View {
         // and this keeps a stale line from sitting under "Signing you back in…".
         let failureReason = isReauthenticating ? nil : environment.reauthError(accountID: accountID)
         BannerView(
-            systemImage: "lock.fill",
+            systemImage: MailTheme.Symbol.sessionLock,
             tint: MailTheme.failure,
             text: Self.message(isReauthenticating: isReauthenticating),
             detail: failureReason.map(Self.failureDetail),
@@ -406,7 +406,7 @@ private struct NewMessageButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: MailTheme.Spacing.xs) {
-                Image(systemName: "square.and.pencil")
+                Image(systemName: MailTheme.Symbol.newMessage)
                 Text("New")
             }
             .textStyle(MailTheme.Typography.bodyMedium)

@@ -140,7 +140,7 @@ private struct SettingsRootRows: View {
                     } icon: {
                         DomainBadge(monogram: item.monogram, tint: environment.accountTint(for: accountID), size: .sidebar)
                     }
-                    .badge(Text(Image(systemName: "chevron.right")))
+                    .badge(Text(Image(systemName: MailTheme.Symbol.drillDown)))
                     .tag(SettingsRoute.domain(item.id, .overview))
                     // The name only — not the badge letters or the chevron.
                     .accessibilityLabel(item.domain.name)
@@ -254,7 +254,7 @@ private struct SettingsDomainHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
             Button(action: back) {
-                Label("Settings", systemImage: "chevron.left")
+                Label("Settings", systemImage: MailTheme.Symbol.back)
                     .foregroundStyle(MailTheme.Color.ink2)
                     .frame(minHeight: MailTheme.hitTarget)
                     .contentShape(Rectangle())
@@ -335,7 +335,7 @@ private struct SettingsAccountCard: View {
             .lineLimit(1)
             Spacer(minLength: 0)
             if switchable {
-                Image(systemName: "chevron.up.chevron.down")
+                Image(systemName: MailTheme.Symbol.accountSwitcher)
                     .foregroundStyle(MailTheme.Color.ink3)
                     .accessibilityHidden(true)
             }

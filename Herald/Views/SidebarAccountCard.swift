@@ -59,7 +59,7 @@ struct SidebarAccountCard: View {
             // the mouse only (a Button around the whole card would swallow the
             // status slot's own "Sign in again" button).
             Button { showsAccounts.toggle() } label: {
-                Image(systemName: "chevron.up.chevron.down")
+                Image(systemName: MailTheme.Symbol.accountSwitcher)
                     .foregroundStyle(MailTheme.Color.ink3)
                     .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
                     .contentShape(Rectangle())
@@ -162,7 +162,7 @@ private struct SidebarAccountPopover: View {
             dismiss()
             if !isCurrent { environment.selectedAccountID = account.id }
         }) {
-            Image(systemName: "checkmark")
+            Image(systemName: MailTheme.Symbol.currentItem)
                 .font(MailTheme.Typography.caption.font)
                 .foregroundStyle(MailTheme.Color.ink)
                 .opacity(isCurrent ? 1 : 0)

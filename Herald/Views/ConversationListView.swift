@@ -303,7 +303,7 @@ struct SearchStatusBar: View {
                     .controlSize(.small)
                     .accessibilityHidden(true)
             } else if isFailure {
-                Image(systemName: "exclamationmark.triangle.fill")
+                Image(systemName: MailTheme.Symbol.warning)
                     .foregroundStyle(MailTheme.failure)
                     .accessibilityHidden(true)
             }
@@ -429,7 +429,7 @@ struct ConversationRow: View {
                 if !metrics.subjectInline { subjectLabel }
                 HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.xs) {
                     if row.latest.hasAttachments {
-                        Image(systemName: "paperclip")
+                        Image(systemName: MailTheme.Symbol.attachment)
                             .font(MailTheme.Typography.inlineGlyph)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
@@ -528,7 +528,7 @@ struct ConversationRow: View {
                     // thread has to work from the keyboard and the rotor, not
                     // only by re-clicking an already-selected row.
                     Button(action: openThread) {
-                        Image(systemName: "chevron.right")
+                        Image(systemName: MailTheme.Symbol.drillDown)
                             .foregroundStyle(.tertiary)
                             .iconButtonStyle("Show \(row.messageCount) messages")
                     }

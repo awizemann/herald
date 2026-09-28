@@ -80,7 +80,7 @@ struct FolderMenu: View {
                 Text(title)
                     .textStyle(MailTheme.Typography.paneTitle)
                     .foregroundStyle(MailTheme.Color.ink)
-                Image(systemName: "chevron.down")
+                Image(systemName: MailTheme.Symbol.folderMenu)
                     .font(MailTheme.Typography.menuChevronGlyph)
                     .foregroundStyle(MailTheme.Color.ink2)
             }
@@ -126,7 +126,7 @@ struct LabelFilterChip: View {
                 .foregroundStyle(MailTheme.chipLabelForeground)
                 .lineLimit(1)
             Button(action: clear) {
-                Image(systemName: "xmark.circle.fill")
+                Image(systemName: MailTheme.Symbol.clearLabelFilter)
                     .font(MailTheme.Typography.inlineGlyph)
                     .foregroundStyle(MailTheme.Color.ink2)
                     // The chip is ~18pt tall; the hit area reaches 28pt without

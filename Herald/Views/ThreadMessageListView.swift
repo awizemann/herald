@@ -143,7 +143,7 @@ private struct BackLinkLabel: View {
 
     var body: some View {
         HStack(spacing: MailTheme.Spacing.xxs) {
-            Image(systemName: "chevron.left")
+            Image(systemName: MailTheme.Symbol.back)
                 .font(MailTheme.Typography.backChevronGlyph)
             Text(title)
                 .textStyle(MailTheme.Typography.snippet)

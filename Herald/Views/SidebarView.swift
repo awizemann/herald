@@ -170,7 +170,7 @@ struct SidebarView: View {
                 SidebarFilterField(text: $transient.domainFilter, prompt: "Filter \(visible.count) domains")
             }
             SidebarItem(
-                symbol: "tray.2", title: "All domains", isStrong: true,
+                symbol: MailTheme.Symbol.allDomains, title: "All domains", isStrong: true,
                 unread: model.allDomainsInboxUnread
             )
             .tag(MailViewModel.SidebarRow.allDomains)
@@ -278,7 +278,7 @@ struct SidebarView: View {
         let domain = model.domains.first { $0.id == domainID }
         let mailboxes = (domain?.mailboxIDs ?? []).compactMap { id in model.mailboxes.first { $0.id == id } }
         let shown = SidebarPresentation.filter(mailboxes, query: transient.mailboxFilter, name: \.address)
-        SidebarItem(symbol: "tray.2", title: "All mailboxes", isStrong: true, unread: model.inboxUnreadByDomain[domainID] ?? 0)
+        SidebarItem(symbol: MailTheme.Symbol.allDomains, title: "All mailboxes", isStrong: true, unread: model.inboxUnreadByDomain[domainID] ?? 0)
             .tag(MailViewModel.SidebarRow.allMailboxes)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allMailboxes")
         ForEach(shown) { mailbox in
@@ -292,7 +292,7 @@ struct SidebarView: View {
         let local = MailTheme.Typography.headline
         let rest = MailTheme.Typography.body
         return HStack(spacing: Self.itemGap) {
-            Image(systemName: "at")
+            Image(systemName: MailTheme.Symbol.mailbox)
                 .foregroundStyle(.secondary)
                 .frame(width: Self.iconWidth)
                 .accessibilityHidden(true)
@@ -378,7 +378,7 @@ struct SidebarView: View {
                         .accessibilityFocused($focusedLevel, equals: 2)
                     Spacer(minLength: 0)
                     Button { openDomainSettings(domainID) } label: {
-                        Image(systemName: "gearshape")
+                        Image(systemName: MailTheme.Symbol.domainSettings)
                             .foregroundStyle(MailTheme.Color.ink2)
                     }
                     .buttonStyle(.plain)
@@ -534,7 +534,7 @@ private struct SidebarCount: View {
 
 private struct SidebarChevron: View {
     var body: some View {
-        Image(systemName: "chevron.right")
+        Image(systemName: MailTheme.Symbol.drillDown)
             .font(MailTheme.Typography.caption.font)
             .foregroundStyle(.tertiary)
             .accessibilityHidden(true)
@@ -564,7 +564,7 @@ private struct SidebarBackLink: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: MailTheme.Spacing.xxs) {
-                Image(systemName: "chevron.left")
+                Image(systemName: MailTheme.Symbol.back)
                 Text(title)
                     .lineLimit(1)
                     .truncationMode(.middle)

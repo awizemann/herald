@@ -82,7 +82,7 @@ struct ReadingPaneView: View {
 private struct ReadingPaneEmptyState: View {
     var body: some View {
         VStack(spacing: MailTheme.Spacing.sm) {
-            Image(systemName: "envelope.open")
+            Image(systemName: MailTheme.Symbol.nothingSelected)
                 .font(MailTheme.Typography.largeGlyph)
                 .foregroundStyle(MailTheme.Color.ink3)
             Text("Nothing selected")
@@ -261,7 +261,7 @@ struct MessageLabelMenu: View {
                 }
             } label: {
                 Image(systemName: MailTheme.labelSymbol)
-                    .frame(width: MailTheme.hitTarget, height: MailTheme.hitTarget)
+                    .frame(width: MailTheme.iconButtonSize.width, height: MailTheme.iconButtonSize.height)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -413,7 +413,7 @@ struct MessageBodySection: View {
         VStack(spacing: 0) {
             if let body = model.body, body.offersRemoteConsent {
                 BannerView(
-                    systemImage: "photo",
+                    systemImage: MailTheme.Symbol.remoteImages,
                     tint: .secondary,
                     text: Self.remoteConsentText(quotedHistoryOnly: body.remoteConsentIsForQuotedHistoryOnly)
                 ) {
@@ -527,7 +527,7 @@ private struct AttachmentBar: View {
         ) {
             HStack(spacing: MailTheme.Spacing.xxs) {
                 Button { preview(attachment) } label: {
-                    Image(systemName: "eye")
+                    Image(systemName: MailTheme.Symbol.quickLook)
                         .iconButtonStyle("Quick Look \(attachment.filename)")
                 }
                 .buttonStyle(.plain)
@@ -535,7 +535,7 @@ private struct AttachmentBar: View {
                 Button {
                     Task { await model.saveAttachment(attachment) }
                 } label: {
-                    Image(systemName: "square.and.arrow.down")
+                    Image(systemName: MailTheme.Symbol.download)
                         .iconButtonStyle("Save \(attachment.filename)…")
                 }
                 .buttonStyle(.plain)

@@ -34,7 +34,7 @@ struct OnboardingView: View {
                 .accessibilityIdentifier(AccessibilityID.Onboarding.origin)
 
             if let message = environment.signInError {
-                Label(message, systemImage: "exclamationmark.triangle")
+                Label(message, systemImage: MailTheme.Symbol.warning)
                     .font(.callout)
                     .foregroundStyle(MailTheme.failure)
                     .frame(maxWidth: 380)

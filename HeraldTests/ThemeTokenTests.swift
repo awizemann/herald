@@ -268,3 +268,64 @@ private func hex(_ color: SwiftUI.Color, _ look: Look) -> String {
         #expect(status == "loaded")
     }
 }
+
+/// Handoff §5 icon map and §1 hit-target metrics. The symbol names are pinned
+/// to the spec's table (a role swapped to a look-alike glyph — the old
+/// `square.and.arrow.down` for Download, the outline warning triangle — fails
+/// here) and each must exist in the running system's SF Symbols, so a typo
+/// cannot draw an empty image.
+@Suite struct SymbolMapTests {
+    static let spec: [(String, String)] = [
+        (MailTheme.Symbol.drafts, "doc.text"),
+        (MailTheme.Symbol.allDomains, "tray.2"),
+        (MailTheme.Symbol.mailbox, "at"),
+        (MailTheme.Symbol.label, "tag"),
+        (MailTheme.Symbol.newMessage, "square.and.pencil"),
+        (MailTheme.Symbol.refresh, "arrow.clockwise"),
+        (MailTheme.Symbol.reply, "arrowshape.turn.up.left"),
+        (MailTheme.Symbol.replyAll, "arrowshape.turn.up.left.2"),
+        (MailTheme.Symbol.forward, "arrowshape.turn.up.right"),
+        (MailTheme.Symbol.attachment, "paperclip"),
+        (MailTheme.Symbol.sessionLock, "lock.fill"),
+        (MailTheme.Symbol.warning, "exclamationmark.triangle.fill"),
+        (MailTheme.Symbol.remoteImages, "photo"),
+        (MailTheme.Symbol.drillDown, "chevron.right"),
+        (MailTheme.Symbol.back, "chevron.left"),
+        (MailTheme.Symbol.accountSwitcher, "chevron.up.chevron.down"),
+        (MailTheme.Symbol.domainSettings, "gearshape"),
+        (MailTheme.Symbol.receiveSendOn, "checkmark.circle.fill"),
+        (MailTheme.Symbol.receiveSendOff, "nosign"),
+        (MailTheme.Symbol.hiddenDomain, "eye.slash"),
+        (MailTheme.Symbol.openAdmin, "arrow.up.right.square"),
+        (MailTheme.Symbol.folderMenu, "chevron.down"),
+        (MailTheme.Symbol.currentItem, "checkmark"),
+        (MailTheme.Symbol.clearLabelFilter, "xmark.circle.fill"),
+        (MailTheme.Symbol.quickLook, "eye"),
+        (MailTheme.Symbol.download, "arrow.down.circle"),
+        (MailTheme.Symbol.downloadAll, "arrow.down.circle"),
+        (MailTheme.Symbol.removeAttachment, "xmark"),
+        (MailTheme.Symbol.archive, "archivebox"),
+        (MailTheme.Symbol.trash, "trash"),
+        (MailTheme.Symbol.send, "paperplane.fill"),
+        (MailTheme.Symbol.nothingSelected, "envelope.open"),
+        (MailTheme.Symbol.noResults, "magnifyingglass"),
+    ]
+
+    @Test func everyRoleUsesTheHandoffSymbol() {
+        for (actual, expected) in Self.spec {
+            #expect(actual == expected)
+        }
+    }
+
+    @Test func everySymbolExistsInSFSymbols() {
+        for (name, _) in Self.spec {
+            #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "missing \(name)")
+        }
+    }
+
+    @Test func iconButtonsAre30By28AndNeverUnderTheMinimumTarget() {
+        #expect(MailTheme.hitTarget == 28)
+        #expect(MailTheme.iconButtonSize == CGSize(width: 30, height: 28))
+        #expect(MailTheme.iconButtonSize.height >= MailTheme.hitTarget)
+    }
+}

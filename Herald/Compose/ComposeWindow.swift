@@ -167,7 +167,7 @@ struct ComposeView: View {
     private var header: some View {
         HStack(spacing: MailTheme.Spacing.sm) {
             Button { Task { await model.send() } } label: {
-                Label("Send", systemImage: "paperplane.fill")
+                Label("Send", systemImage: MailTheme.Symbol.send)
             }
             // `isSendBlocked`: the server asked for no further attempt at this
             // message (it may already be delivered). The window stays open with
@@ -182,7 +182,7 @@ struct ComposeView: View {
             .accessibilityIdentifier(AccessibilityID.Compose.send)
 
             Button { Task { await model.addAttachments() } } label: {
-                Image(systemName: "paperclip")
+                Image(systemName: MailTheme.Symbol.attachment)
                     .iconButtonStyle("Attach File")
             }
             .buttonStyle(.borderless)
@@ -190,7 +190,7 @@ struct ComposeView: View {
             .disabled(model.isBusy)
 
             Button { Task { await model.discard() } } label: {
-                Image(systemName: "trash")
+                Image(systemName: MailTheme.Symbol.trash)
                     .iconButtonStyle("Delete Draft")
             }
             .buttonStyle(.borderless)
@@ -339,7 +339,7 @@ struct ComposeView: View {
                 ForEach(model.attachments) { attachment in
                     AttachmentChip(filename: attachment.filename, sizeBytes: attachment.sizeBytes) {
                         Button { Task { await model.removeAttachment(attachment) } } label: {
-                            Image(systemName: "xmark.circle.fill")
+                            Image(systemName: MailTheme.Symbol.removeAttachment)
                                 .iconButtonStyle("Remove \(attachment.filename)")
                         }
                         .buttonStyle(.borderless)
@@ -371,7 +371,7 @@ struct ComposeView: View {
             // VoiceOver can reach and press it (a `.combine` over both would
             // fold the button into the sentence).
             HStack(spacing: MailTheme.Spacing.sm) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MailTheme.failure)
+                Image(systemName: MailTheme.Symbol.warning).foregroundStyle(MailTheme.failure)
                 VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                     Text(message).font(.callout)
                     // Why the last sign-in for this account failed (audit W5);

@@ -51,6 +51,21 @@ struct UserNotificationCenterAdapter: NewMailNotificationPosting {
             logger.warning("Posting a new-mail notification failed: \(error.localizedDescription, privacy: .private)")
         }
     }
+
+    func removeDelivered(forAccount accountID: String) async {
+        let center = center()
+        let identifiers = await center.deliveredNotifications().compactMap { delivered -> String? in
+            let request = delivered.request
+            var info: [String: String] = [:]
+            for (key, value) in request.content.userInfo {
+                if let key = key as? String, let value = value as? String { info[key] = value }
+            }
+            return NewMailNotification.isForAccount(accountID, identifier: request.identifier, userInfo: info)
+                ? request.identifier : nil
+        }
+        guard !identifiers.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
 }
 
 /// Turns a click on a banner into "activate Herald, show that conversation".

@@ -111,11 +111,16 @@ extension MailViewModel {
     func reloadLabelIndex() async {
         labelIndexReloadCount += 1
         let counted = labelCountLocation
+        // The badges are counted within the location's folder and scope, so an
+        // answer computed for a location (or a scope resolution) that has
+        // since moved must not land — the reload that moved it rebuilds this.
+        let location = self.location
+        let generation = reloadGeneration
         do {
             let index = try await store.labelIndex(
                 accountID: accountID, folder: counted.folder, mailboxIDs: counted.mailboxIDs
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, isCurrentReload(location, generation) else { return }
             labelIDsByThread = index.idsByThread
             labelThreadCounts = index.threadCounts
         } catch {

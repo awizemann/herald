@@ -47,25 +47,18 @@ extension MailViewModel {
     }
 
     /// Row attribution for the current scope, resolved once per list pass.
-    /// Monogram overrides are read through the view-model's own injected
-    /// defaults, like every other Herald-only preference.
+    /// Monogram overrides are read through ``observedDefaults``, so a list
+    /// drawn from this repaints when Settings changes one.
     func rowAttributionIndex() -> ListColumn.AttributionIndex {
         let level = ListColumn.AttributionLevel(scope: scope)
         guard level != .none else { return .empty }
-        var overrides: [MailDomain.ID: String] = [:]
-        if level == .domainAndMailbox {
-            for domain in monogramDomains {
-                if let override = DomainPreferences.monogramOverride(
-                    accountID: accountID, domainID: domain.id, in: defaults
-                ) {
-                    overrides[domain.id] = override
-                }
-            }
-        }
+        let overrides = level == .domainAndMailbox
+            ? DomainBadgeResolver.monogramOverrides(for: monogramDomains, accountID: accountID, in: observedDefaults)
+            : [:]
         return ListColumn.AttributionIndex.make(
             // `monogramDomains`: clashes resolve over disabled domains too.
             level: level, mailboxes: mailboxes, domains: monogramDomains,
-            monogramOverrides: overrides, accountID: accountID
+            monogramOverrides: overrides
         )
     }
 

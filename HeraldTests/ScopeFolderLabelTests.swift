@@ -222,8 +222,11 @@ struct ScopeFolderLabelTests {
         DomainPreferences.setIncludeInAll(
             false, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: harness.defaults
         )
-        #expect(harness.model.mailboxIDs(for: .allDomains) == ["mbSales", "mbTeam"])
-        await harness.model.reloadConversations()
+        // The one sanctioned follow-up to a preference write (what
+        // `AppEnvironment.updateDomainPreferences` calls): it is what
+        // invalidates the resolved sets.
+        await harness.model.domainPreferencesDidChange()
+        #expect(harness.model.mailboxIDs(for: .allDomains) == ["mbSales", "mbTeam", MailViewModel.unassignedMailboxKey])
         #expect(harness.listed == ["t_sales", "t_team"])
         #expect(harness.model.folderUnreadCounts[.inbox] == 2, "the folder badge counts the same set")
         #expect(harness.model.allDomainsInboxUnread == 2, "the All domains count leaves the excluded domain out")
@@ -237,7 +240,7 @@ struct ScopeFolderLabelTests {
         DomainPreferences.setHidden(
             true, accountID: ScopeHarness.account, domainID: ScopeHarness.acme, in: harness.defaults
         )
-        await harness.model.reloadConversations()
+        await harness.model.domainPreferencesDidChange()
         #expect(harness.listed == ["t_ops"])
     }
 
@@ -277,6 +280,7 @@ struct ScopeFolderLabelTests {
         DomainPreferences.setHidden(
             true, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: harness.defaults
         )
+        await harness.model.domainPreferencesDidChange()
         harness.model.selectScope(.allDomains)
         await harness.settle()
         #expect(Set(harness.model.drafts.map(\.id)) == ["d_sales", "d_none"])
@@ -317,6 +321,7 @@ struct ScopeFolderLabelTests {
         DomainPreferences.setHidden(
             true, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: harness.defaults
         )
+        await harness.model.domainPreferencesDidChange()
         harness.model.selectScope(.allDomains)
         harness.model.searchQuery = "zulu"
         harness.model.submitSearch()

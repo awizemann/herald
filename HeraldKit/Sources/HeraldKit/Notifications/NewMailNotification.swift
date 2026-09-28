@@ -94,4 +94,31 @@ public nonisolated protocol NewMailNotificationPosting: Sendable {
     /// Implementations must NOT throw: a denial is an ordinary answer.
     func requestAuthorization() async -> Bool
     func post(_ notification: NewMailNotification) async
+    /// Withdraws every banner still in Notification Centre for one account —
+    /// sign-out calls it, so a click can never route to an account that is
+    /// gone. Matched by ``NewMailNotification/isForAccount(_:identifier:userInfo:)``.
+    func removeDelivered(forAccount accountID: String) async
+}
+
+public nonisolated extension NewMailNotificationPosting {
+    /// Posters that never deliver anything (the UI-test harness, test fakes)
+    /// have nothing to withdraw.
+    func removeDelivered(forAccount accountID: String) async {}
+}
+
+public nonisolated extension NewMailNotification {
+    /// Every banner id for an account starts with this — the per-message ids
+    /// and the coalesced burst alike (``NewMailNotifier``).
+    static func identifierPrefix(accountID: String) -> String {
+        "herald.newmail.\(accountID)."
+    }
+
+    /// Whether a delivered banner belongs to `accountID`: its id carries the
+    /// account's prefix AND its payload names the account. The prefix alone is
+    /// ambiguous when one account id is another's prefix plus a dot; the
+    /// payload is what a click routes by, so it is the tiebreak.
+    static func isForAccount(_ accountID: String, identifier: String, userInfo: [String: String]) -> Bool {
+        identifier.hasPrefix(identifierPrefix(accountID: accountID))
+            && userInfo[accountIDKey] == accountID
+    }
 }

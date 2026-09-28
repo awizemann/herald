@@ -119,6 +119,7 @@ actor FakeMailAPIClient: MailAPIClient {
     @discardableResult
     func perform(_ action: MessageAction, onMessage id: String) async throws -> MessageSummary {
         performed.append(PerformedAction(action: action.rawValue, id: id))
+        await passActionGate()
         if let actionError { throw actionError }
         // The real server answers with the UPDATED summary, and `MailActionService`
         // now writes it back as authoritative. A stub that ignored the action made
@@ -236,8 +237,48 @@ actor FakeMailAPIClient: MailAPIClient {
         in folder: ConversationFolder
     ) async throws -> ConversationActionResult {
         performed.append(PerformedAction(action: action.rawValue, id: id, folder: folder))
+        await passActionGate()
         if let actionError { throw actionError }
         return ConversationActionResult(threadID: id, affected: conversationAffected)
+    }
+
+    // MARK: Action gate
+    //
+    // Parks triage actions (both routes) so a test can see how many are IN
+    // FLIGHT at once — the only way to assert a concurrency bound without
+    // timing anything.
+
+    private var actionGateIsOpen = true
+    private var actionWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var actionsInFlight = 0
+    private(set) var maxActionsInFlight = 0
+
+    func closeActionGate() { actionGateIsOpen = false }
+
+    func openActionGate() {
+        actionGateIsOpen = true
+        let resuming = actionWaiters
+        actionWaiters = []
+        for waiter in resuming { waiter.resume() }
+    }
+
+    var parkedActionCount: Int { actionWaiters.count }
+
+    /// Resolves once at least `count` actions are parked (bounded, like
+    /// ``waitForPendingSearch(count:)``).
+    func waitForParkedActions(count: Int) async {
+        for _ in 0..<10_000 {
+            if actionWaiters.count >= count { return }
+            await Task.yield()
+        }
+    }
+
+    private func passActionGate() async {
+        actionsInFlight += 1
+        maxActionsInFlight = max(maxActionsInFlight, actionsInFlight)
+        defer { actionsInFlight -= 1 }
+        guard !actionGateIsOpen else { return }
+        await withCheckedContinuation { actionWaiters.append($0) }
     }
 
     // MARK: Labels

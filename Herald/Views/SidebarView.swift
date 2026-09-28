@@ -223,7 +223,7 @@ struct SidebarView: View {
     private func domainMenu(_ domain: MailDomain, unread: Int) -> some View {
         Button("Open \(domain.name)") { drill(into: .domain(domain.id)) }
         Button("Mark All as Read") {
-            Task { await model.markAllAsRead(inDomain: domain.id) }
+            model.beginMarkAllAsRead(inDomain: domain.id)
         }
         .disabled(unread == 0)
         Divider()

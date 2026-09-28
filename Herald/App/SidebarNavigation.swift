@@ -142,52 +142,169 @@ extension MailViewModel {
 
     // MARK: Context menu
 
-    /// "Mark All as Read" on a domain: every unread thread in the domain's
-    /// Inbox — all of its mailboxes, whatever the current scope, folder or label.
+    /// How many Mark All as Read requests are in flight at once. Unbounded, a
+    /// busy domain fired its whole backlog at the server in one burst.
+    nonisolated static let markAllConcurrency = 5
+    /// Mark All as Read reloads the list and counts after this many requests
+    /// complete, so a long run visibly progresses instead of jumping at the end.
+    nonisolated static let markAllReloadInterval = 20
+
+    /// One request a Mark All as Read makes.
+    nonisolated enum MarkReadTarget: Sendable, Hashable {
+        /// `POST /conversations/{id}/read` for a thread whose unread Inbox
+        /// rows all sit in the domain. `representative` is the row's newest
+        /// message, for a thread the cache holds no messages of.
+        case conversation(threadID: String, representative: String)
+        /// `POST /messages/{id}/read` for one message of a thread that is
+        /// ALSO unread in another domain's Inbox.
+        case message(String)
+    }
+
+    /// Which threads Mark All as Read may mark wholesale, and which it must
+    /// mark message by message. Pure.
     ///
-    /// Each thread goes through the same optimistic conversation action a row's
-    /// Mark as Read uses (cache first, revert exactly on failure), in parallel —
-    /// the requests are independent, and one at a time a busy domain would take
-    /// a round trip per thread before the counts moved. The list and counts
-    /// reload once at the end; the first failure is what the alert shows.
+    /// The conversation route marks EVERY accessible message of the thread in
+    /// the folder — the other domain's copy included (the server fans the
+    /// write out over the thread; `MailStore.applyLocalAction(_:threadID:)`
+    /// does the same locally). So a thread with unread Inbox rows in another
+    /// domain too is split out for the per-message route, which touches only
+    /// what the user asked for. A cached row's unread count is THREAD-wide
+    /// (`MailStore.refreshConversationRows`), so in practice any thread with
+    /// an Inbox row in another domain is split while anything in it is unread
+    /// — and the domain's own row keeps reading unread until the other
+    /// domain's copy is read too. Only a thread with no Inbox row elsewhere
+    /// takes the one-request route.
+    ///
+    /// Only rows that COUNT in the Inbox are candidates (``UnreadConversationKey/counts(in:)``):
+    /// a row a local archive just moved out keeps its inbox listing until the
+    /// next pass, and must not be POSTed. Each thread appears once, however
+    /// many of the domain's mailboxes list it.
+    nonisolated static func markAllPlan(
+        keys: [UnreadConversationKey], domainMailboxIDs: Set<String>
+    ) -> (whole: [(threadID: String, representative: String)], split: [(threadID: String, fallback: [String])]) {
+        var order: [String] = []
+        var latestInDomain: [String: [String]] = [:]
+        var elsewhere: Set<String> = []
+        for key in keys where key.counts(in: .inbox) {
+            if domainMailboxIDs.contains(key.mailboxKey) {
+                if latestInDomain[key.threadID] == nil { order.append(key.threadID) }
+                latestInDomain[key.threadID, default: []].append(key.latestMessageID)
+            } else {
+                elsewhere.insert(key.threadID)
+            }
+        }
+        var whole: [(threadID: String, representative: String)] = []
+        var split: [(threadID: String, fallback: [String])] = []
+        for threadID in order {
+            let latest = (latestInDomain[threadID] ?? []).filter { !$0.isEmpty }
+            if elsewhere.contains(threadID) {
+                split.append((threadID, latest))
+            } else {
+                whole.append((threadID, latest.first ?? ""))
+            }
+        }
+        return (whole, split)
+    }
+
+    /// The sidebar's "Mark All as Read": starts the run on a task the
+    /// view-model OWNS (``markAllTask``), so sign-out's `stop()` cancels it.
+    ///
+    /// Re-entry while a run is going is IGNORED, not cancel-and-restart: the
+    /// running pass already covers everything unread (whatever arrived since is
+    /// what the next click is for), and restarting would re-send every request
+    /// still in flight.
+    func beginMarkAllAsRead(inDomain domainID: MailDomain.ID) {
+        guard markAllTask == nil else { return }
+        markAllTask = Task { [weak self] in
+            await self?.runMarkAllAsRead(inDomain: domainID)
+            self?.markAllTask = nil
+        }
+    }
+
+    /// ``beginMarkAllAsRead(inDomain:)``, then waits for the run (the one
+    /// already going, if there is one).
     func markAllAsRead(inDomain domainID: MailDomain.ID) async {
+        beginMarkAllAsRead(inDomain: domainID)
+        await markAllTask?.value
+    }
+
+    /// "Mark All as Read" on a domain: every unread thread in the domain's
+    /// Inbox — all of its mailboxes, whatever the current scope, folder or
+    /// label — and nothing of another domain's (``markAllPlan(keys:domainMailboxIDs:)``).
+    ///
+    /// Every request goes through the same optimistic service a row's Mark as
+    /// Read uses (cache first, revert exactly on failure), at most
+    /// ``markAllConcurrency`` at a time. The list and counts reload every
+    /// ``markAllReloadInterval`` completions and at the end; the first failure
+    /// is what the alert shows.
+    private func runMarkAllAsRead(inDomain domainID: MailDomain.ID) async {
         guard let domain = domains.first(where: { $0.id == domainID }) else { return }
-        let threads: [ConversationSummary]
+        let domainIDs = Set(domain.mailboxIDs)
+        let targets: [MarkReadTarget]
+        let threadCount: Int
         do {
-            threads = try await Self.unreadInboxThreads(
-                store: store, accountID: accountID, mailboxIDs: Set(domain.mailboxIDs)
+            let plan = Self.markAllPlan(
+                keys: try await store.unreadConversationKeys(accountID: accountID), domainMailboxIDs: domainIDs
             )
+            var list = plan.whole.map { MarkReadTarget.conversation(threadID: $0.threadID, representative: $0.representative) }
+            for thread in plan.split {
+                list += try await splitTargets(thread, domainMailboxIDs: domainIDs)
+            }
+            targets = list
+            threadCount = plan.whole.count + plan.split.count
         } catch {
             actionError = error.localizedDescription
             return
         }
-        guard !threads.isEmpty else { return }
+        guard !targets.isEmpty, !Task.isCancelled else { return }
         record(.messageActionPerformed(
-            action: Self.usageAction(for: ConversationAction.read), scope: .conversation, count: UsageBucket(count: threads.count)
+            action: Self.usageAction(for: ConversationAction.read), scope: .conversation, count: UsageBucket(count: threadCount)
         ))
         let actions = self.actions
         let accountID = self.accountID
         let failure: (any Error)? = await withTaskGroup(of: (any Error)?.self) { group in
-            for thread in threads {
-                let representative = thread.latest.id
+            var next = 0
+            func enqueue() {
+                let target = targets[next]
+                next += 1
                 group.addTask {
                     do {
-                        try await actions.perform(
-                            .read, onConversation: thread.id, in: .inbox,
-                            accountID: accountID, representativeMessageID: representative
-                        )
+                        switch target {
+                        case .conversation(let threadID, let representative):
+                            try await actions.perform(
+                                .read, onConversation: threadID, in: .inbox, accountID: accountID,
+                                representativeMessageID: representative.isEmpty ? nil : representative
+                            )
+                        case .message(let id):
+                            try await actions.perform(.read, on: id, accountID: accountID)
+                        }
                         return nil
                     } catch {
                         return error
                     }
                 }
             }
+            // A sliding window: one request starts as each one finishes.
+            while next < min(Self.markAllConcurrency, targets.count) { enqueue() }
             var first: (any Error)?
-            for await error in group where first == nil {
-                first = error
+            var completed = 0
+            while let error = await group.next() {
+                if first == nil { first = error }
+                completed += 1
+                if Task.isCancelled {
+                    group.cancelAll()
+                    continue
+                }
+                if next < targets.count { enqueue() }
+                if completed % Self.markAllReloadInterval == 0, completed < targets.count {
+                    await reloadConversations()
+                }
             }
             return first
         }
+        // Cancelled by `stop()`: the account is going away, and nothing here
+        // is worth telling it.
+        guard !Task.isCancelled else { return }
         if let failure {
             actionError = failure.localizedDescription
             record(.actionFailed(action: Self.usageAction(for: ConversationAction.read), kind: UsageMailErrorKind(anyError: failure)))
@@ -195,22 +312,20 @@ extension MailViewModel {
         await reloadConversations()
     }
 
-    /// Every unread Inbox thread in a set of mailboxes, paged out of the cache
-    /// (a domain can hold more than one listing page of them).
-    nonisolated static func unreadInboxThreads(
-        store: MailStore, accountID: String, mailboxIDs: Set<String>
-    ) async throws -> [ConversationSummary] {
-        let page = 500
-        var offset = 0
-        var unread: [ConversationSummary] = []
-        while true {
-            let rows = try await store.conversations(
-                accountID: accountID, mailboxIDs: mailboxIDs, folder: .inbox, limit: page, offset: offset
-            )
-            unread += rows.filter(\.isUnread)
-            guard rows.count == page else { return unread }
-            offset += page
-        }
+    /// The per-message requests for a thread split out by ``markAllPlan(keys:domainMailboxIDs:)``:
+    /// its unread Inbox messages in the domain's mailboxes. A thread whose
+    /// messages the cache does not hold falls back to its in-domain rows'
+    /// newest messages — the most the cache can name.
+    private func splitTargets(
+        _ thread: (threadID: String, fallback: [String]), domainMailboxIDs: Set<String>
+    ) async throws -> [MarkReadTarget] {
+        let messages = try await store.messages(accountID: accountID, threadID: thread.threadID)
+        let ids = messages.isEmpty
+            ? thread.fallback
+            : messages
+                .filter { $0.isUnread && $0.folder == .inbox && domainMailboxIDs.contains($0.mailboxID ?? "") }
+                .map(\.id)
+        return ids.map(MarkReadTarget.message)
     }
 }
 

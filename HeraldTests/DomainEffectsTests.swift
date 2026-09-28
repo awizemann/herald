@@ -58,15 +58,39 @@ struct DomainEffectsTests {
         #expect(model.badgeInboxUnread == 1, "a hidden domain never counts toward the badge")
     }
 
-    /// The pure sum. Fails if a mailbox the domain does not own leaks in, or a
-    /// zero-unread domain is reported.
-    @Test("Domain unread is the sum of that domain's mailboxes only")
-    func domainSumIsPure() {
+    /// The pure tally. Thread `t_shared` has an unread inbox row in BOTH of
+    /// acme's mailboxes and one in north's; `t_arch` is listed in the inbox
+    /// but locally archived. Fails on the old per-mailbox sum (acme 3, All
+    /// domains 4 — the shared thread counted per row), if a mailbox the
+    /// domain does not own leaks in, if a zero domain is reported, if the
+    /// archived row counts in the Inbox, or if an explicit All domains set
+    /// drops the unassigned row.
+    @Test("Aggregated unread counts distinct threads, per the folder rule")
+    func tallyCountsDistinctThreads() {
+        func key(_ thread: String, _ mailbox: String, _ list: ConversationFolder = .inbox, _ folder: MailFolder = .inbox) -> UnreadConversationKey {
+            UnreadConversationKey(threadID: thread, mailboxKey: mailbox, listFolder: list.rawValue, folderRaw: folder.rawValue)
+        }
+        let keys = [
+            key("t_shared", "a"), key("t_shared", "b"), key("t_shared", "c"),
+            key("t_a", "a"),
+            key("t_arch", "b", .inbox, .archived),
+            key("t_arch", "b", .archived, .archived),
+            key("t_loose", ""),
+            key("t_stray", "stray"),
+        ]
         let acme = MailDomain(id: "d1", name: "acme.co", mailboxIDs: ["a", "b"])
         let north = MailDomain(id: "d2", name: "north.io", mailboxIDs: ["c"])
         let quiet = MailDomain(id: "d3", name: "quiet.io", mailboxIDs: ["q"])
-        let byMailbox = ["a": 2, "b": 5, "c": 1, "stray": 9]
-        #expect(MailViewModel.sumByDomain([acme, north, quiet], byMailbox: byMailbox) == ["d1": 7, "d2": 1])
+        let tally = UnreadTally(
+            keys: keys, scopeIDs: ["a", "b"], folders: [.inbox, .archived],
+            mailboxIDs: ["a", "b", "c", "q"], domains: [acme, north, quiet],
+            allDomainIDs: ["a", "b", ""], badgeIDs: nil
+        )
+        #expect(tally.byMailbox == ["a": 2, "b": 1, "c": 1])
+        #expect(tally.byDomain == ["d1": 2, "d2": 1])
+        #expect(tally.byFolder == [.inbox: 2, .archived: 1], "acme scope: t_shared + t_a; the archived row counts only there")
+        #expect(tally.allDomains == 3, "t_shared, t_a and the unassigned t_loose — once each")
+        #expect(tally.badge == 4, "nil = every row: t_shared, t_a, t_loose, t_stray — once each")
     }
 
     // MARK: - Label counts per folder
@@ -188,9 +212,13 @@ struct DomainEffectsTests {
 
         DomainPreferences.setNotify(true, accountID: ScopeHarness.account, domainID: ScopeHarness.acme, in: harness.defaults)
         DomainPreferences.setNotify(false, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: harness.defaults)
+        // What `AppEnvironment.updateDomainPreferences` follows every write
+        // with — the resolved sets are cached until it runs.
+        await model.domainPreferencesDidChange()
         #expect(model.notificationSilencedMailboxIDs() == ["mbOps"])
 
         DomainPreferences.setHidden(true, accountID: ScopeHarness.account, domainID: ScopeHarness.acme, in: harness.defaults)
+        await model.domainPreferencesDidChange()
         #expect(model.notificationSilencedMailboxIDs() == ["mbOps", "mbSales", "mbTeam"], "hidden beats notify = true")
     }
 
@@ -232,6 +260,7 @@ struct DomainEffectsTests {
 
         // north.io notify OFF: its mail is silent, acme's (nil → global ON) posts.
         DomainPreferences.setNotify(false, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: defaults)
+        await model.domainPreferencesDidChange()
         try await arrive("ops1", in: "mbOps")
         try await arrive("sales1", in: "mbSales")
         try await wait("acme's banner") { await posted().count == 1 }
@@ -240,6 +269,7 @@ struct DomainEffectsTests {
         // acme hidden, north back ON explicitly.
         DomainPreferences.setHidden(true, accountID: ScopeHarness.account, domainID: ScopeHarness.acme, in: defaults)
         DomainPreferences.setNotify(true, accountID: ScopeHarness.account, domainID: ScopeHarness.north, in: defaults)
+        await model.domainPreferencesDidChange()
         try await arrive("sales2", in: "mbSales")
         try await arrive("ops2", in: "mbOps")
         try await wait("north's banner") { await posted().count == 2 }

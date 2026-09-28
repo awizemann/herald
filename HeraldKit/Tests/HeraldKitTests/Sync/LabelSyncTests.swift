@@ -403,9 +403,10 @@ struct LabelSyncTests {
         // re-derived — including the one whose digest still matches.
         await api.setLabels([billing, Self.label("lbl_2", name: "Later")])
         await engine.refreshNow()
-        try await waitUntil("the reconciliation wrote both labels") {
-            await engine.labelAssignmentWrites >= 2
-        }
+        // Wait for the pass to END, not for a write count: waiting on `>= 2`
+        // raced the second label's write. A finished pass has done all its
+        // writes, so the exact count below also catches over-writing.
+        try await waitUntil("the reconciliation pass finished") { await recorder.finished >= 3 }
         #expect(
             await engine.labelAssignmentWrites == 3,
             "a list change drops the digests, so both labels are written authoritatively"

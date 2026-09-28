@@ -25,12 +25,19 @@
 - [ ] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
 - [ ] Page the conversation list beyond 100 rows (id: t-92aa90a1) (added: 2026-09-28)
 - [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
+- [ ] Redesign v3 V7: orchestrator audit, memory audit, delete v1/v2 designs (id: t-9d5ee412) (added: 2026-09-28) (priority: high)
 
 ## Doing
 
+- [ ] Redesign v3 V6: compose window UI (id: t-e6034361) (added: 2026-09-28) (priority: high)
 
 ## Done
 
+- [x] Redesign v3 V5: compose model (From, Cc/Bcc, validation) (id: t-b46f23df) (added: 2026-09-28) (priority: high)
+- [x] Redesign v3 V4: attachment cards + Download All (id: t-41a2ec26) (added: 2026-09-28) (priority: high)
+- [x] Redesign v3 V3: settings visual audit + fix (id: t-c3fda870) (added: 2026-09-28)
+- [x] Redesign v3 V2: main window visual audit + fix (id: t-285104b6) (added: 2026-09-28) (priority: high)
+- [x] Redesign v3 V1: tokens & identity audit + fix (id: t-cfe633d1) (added: 2026-09-28) (priority: high)
 - [x] Redesign A1–A4: Orchestrator audits (plan, memory, fresh-eyes, full surface) (id: t-4a65d84b) (added: 2026-09-27) (priority: high)
 - [x] Redesign F1: audit fixes — state, store, effects (id: t-bd14674c) (added: 2026-09-28) (priority: high)
 - [x] Redesign F3: audit fixes — settings, prefs, assets (id: t-3b201c98) (added: 2026-09-28) (priority: high)

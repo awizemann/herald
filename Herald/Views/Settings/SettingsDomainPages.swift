@@ -622,7 +622,14 @@ struct DomainRemoveSettingsPage: View {
                         Button {
                             environment.openHQBaseAdmin(for: account)
                         } label: {
-                            Label("Open in HQBase Admin", systemImage: MailTheme.Symbol.openAdmin)
+                            // The arrow trails the title ("Open in HQBase Admin ↗",
+                            // handoff §3.2 / 4a-4) — an outbound-link cue, not a
+                            // leading icon.
+                            HStack(spacing: MailTheme.Spacing.xs) {
+                                Text("Open in HQBase Admin")
+                                Image(systemName: MailTheme.Symbol.openAdmin)
+                                    .accessibilityHidden(true)
+                            }
                         }
                         .buttonStyle(SettingsOutlineButtonStyle())
                         .disabled(adminURL == nil)
@@ -697,6 +704,9 @@ struct HiddenDomainsSection: View {
                     Text("No hidden domains.")
                         .textStyle(MailTheme.Typography.caption)
                         .foregroundStyle(MailTheme.Color.ink3)
+                        // Full width: without it the card hugs the sentence
+                        // instead of spanning the column like every other card.
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, MailTheme.Spacing.md)
                         .padding(.horizontal, MailTheme.Spacing.lg)
                 } else {

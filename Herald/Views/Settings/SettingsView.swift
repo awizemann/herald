@@ -278,6 +278,9 @@ private struct SettingsDomainHeader: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, MailTheme.Spacing.lg)
         .padding(.top, MailTheme.Spacing.sm)
+        // Air between the header and the domain's first page row (4a-1..4):
+        // without it the badge + name sat flush on top of Overview.
+        .padding(.bottom, MailTheme.Spacing.md)
     }
 }
 

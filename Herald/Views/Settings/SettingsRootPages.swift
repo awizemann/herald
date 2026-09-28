@@ -317,7 +317,11 @@ private struct AccountTintPicker: View {
                     Circle()
                         .fill(tint.solid)
                         .frame(width: SettingsLayout.swatchDiameter, height: SettingsLayout.swatchDiameter)
-                        .padding(SettingsLayout.swatchGap)
+                        // The ring sits OUTSIDE the 2pt gap (the handoff's
+                        // `0 0 0 2px surface, 0 0 0 3.5px ink`): pad by gap +
+                        // ring so `strokeBorder`, which draws inward, leaves
+                        // the full gap clear instead of eating 1.5pt of it.
+                        .padding(SettingsLayout.swatchGap + SettingsLayout.swatchRingWidth)
                         .overlay {
                             Circle().strokeBorder(
                                 isCurrent ? MailTheme.Color.ink : .clear,

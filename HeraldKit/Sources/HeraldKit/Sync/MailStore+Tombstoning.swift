@@ -11,8 +11,9 @@ extension MailStore {
     /// that the server no longer returns. Siblings in other folders/mailboxes
     /// are untouched — the predicate, not a post-filter, enforces that.
     ///
-    /// Cascades exactly like ``deleteMessage(id:accountID:)``: body sidecar,
-    /// label assignments and the pending-mutation fence all name a message that
+    /// A message under the triage fence is never tombstoned here (see below), so
+    /// there is no fence to cascade. Otherwise it cascades like
+    /// ``deleteMessage(id:accountID:)``: body sidecar and label assignments name a message that
     /// no longer exists. An orphaned assignment keeps the row in its label's
     /// sidebar listing forever (the sweep only ever REPLACES the set of a label
     /// it re-reads), an orphaned sidecar is a body nothing can reach, and an
@@ -35,8 +36,11 @@ extension MailStore {
             var changes = ChangeSet()
             for row in try modelContext.fetch(descriptor) where !ids.contains(row.id) {
                 let id = row.id
+                // A message under the triage fence was just MOVED into this scope
+                // optimistically; a listing fetched before the POST landed cannot
+                // know that. Spare it; the first pass after the fence drops decides.
+                if pendingMutations[PendingKey(accountID: accountID, messageID: id)] != nil { continue }
                 changes.deleted.insert(id)
-                pendingMutations[PendingKey(accountID: accountID, messageID: id)] = nil
                 dropLabelPins(messageID: id, accountID: accountID)
                 try modelContext.delete(
                     model: CachedMessageBody.self,
@@ -73,7 +77,11 @@ extension MailStore {
         )
         do {
             var changes = ChangeSet()
-            for row in try modelContext.fetch(descriptor) where !threadIDs.contains(row.threadID) {
+            // Same fence as `deleteMissingMessages`: a destination-scope row
+            // materialised by an in-flight move is not in a pre-POST listing.
+            let fenced = pendingThreadIDs(accountID: accountID)
+            for row in try modelContext.fetch(descriptor)
+            where !threadIDs.contains(row.threadID) && !fenced.contains(row.threadID) {
                 changes.deleted.insert(row.threadID)
                 modelContext.delete(row)
             }

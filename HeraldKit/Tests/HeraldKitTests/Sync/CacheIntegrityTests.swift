@@ -145,9 +145,9 @@ struct CacheIntegrityTests {
     /// Fails if `deleteMissingMessages` drops the message row alone. Every orphan
     /// it used to leave is durable: the assignment keeps the dead message in its
     /// label's listing forever (the sweep only REPLACES the set of a label it
-    /// re-reads), the sidecar is a body nothing can reach, and the fence blocks the
-    /// journal from ever writing that id again.
-    @Test("Tombstoning cascades to bodies, labels and the pending fence")
+    /// re-reads) and the sidecar is a body nothing can reach. A row under the
+    /// triage fence is never tombstoned at all, so no fence can be orphaned.
+    @Test("Tombstoning cascades to bodies and labels, and spares a fenced row")
     func tombstoningCascades() async throws {
         let store = try MailStore.inMemory()
         _ = try await store.upsertMessages(
@@ -175,12 +175,13 @@ struct CacheIntegrityTests {
             ],
             accountID: account
         )
-        // A local star on m2 leaves a pending fence behind for the delete to clear.
-        _ = try await store.applyLocalAction(.star, messageID: "m2", accountID: account)
-        #expect(await store.hasPendingMutation(messageID: "m2", accountID: account))
+        // A star on m1 is IN FLIGHT: the listing below predates it, so m1 is
+        // spared even though the listing omits it (OptimisticFenceTests has the
+        // race this guards). Its fence must survive for the settle to take down.
+        _ = try await store.applyLocalAction(.star, messageID: "m1", accountID: account)
 
         let changes = try await store.deleteMissingMessages(
-            accountID: account, mailboxID: "mbx_a", folder: .inbox, keeping: ["m1"]
+            accountID: account, mailboxID: "mbx_a", folder: .inbox, keeping: []
         )
 
         #expect(changes.deleted == ["m2", "m3"])
@@ -188,14 +189,11 @@ struct CacheIntegrityTests {
         #expect(try await store.labelIDs(messageID: "m3", accountID: account).isEmpty)
         #expect(try await store.cachedBody(messageID: "m2", accountID: account) == nil, "Orphaned body sidecar")
         #expect(try await store.labelIDs(messageID: "m2", accountID: account).isEmpty, "Orphaned label assignment")
-        #expect(
-            await store.hasPendingMutation(messageID: "m2", accountID: account) == false,
-            "A fence on a deleted row blocks the journal forever"
-        )
-
-        // The surviving message keeps everything: the cascade is per-row, not a sweep.
-        #expect(try await store.message(id: "m1", accountID: account) != nil)
+        #expect(try await store.message(id: "m1", accountID: account) != nil, "A fenced row was tombstoned mid-POST")
         #expect(try await store.cachedBody(messageID: "m1", accountID: account) != nil)
+        #expect(await store.hasPendingMutation(messageID: "m1", accountID: account))
+
+        // The spared message keeps everything: the cascade is per-row, not a sweep.
         #expect(try await store.labelIDs(messageID: "m1", accountID: account) == ["lbl_1"])
     }
 

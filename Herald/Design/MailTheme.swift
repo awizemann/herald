@@ -83,6 +83,9 @@ enum MailTheme {
         static let archive = "archivebox"
         static let trash = "trash"
         static let send = "paperplane.fill"
+        static let signature = "signature"
+        /// An invalid recipient token (compose To/Cc/Bcc).
+        static let invalidRecipient = "exclamationmark.circle"
         static let nothingSelected = "envelope.open"
         static let noResults = "magnifyingglass"
     }
@@ -337,6 +340,33 @@ enum MailTheme {
     static let unreadDotDiameter: CGFloat = 8
 
     static let minWindow = CGSize(width: 900, height: 560)
+    /// The compose window's default AND minimum size (§3.3).
+    static let composeWindow = CGSize(width: 820, height: 620)
+
+    /// Compose window metrics (§3.3).
+    nonisolated enum Compose {
+        /// The toolbar band: traffic lights, title, actions.
+        static let bandHeight: CGFloat = 52
+        /// Leading inset clearing the traffic lights in the band.
+        static let trafficLightInset: CGFloat = 90
+        static let labelColumn: CGFloat = 64
+        static let rowHeight: CGFloat = 40
+        static let subjectRowHeight: CGFloat = 44
+        static let footerHeight: CGFloat = 40
+        static let sendHeight: CGFloat = 28
+        /// Body text inset: lines the text up with the field values.
+        static let bodyLeading: CGFloat = 98
+        static let bodyTop: CGFloat = 18
+        static let bodyMaxWidth: CGFloat = 600
+        static let tokenHeight: CGFloat = 22
+        static let tokenAvatar: CGFloat = 16
+        static let fromPopoverWidth: CGFloat = 340
+        static let disabledSendOpacity: Double = 0.45
+        static let unsendableOpacity: Double = 0.4
+        static let invalidTokenFill: Double = 0.08
+        static let invalidTokenRing: Double = 0.5
+        static let shortcutHintOpacity: Double = 0.75
+    }
 
     // MARK: Spacing scale
 
@@ -530,6 +560,14 @@ enum MailTheme {
         static let emptyTitle = Style(.serifSubhead, size: 18, relativeTo: .title3)
         /// 14 semibold — the sidebar's level-2 domain header (handoff: 14/600).
         static let sidebarHeader = Style(.textSemibold, size: 14, relativeTo: .headline)
+        /// Serif 17 — the compose window's title in its toolbar band.
+        static let windowTitle = Style(.serifSubhead, size: 17, relativeTo: .headline)
+        /// Serif 18 — the compose Subject field.
+        static let composeSubject = Style(.serifSubhead, size: 18, relativeTo: .title3)
+        /// 12 — compose field labels ("From", "To") and the footer (§3.3).
+        static let fieldLabel = Style(.text, size: 12, relativeTo: .callout)
+        /// 8 semibold — a recipient token's 16pt initials avatar.
+        static let tokenInitials = Style(.textSemibold, size: 8, relativeTo: .caption2)
         /// 11 semibold — a thread row's 28pt avatar initials.
         static let avatarInitials = Style(.textSemibold, size: 11, relativeTo: .caption)
 

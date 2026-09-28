@@ -118,3 +118,21 @@ extension AppEnvironment {
         if active { await retryAutomaticReauthentication() }
     }
 }
+
+extension AppEnvironment {
+    /// The domain badge for a From candidate's mailbox, resolved against the
+    /// composer's OWN account (monogram clash rule over the account's full
+    /// mailbox list, observed tint and monogram overrides).
+    func composeFromBadge(requestID: ComposeRequest.ID, mailboxID: String) -> DomainBadgeResolver.Info? {
+        guard let session = composeSessions[requestID] else { return nil }
+        let accountID = session.accountID
+        let live = graphs[accountID]?.mail.mailboxes ?? []
+        return DomainBadgeResolver.resolve(
+            mailboxID: mailboxID,
+            mailboxes: live.isEmpty ? session.context.fromMailboxes : live,
+            accountID: accountID,
+            tintName: accountTintName(for: accountID),
+            in: domainPreferencesObserved()
+        )
+    }
+}

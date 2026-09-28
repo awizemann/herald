@@ -204,7 +204,7 @@ final class ComposeViewModel {
     /// equivalent itself (it lives on an always-enabled proxy, so a hold cannot
     /// withdraw it) and SwiftUI therefore no longer draws "⌘⇧D" in the tooltip.
     nonisolated static func sendHelp(_ hold: SendHold?) -> String {
-        sendHoldReason(hold) ?? "Send (⌘⇧D)"
+        sendHoldReason(hold) ?? "Send (⌘↩)"
     }
     /// Drives the ⌘W confirmation sheet.
     var confirmsClose = false
@@ -300,6 +300,14 @@ final class ComposeViewModel {
     }
 
     var attachments: [DraftAttachment] { draft.uploadedAttachments }
+
+    /// The toolbar band's save caption (§3.3): "Saving…" while a save runs,
+    /// "Draft saved" once the server holds every edit, else nothing.
+    var saveStatusCaption: String? {
+        if status == .saving { return "Saving…" }
+        guard !isClosed, draft.serverDraft != nil, !draft.isDirty, status == .idle else { return nil }
+        return "Draft saved"
+    }
 
     /// Busy includes queued uploads: a batch that finishes its first file resets
     /// `status` to idle, and a Send button that re-enables there would send the

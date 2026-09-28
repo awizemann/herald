@@ -150,6 +150,16 @@ nonisolated enum AccessibilityID {
         static let send = "compose.send"
         static let attach = "compose.attach"
         static let deleteDraft = "compose.deleteDraft"
+        /// The From field (opens the address popover).
+        static let from = "compose.from"
+        static let fromFilter = "compose.from.filter"
+        /// "Cc Bcc" on the To row.
+        static let ccBccToggle = "compose.ccBcc"
+        /// The band's "Draft saved" caption.
+        static let saveStatus = "compose.saveStatus"
+        static let signature = "compose.signature"
+        /// The footer's inline validation message.
+        static let validation = "compose.validation"
         /// The header spinner while the composer is busy (saving/sending).
         static let busy = "compose.busy"
         /// The error bar's text: ONE combined element (message plus, when

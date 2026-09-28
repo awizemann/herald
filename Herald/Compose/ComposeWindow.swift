@@ -17,7 +17,7 @@ struct ComposeScene: Scene {
                 .defaultAppStorage(UITestHarness.launched?.defaults ?? .standard)
                 #endif
         }
-        .defaultSize(width: 680, height: 520)
+        .defaultSize(MailTheme.composeWindow)
         // NOT `.commandsRemoved()`: that also removes the scene from the Window
         // menu, so an open compose window could not be brought back with the
         // keyboard once it went behind the mail window.
@@ -38,7 +38,9 @@ private struct ComposeWindowRoot: View {
     var body: some View {
         Group {
             if let model {
-                ComposeView(model: model)
+                ComposeView(model: model) { mailboxID in
+                    requestID.flatMap { environment.composeFromBadge(requestID: $0, mailboxID: mailboxID) }
+                }
             } else {
                 ContentUnavailableView(
                     "This draft is no longer available",
@@ -47,7 +49,8 @@ private struct ComposeWindowRoot: View {
                 )
             }
         }
-        .frame(minWidth: 600, minHeight: 440)
+        .frame(minWidth: MailTheme.composeWindow.width, minHeight: MailTheme.composeWindow.height)
+        .background(MailTheme.Color.surface)
         .task(id: requestID) {
             guard let requestID else { return }
             // Idempotent: this task re-runs whenever SwiftUI rebuilds the scene
@@ -90,23 +93,29 @@ struct ComposeView: View {
     @State private var attachmentPreviewURL: URL?
     @State private var attachmentsHeight: CGFloat = 0
 
+    /// The From badge for a mailbox id (monogram + account tint).
+    var fromBadge: (String) -> DomainBadgeResolver.Info? = { _ in nil }
+    @FocusState private var focus: ComposeFocus?
+
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
             fields
-            Divider()
-            TextEditor(text: $model.bodyText)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(MailTheme.Spacing.sm)
-                .frame(minHeight: 200)
-                .accessibilityLabel("Message body")
-                .accessibilityIdentifier(AccessibilityID.Compose.body)
-            if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
-            if model.showsSignaturePicker { signatureSection }
-            if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
+                .padding(.horizontal, MailTheme.Spacing.xxl)
+            bodySection
             if let message = model.status.message { errorBar(message) }
+            footer
+        }
+        .background(MailTheme.Color.surface)
+        .ignoresSafeArea(.container, edges: .top)
+        .background(ComposeWindowChrome())
+        // The band draws the title and its own fill; the (empty) toolbar only
+        // sizes the titlebar to 52pt so the traffic lights sit centred in it.
+        .toolbar(removing: .title)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        // Pending recipient text is committed when its field loses focus.
+        .onChange(of: focus) { old, _ in
+            if let field = old?.recipientField { model.commitPending(field) }
         }
         // The WHOLE window is the drop target, not just the attachment bar: a bar
         // that only exists once there is an attachment cannot receive the first one.
@@ -171,22 +180,32 @@ struct ComposeView: View {
 
     // MARK: Pieces
 
+    /// The 52pt toolbar band: traffic lights (window chrome), serif title,
+    /// save status, Attach, Discard, Send. Drags the window.
     private var header: some View {
         HStack(spacing: MailTheme.Spacing.sm) {
-            Button { Task { await model.send() } } label: {
-                Label("Send", systemImage: MailTheme.Symbol.send)
+            Text(model.windowTitle)
+                .textStyle(MailTheme.Typography.windowTitle)
+                .foregroundStyle(MailTheme.Color.ink)
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+
+            Spacer(minLength: MailTheme.Spacing.md)
+
+            if model.isBusy {
+                // A bare spinner is an unlabelled "busy" element: VoiceOver said
+                // "progress indicator" and nothing about what the window is doing.
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(model.busyDescription)
+                    .accessibilityIdentifier(AccessibilityID.Compose.busy)
             }
-            // `isSendBlocked`: the server asked for no further attempt at this
-            // message (it may already be delivered). The window stays open with
-            // everything in it; only the verb that would duplicate it is gone.
-            .disabled(model.isBusy || model.isSendBlocked)
-            // Both say the SAME sentence, and it is the hold's own reason rather
-            // than the verb: a dimmed Send with no explanation is announced as
-            // "Send, dimmed" and leaves the user guessing whether the message
-            // went. The shortcut is deliberately NOT here — see `sendShortcut`.
-            .help(model.sendHelp)
-            .accessibilityHint(model.sendHoldReason ?? "")
-            .accessibilityIdentifier(AccessibilityID.Compose.send)
+            if let caption = model.saveStatusCaption {
+                Text(caption)
+                    .textStyle(MailTheme.Typography.caption)
+                    .foregroundStyle(MailTheme.Color.ink3)
+                    .accessibilityIdentifier(AccessibilityID.Compose.saveStatus)
+            }
 
             Button { Task { await model.addAttachments() } } label: {
                 Image(systemName: MailTheme.Symbol.attachment)
@@ -203,63 +222,134 @@ struct ComposeView: View {
             .buttonStyle(.borderless)
             .accessibilityIdentifier(AccessibilityID.Compose.deleteDraft)
 
-            Spacer()
-
-            if model.isBusy {
-                // A bare spinner is an unlabelled "busy" element: VoiceOver said
-                // "progress indicator" and nothing about what the window is doing.
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel(model.busyDescription)
-                    .accessibilityIdentifier(AccessibilityID.Compose.busy)
-            }
+            sendButton
         }
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.sm)
+        .padding(.leading, MailTheme.Compose.trafficLightInset)
+        .padding(.trailing, MailTheme.Spacing.lg)
+        .frame(height: MailTheme.Compose.bandHeight)
+        .background(MailTheme.Color.bg)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MailTheme.Color.lineSoft).frame(height: 1)
+        }
+        .contentShape(Rectangle())
+        .gesture(WindowDragGesture())
+    }
+
+    private var sendButton: some View {
+        Button { Task { await model.send() } } label: {
+            HStack(spacing: MailTheme.Spacing.sm - MailTheme.Spacing.xxs) {
+                Image(systemName: MailTheme.Symbol.send)
+                Text("Send").textStyle(MailTheme.Typography.bodyMedium)
+                Text("⌘↩")
+                    .textStyle(MailTheme.Typography.meta)
+                    .opacity(MailTheme.Compose.shortcutHintOpacity)
+            }
+            .foregroundStyle(MailTheme.Color.onAccent)
+            .padding(.horizontal, MailTheme.Spacing.md)
+            .frame(height: MailTheme.Compose.sendHeight)
+            .background(MailTheme.Color.accent, in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SendButtonStyle())
+        // Disabled until there is at least one valid recipient and no invalid
+        // one (`isSendEnabled`, which also covers a send hold / signed-out
+        // account). The footer says why.
+        .disabled(model.isBusy || !model.isSendEnabled)
+        // Both say the SAME sentence, and it is the hold's own reason rather
+        // than the verb. The shortcuts are NOT here — see `sendShortcut`.
+        .help(model.sendHelp)
+        .accessibilityLabel("Send")
+        .accessibilityHint(model.sendHoldReason ?? model.validationMessage ?? "")
+        .accessibilityIdentifier(AccessibilityID.Compose.send)
     }
 
     private var fields: some View {
         VStack(spacing: 0) {
-            addressField("To", text: $model.toText, field: .to, identifier: AccessibilityID.Compose.to)
-            Divider()
-            addressField("Cc", text: $model.ccText, field: .cc, identifier: AccessibilityID.Compose.cc)
-            Divider()
-            addressField("Bcc", text: $model.bccText, field: .bcc, identifier: AccessibilityID.Compose.bcc)
-            Divider()
-            LabeledField(label: "Subject") {
-                TextField("Subject", text: $model.subject)
+            if !model.fromCandidates.isEmpty {
+                ComposeFieldRow(label: "From") {
+                    ComposeFromField(model: model, badge: fromBadge)
+                }
+            }
+            ComposeFieldRow(label: "To") {
+                HStack(alignment: .top, spacing: MailTheme.Spacing.sm) {
+                    RecipientTokenField(model: model, field: .to, label: "To", identifier: AccessibilityID.Compose.to, focus: $focus)
+                    if !model.showsCcBcc {
+                        Button("Cc Bcc") {
+                            model.showsCcBcc = true
+                            focus = .cc
+                        }
+                        .buttonStyle(.plain)
+                        .textStyle(MailTheme.Typography.fieldLabel)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                        .frame(height: MailTheme.Compose.rowHeight)
+                        .help("Show the Cc and Bcc fields")
+                        .accessibilityLabel("Show Cc and Bcc")
+                        .accessibilityIdentifier(AccessibilityID.Compose.ccBccToggle)
+                    }
+                }
+            }
+            if model.showsCcBcc {
+                ComposeFieldRow(label: "Cc") {
+                    RecipientTokenField(model: model, field: .cc, label: "Cc", identifier: AccessibilityID.Compose.cc, focus: $focus)
+                }
+                ComposeFieldRow(label: "Bcc") {
+                    RecipientTokenField(model: model, field: .bcc, label: "Bcc", identifier: AccessibilityID.Compose.bcc, focus: $focus)
+                }
+            }
+            ComposeFieldRow(label: "Subject", height: MailTheme.Compose.subjectRowHeight) {
+                TextField("Subject", text: $model.subject, prompt: Text("Subject").foregroundStyle(MailTheme.Color.ink3))
                     .textFieldStyle(.plain)
+                    .font(MailTheme.Typography.composeSubject.font)
+                    .foregroundStyle(MailTheme.Color.ink)
+                    // The serif's tall ascender is clipped by the field
+                    // editor's default single-line height (live finding).
+                    .frame(minHeight: MailTheme.Compose.tokenHeight + MailTheme.Spacing.xs)
+                    .focused($focus, equals: .subject)
                     .accessibilityLabel("Subject")
                     .accessibilityIdentifier(AccessibilityID.Compose.subject)
             }
         }
     }
 
-    private func addressField(
-        _ label: String,
-        text: Binding<String>,
-        field: ComposeViewModel.Field,
-        identifier: String
-    ) -> some View {
-        let hint = model.hint(for: field)
-        return LabeledField(label: label) {
-            VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
-                TextField(label, text: text)
-                    .textFieldStyle(.plain)
-                    .accessibilityLabel(label)
-                    // The hint belongs to the FIELD. As a sibling Text it was a
-                    // separate element the user only met after leaving the field
-                    // they had to go back and fix.
-                    .accessibilityHint(hint ?? "")
-                    .accessibilityIdentifier(identifier)
-                if let hint {
-                    Text(hint)
-                        .font(.caption)
-                        .foregroundStyle(MailTheme.failure)
-                        .accessibilityHidden(true)
-                }
-            }
+    /// Body, signature block, quoted preview and attachment cards, inset to
+    /// line up with the field values (padding 18 24 0 98, max width 600).
+    private var bodySection: some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.md) {
+            TextEditor(text: $model.bodyText)
+                .textStyle(MailTheme.Typography.reading)
+                .foregroundStyle(MailTheme.Color.ink)
+                .scrollContentBackground(.hidden)
+                .focused($focus, equals: .body)
+                .frame(minHeight: 120)
+                .accessibilityLabel("Message body")
+                .accessibilityIdentifier(AccessibilityID.Compose.body)
+            if let preview = model.signaturePreview { signatureBlock(preview) }
+            if let quotedPreview = model.quotedPreview { quotedPreviewSection(quotedPreview) }
+            if !model.attachments.isEmpty || !model.pendingUploads.isEmpty { attachmentBar }
         }
+        .frame(maxWidth: MailTheme.Compose.bodyMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.top, MailTheme.Compose.bodyTop)
+        .padding(.leading, MailTheme.Compose.bodyLeading - MailTheme.Spacing.xs)
+        .padding(.trailing, MailTheme.Spacing.xxl)
+        .padding(.bottom, MailTheme.Spacing.md)
+    }
+
+    /// Read-only preview of the signature the SERVER appends: "—", then its
+    /// lines in 13 ink2. Display only — never written into `bodyText`, the
+    /// server would send it twice.
+    private func signatureBlock(_ preview: String) -> some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
+            Text("—")
+            Text(preview)
+                .lineLimit(6)
+                .textSelection(.enabled)
+        }
+        .textStyle(MailTheme.Typography.body)
+        .foregroundStyle(MailTheme.Color.ink2)
+        .padding(.leading, MailTheme.Spacing.xs + 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Signature preview, added automatically when you send: \(preview)")
     }
 
     /// Read-only, collapsed-by-default preview of the quoted original the
@@ -280,29 +370,14 @@ struct ComposeView: View {
             .frame(maxHeight: 160)
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.md))
         }
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.sm)
         .accessibilityLabel("Quoted original message, included automatically when you send")
     }
 
-    /// Signature picker plus a read-only preview of what the server will append.
-    ///
-    /// Display only, exactly like ``quotedPreviewSection``: the server assembles
-    /// authored text + signature + quoted original itself, so writing the preview
-    /// into `model.bodyText` would send the signature twice.
-    private var signatureSection: some View {
-        VStack(alignment: .leading, spacing: MailTheme.Spacing.xs) {
-            if let preview = model.signaturePreview {
-                Text(preview)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(MailTheme.Spacing.sm)
-                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: MailTheme.Radius.md))
-                    .accessibilityLabel("Signature preview, added automatically when you send")
-            }
+    /// The 40pt footer: signature picker + scope caption on the left, inline
+    /// validation on the right.
+    private var footer: some View {
+        HStack(spacing: MailTheme.Spacing.md) {
+            if model.showsSignaturePicker {
             Menu {
                 // Toggle rows, exactly like `LabelMenu`/`MessageLabelMenu`: the
                 // checkmark a `Toggle` draws is also EXPOSED (VoiceOver says
@@ -324,10 +399,21 @@ struct ComposeView: View {
                     .disabled(!option.isSelectable)
                 }
             } label: {
-                Text(model.signatureMenuLabel)
+                HStack(spacing: MailTheme.Spacing.xs + MailTheme.Spacing.xxs) {
+                    Image(systemName: MailTheme.Symbol.signature)
+                    Text(model.signatureCaption?.name ?? model.signatureMenuLabel)
+                    Image(systemName: MailTheme.Symbol.folderMenu)
+                        .font(MailTheme.Typography.inlineGlyph)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                }
+                .foregroundStyle(MailTheme.Color.ink2)
+                .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityIdentifier(AccessibilityID.Compose.signature)
             // Label only, NO `.accessibilityValue`: a pop-up button's value is
             // already its label view (the current signature), so spelling the
             // same string into the value made VoiceOver say it twice. The
@@ -335,9 +421,33 @@ struct ComposeView: View {
             // is not the accessibility element (see `MessageLabelMenu`).
             .accessibilityLabel("Signature")
             .disabled(model.isBusy)
+                if let caption = model.signatureCaption {
+                    Text(caption.scope)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: MailTheme.Spacing.md)
+            if let message = model.validationMessage {
+                HStack(spacing: MailTheme.Spacing.xs + MailTheme.Spacing.xxs) {
+                    Image(systemName: MailTheme.Symbol.warning)
+                        .foregroundStyle(MailTheme.Color.warn)
+                        .accessibilityHidden(true)
+                    Text(message)
+                        .foregroundStyle(MailTheme.Color.ink)
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(AccessibilityID.Compose.validation)
+            }
         }
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.sm)
+        .textStyle(MailTheme.Typography.fieldLabel)
+        .padding(.horizontal, MailTheme.Spacing.xxl)
+        .frame(height: MailTheme.Compose.footerHeight)
+        .background(MailTheme.Color.bg)
+        .overlay(alignment: .top) {
+            Rectangle().fill(MailTheme.Color.lineSoft).frame(height: 1)
+        }
     }
 
     /// Two rows of cards before the section scrolls instead of eating the body.
@@ -386,8 +496,7 @@ struct ComposeView: View {
                     )
                 }
             }
-            .padding(.horizontal, MailTheme.Spacing.md)
-            .padding(.vertical, MailTheme.Spacing.sm)
+            .padding(.vertical, MailTheme.Spacing.xxs)
     }
 
     private func errorBar(_ message: String) -> some View {
@@ -460,11 +569,15 @@ struct ComposeView: View {
     /// re-announces the reason. `isBusy` still disables it: a send already in
     /// flight is a different thing from one the server has forbidden.
     private var sendShortcut: some View {
-        Button("Send") { Task { await model.send() } }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
-            .disabled(model.isBusy)
-            .opacity(0)
-            .accessibilityHidden(true)
+        ZStack {
+            Button("Send") { Task { await model.send() } }
+                .keyboardShortcut(.return, modifiers: .command)
+            Button("Send") { Task { await model.send() } }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+        }
+        .disabled(model.isBusy)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     /// ⌘V attaches files and images from the pasteboard — and, when there are
@@ -473,6 +586,14 @@ struct ComposeView: View {
     /// is not a nicety: without it, pasting text into the body would stop working.
     private var pasteShortcut: some View {
         Button("Paste") {
+            // Text pasted into a recipient field splits into tokens.
+            if let field = focus?.recipientField,
+               let text = NSPasteboard.general.string(forType: .string),
+               NSPasteboard.general.availableType(from: [.fileURL, .tiff, .png]) == nil {
+                model.paste(text, into: field)
+                ComposeFieldEditor.sync(to: model.pendingText(for: field))
+                return
+            }
             let contents = PasteboardReader.contents()
             Task {
                 if await model.paste(contents) == false {
@@ -486,21 +607,15 @@ struct ComposeView: View {
     }
 }
 
-/// A left-aligned label column so the fields line up like Mail's.
-private struct LabeledField<Content: View>: View {
-    let label: String
-    @ViewBuilder var content: Content
+/// The primary Send: exactly 45% when disabled (§3.3) — `.plain` would dim
+/// it again on top — and a press darken.
+private struct SendButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
 
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.sm) {
-            Text(label)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(width: 56, alignment: .trailing)
-            content
-        }
-        .padding(.horizontal, MailTheme.Spacing.md)
-        .padding(.vertical, MailTheme.Spacing.sm)
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .brightness(configuration.isPressed ? -0.08 : 0)
+            .opacity(isEnabled ? 1 : MailTheme.Compose.disabledSendOpacity)
     }
 }
 

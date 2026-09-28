@@ -324,7 +324,7 @@ actor FakeOutbox: Outboxing {
         #expect(ComposeViewModel.sendHoldReason(nil) == nil)
         // The shortcut is spelled out: the button no longer carries the key
         // equivalent, so SwiftUI no longer draws it in the tooltip.
-        #expect(ComposeViewModel.sendHelp(nil) == "Send (⌘⇧D)")
+        #expect(ComposeViewModel.sendHelp(nil) == "Send (⌘↩)")
 
         for hold in SendHold.allCases {
             let reason = ComposeViewModel.sendHoldReason(hold)

@@ -236,9 +236,9 @@ This layout is the template for every future settings area (Workflows and so on)
 - **Account** (new; per account, following the account card):
   - "SERVER" card:
     - Server = the origin (mono) [SERVER].
-    - Sync = the status caption ("Synced just now · checks every 2 minutes while Herald is open") + a **Sync Now** button.
+    - Sync = the status caption ("Synced just now"; no fixed interval is stated, because sync is driven by the server's wake signal) + a **Sync Now** button.
   - "ON THIS MAC" card: **Account colour**. The 8 tint swatches (18pt; the current one has a 2pt surface gap + an ink ring), then **Reset** (enabled once overridden) [HERALD]. **This is where the account-tint override lives.**
-  - Sign-out card: "Sign out of Wizemann Studio", "Removes this account and its cached mail from Herald on this Mac. Other accounts keep syncing. Nothing changes on the server.", and a **Sign Out…** button (outline, danger text). **Sign Out moved here from the old ellipsis menu.**
+  - Sign-out card: "Sign out of Wizemann Studio", "Removes this account and its cached mail from Herald on this Mac. Other accounts keep syncing. Your mail on the server isn't touched." (Sign-out revokes Herald's sign-in grant on the server, so "Nothing changes on the server" would be untrue.) Then a **Sign Out…** button (outline, danger text). **Sign Out moved here from the old ellipsis menu.**
 
 **Domain pages:**
 - **Overview:**

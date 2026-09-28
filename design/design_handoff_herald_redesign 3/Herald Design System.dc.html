@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta name="design_doc_mode" content="canvas"></meta>
+  <link rel="preconnect" href="https://fonts.googleapis.com"></link>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap"></link>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,200..500,0..1,0&amp;display=block"></link>
+  <style>body{margin:0;background:#e6e8ec;-webkit-font-smoothing:antialiased}a{color:inherit}a:hover{opacity:.7}</style>
+</helmet>
+<div style="width:max-content;display:flex;flex-direction:column;gap:96px;padding:64px;font-family:'Geist',system-ui,sans-serif;color:#1e2230;--bg:oklch(0.99 0.002 255);--sidebar:oklch(0.962 0.004 255);--surface:oklch(1 0 0);--line:oklch(0.9 0.006 255);--line-soft:oklch(0.94 0.004 255);--ink:oklch(0.2 0.012 262);--ink-2:oklch(0.44 0.014 262);--ink-3:oklch(0.55 0.012 262);--accent:oklch(0.52 0.17 262);--on-accent:#fff;--select:oklch(0.93 0.035 262);--star:oklch(0.76 0.15 78);--danger:oklch(0.55 0.19 27);--ok:oklch(0.56 0.13 150);--warn:oklch(0.66 0.14 70);--match:oklch(0.92 0.1 98);--d-bg:oklch(0.185 0.006 262);--d-sidebar:oklch(0.155 0.006 262);--d-surface:oklch(0.22 0.007 262);--d-line:oklch(0.31 0.009 262);--d-line-soft:oklch(0.26 0.008 262);--d-ink:oklch(0.955 0.004 255);--d-ink-2:oklch(0.74 0.01 258);--d-ink-3:oklch(0.62 0.01 258);--d-accent:oklch(0.72 0.14 262);--d-on-accent:oklch(0.16 0.02 262);--d-select:oklch(0.3 0.05 262);--d-star:oklch(0.8 0.14 80);--d-danger:oklch(0.7 0.16 27);--d-warn:oklch(0.8 0.13 75);--d-match:oklch(0.48 0.09 95);--display:'Source Serif 4',Georgia,serif;--display-w:600;--text:'Geist',system-ui,sans-serif;--mono:'Geist Mono',ui-monospace,monospace;--icon-w:400;--r-sm:5px;--r-md:7px;--r-lg:10px;--tint-l:0.66;--tint-c:0.1">
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 6 · Compose window</span>
+      <span style="font-size:15px;color:#4b5060;max-width:1200px;text-wrap:pretty">The compose window uses the same tokens as the rest of the design system. The toolbar holds the title in serif, the draft-saved status, Attach, Discard and the primary Send (⌘↩). A From picker, grouped by domain with badges, sits above To; mailboxes that can't send are dimmed. Cc and Bcc are hidden until you ask for them. The subject is set in serif. The body aligns with the field values. A footer holds the signature picker, which names where the signature comes from, plus inline validation. All four windows are clickable.</span>
+    </div>
+    <div id="6a" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:820px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">6a · 1</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">New message</span><span style="font-size:13px;color:#5b6070">Empty; From defaults to the current scope</span></div>
+        <dc-import name="Herald Compose" variant="new" hint-size="820px,620px"></dc-import>
+      </div>
+      <div style="flex:none;width:820px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">6a · 2</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Draft in progress</span><span style="font-size:13px;color:#5b6070">Reply-ready: Cc shown, attachments, mailbox signature</span></div>
+        <dc-import name="Herald Compose" variant="filled" hint-size="820px,620px"></dc-import>
+      </div>
+      <div style="flex:none;width:820px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">6a · 3</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">From picker</span><span style="font-size:13px;color:#5b6070">Grouped by domain; filterable for 100+ addresses</span></div>
+        <dc-import name="Herald Compose" variant="from" hint-size="820px,620px"></dc-import>
+      </div>
+      <div style="flex:none;width:820px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">6a · 4</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Invalid recipient</span><span style="font-size:13px;color:#5b6070">Token turns danger; Send disabled; reason in the footer</span></div>
+        <dc-import name="Herald Compose" variant="warn" hint-size="820px,620px"></dc-import>
+      </div>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 5 · Engineering revisions</span>
+      <span style="font-size:15px;color:#4b5060;max-width:1200px;text-wrap:pretty">Scope and folder are now independent. At levels 1 and 2 the list title is a folder menu ("Inbox ▾"). At level 3 the sidebar lists the folders, so the title is plain. Labels move to level 1. An open label stays open while you drill in and narrows with the scope, and it combines with the folder. Search is the native toolbar field. The sidebar is drawn as a macOS source list with system-accent selection. The account card popover replaces the ellipsis menu.</span>
+    </div>
+    <div id="5a" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 1</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Folder menu</span><span style="font-size:13px;color:#5b6070">Level 1 · pick any folder across every domain</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" show-folder-menu="{{ yes }}" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 2</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Sent, all domains</span><span style="font-size:13px;color:#5b6070">Scope “All domains” + folder Sent</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-folder="sent" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 3</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Drafts, all domains</span><span style="font-size:13px;color:#5b6070">Every draft, including ones with no mailbox</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-folder="drafts" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 4</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Label at level 1</span><span style="font-size:13px;color:#5b6070">Client label + Inbox, across all domains</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-label="Client" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 5</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Label kept while drilling</span><span style="font-size:13px;color:#5b6070">acme.co · Inbox + Client (the × clears the label)</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-label="Client" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 6</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Drafts empty state</span><span style="font-size:13px;color:#5b6070">team@acme.co has no drafts; links to All Drafts</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-mailbox="team" start-folder="drafts" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 7</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Sidebar unfocused</span><span style="font-size:13px;color:#5b6070">Native grey selection when the list has focus</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-mailbox="sales" sidebar-focused="{{ no }}" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5a · 8</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Account popover</span><span style="font-size:13px;color:#5b6070">Replaces the ellipsis menu: accounts, Add Account…, Settings…</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" show-account-menu="{{ yes }}" hint-size="1180px,720px"></dc-import>
+      </div>
+    </div>
+    <div id="5b" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5b · 1</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Settings › General</span><span style="font-size:13px;color:#5b6070">Density, with a live preview of each option</span></div>
+        <dc-import name="Herald Settings" start-section="general" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5b · 2</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Settings › Compact selected</span><span style="font-size:13px;color:#5b6070">The preview ring follows the choice</span></div>
+        <dc-import name="Herald Settings" start-section="general" density="compact" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5b · 3</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Settings › Account</span><span style="font-size:13px;color:#5b6070">Server origin, sync, account colour and Sign Out (moved from the ellipsis menu)</span></div>
+        <dc-import name="Herald Settings" start-section="account" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">5b · 4</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Settings › Domain › Remove domain</span><span style="font-size:13px;color:#5b6070">Hide, the hidden list with Restore, and Open in HQBase Admin</span></div>
+        <dc-import name="Herald Settings" start-domain="acme.co" start-section="remove" hint-size="1000px,680px"></dc-import>
+      </div>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 4 · Domain settings: sidebar sections + detail pane</span>
+      <span style="font-size:15px;color:#4b5060;max-width:1100px;text-wrap:pretty">Settings follows the mail window's layout: the same account selector, the same drill-down sidebar, and a detail pane on the right. Workflows and future sections slot in as new sidebar items. Every setting is tagged with where it lives: <b>SERVER</b> for the HQBase Mail API, <b>HERALD</b> for this Mac only.</span>
+      <span style="font-size:13px;color:#4b5060;max-width:1100px;text-wrap:pretty;padding:10px 14px;border-radius:8px;background:#fff;box-shadow:inset 0 0 0 1px #d8dbe2">From the API spec (Mail API v1): there are <b>no domain endpoints</b>, and the API deliberately leaves out administrative operations. A domain exists only as <span style="font-family:'Geist Mono',monospace">mailDomainId</span> on each mailbox address, plus domain-scoped signatures (<span style="font-family:'Geist Mono',monospace">/signatures/manage</span>). Herald never deletes a domain on the server: it hides it locally, or links out to HQBase Admin.</span>
+    </div>
+    <div id="4a" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">4a · entry</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Opening domain settings</span><span style="font-size:13px;color:#5b6070">Right-click a domain, or use the gear in its header</span></div>
+        <div style="display:flex;flex-direction:column;gap:24px"><dc-import name="Herald Window" show-domain-menu="{{ yes }}" hint-size="1180px,720px"></dc-import><dc-import name="Herald Window" start-domain="acme.co" highlight-gear="{{ yes }}" hint-size="1180px,720px"></dc-import></div>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">4a · 1</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Overview</span><span style="font-size:13px;color:#5b6070">Server facts plus Herald-only preferences</span></div>
+        <dc-import name="Herald Settings" start-domain="acme.co" start-section="overview" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">4a · 2</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Mailboxes</span><span style="font-size:13px;color:#5b6070">Read-only: sender name, receive and send come from the API</span></div>
+        <dc-import name="Herald Settings" start-domain="acme.co" start-section="mailboxes" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">4a · 3</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Signatures</span><span style="font-size:13px;color:#5b6070">Domain-scoped signatures, the one domain setting the server lets you manage</span></div>
+        <dc-import name="Herald Settings" start-domain="acme.co" start-section="signatures" hint-size="1000px,680px"></dc-import>
+      </div>
+      <div style="flex:none;width:1000px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">4a · 4</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Remove domain</span><span style="font-size:13px;color:#5b6070">Hide locally, restore hidden domains, and link out to HQBase Admin for server deletion</span></div>
+        <dc-import name="Herald Settings" start-domain="acme.co" start-section="remove" hint-size="1000px,680px"></dc-import>
+      </div>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 3 · Thread view</span>
+      <span style="font-size:15px;color:#4b5060;max-width:1000px;text-wrap:pretty">A conversation with more than one message drills in the same way the sidebar does. The list column swaps to the thread's messages, and a back link names the folder it came from (⎋ or ⌘[). The reading pane shows the selected message. Rows with a count carry a chevron, and selecting one opens the thread.</span>
+    </div>
+    <div id="3a" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">3a</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Thread in sales@ Inbox</span><span style="font-size:13px;color:#5b6070">Newest first, like the list · newest selected by default</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-mailbox="sales" start-thread="Q4 retainer — revised scope" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">3a · all domains</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Thread from “All domains”</span><span style="font-size:13px;color:#5b6070">The header keeps the domain and mailbox tags the scope hasn't fixed</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-thread="Re: Issue 14 proofs" hint-size="1180px,720px"></dc-import>
+      </div>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 2 · Sidebar: account → domains → mailboxes → folders</span>
+      <span style="font-size:15px;color:#4b5060;max-width:1000px;text-wrap:pretty">The sidebar drills down one level at a time. The account selector stays at the top, and a back link names the level above. The list scope follows the sidebar, and row attribution drops whatever the scope has already fixed. All three windows are live, so click a domain, then a mailbox, then a folder.</span>
+    </div>
+    <div id="2a" style="display:flex;flex-wrap:nowrap;gap:48px;align-items:flex-start">
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">2a · 1</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Domains</span><span style="font-size:13px;color:#5b6070">Unread per domain; "All domains" is the default scope</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="" start-mailbox="" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">2a · 2</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Mailboxes</span><span style="font-size:13px;color:#5b6070">After clicking acme.co · filterable when a domain has many mailboxes</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-mailbox="" hint-size="1180px,720px"></dc-import>
+      </div>
+      <div style="flex:none;width:1180px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:#1e2230;color:#fff">2a · 3</span><span style="font-family:'Source Serif 4',serif;font-weight:600;font-size:22px">Folders</span><span style="font-size:13px;color:#5b6070">After clicking sales@ · Inbox, Starred, Sent, Drafts, Archived, Trash</span></div>
+        <dc-import name="Herald Window" density="{{ density }}" start-domain="acme.co" start-mailbox="sales" hint-size="1180px,720px"></dc-import>
+      </div>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:24px">
+    <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7080">Turn 1 · Design system: Modern Utility (chosen)</span>
+    <div id="1b" style="position:relative;flex:none;width:1280px;border-radius:20px;overflow:hidden;box-shadow:0 30px 80px -40px rgba(20,25,40,.4)">
+      <div style="position:absolute;top:20px;right:20px;z-index:2;font-family:'Geist Mono',monospace;font-size:12px;font-weight:600;padding:4px 10px;border-radius:99px;background:#1e2230;color:#fff">1b</div>
+      <dc-import name="DS Board" badge="1b" density="{{ density }}" symbol-weight="regular" dc-props="{{ b }}" hint-size="1280px,6200px"></dc-import>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Mock&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      density: this.props.density ?? 'comfortable', yes: true, no: false,
+      b: { title: 'Modern Utility', blurb: 'Crisp cool neutrals, an ink-blue signal, and sans-serif for everything you scan. The serif appears only in headlines, which carries the H through without slowing triage.', fonts: 'Source Serif 4 — headlines\nGeist — text\nGeist Mono — meta' }
+    };
+  }
+}
+</script>
+</body>
+</html>

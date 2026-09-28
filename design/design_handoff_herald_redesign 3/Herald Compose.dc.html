@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="position:relative;width:100%;height:620px;display:flex;flex-direction:column;background:var(--surface);color:var(--ink);font-family:var(--text);font-size:13px;border-radius:12px;overflow:hidden;border:1px solid var(--line);box-shadow:0 30px 60px -30px rgba(20,15,10,.35)">
+  <div style="height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 0 18px;border-bottom:1px solid var(--line-soft);background:var(--bg)">
+    <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span>
+    <span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span>
+    <span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span>
+    <span style="margin-left:14px;font-family:var(--display);font-weight:var(--display-w);font-size:17px;letter-spacing:-0.01em;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ windowTitle }}</span>
+    <span style="font-size:11px;color:var(--ink-3);margin-right:6px">{{ saveState }}</span>
+    <span title="Attach File" style="width:30px;height:28px;display:grid;place-items:center;border-radius:var(--r-sm);font-family:'Material Symbols Rounded';font-size:19px;color:var(--ink-2);font-variation-settings:'wght' var(--icon-w)" style-hover="background:var(--line-soft)">attach_file</span>
+    <span title="Discard Draft" style="width:30px;height:28px;display:grid;place-items:center;border-radius:var(--r-sm);font-family:'Material Symbols Rounded';font-size:19px;color:var(--ink-2);font-variation-settings:'wght' var(--icon-w)" style-hover="background:var(--line-soft)">delete</span>
+    <div style="margin-left:8px;display:flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:var(--r-sm);background:var(--accent);color:var(--on-accent);font-weight:500;opacity:{{ sendOp }}">
+      <span style="font-family:'Material Symbols Rounded';font-size:17px;font-variation-settings:'wght' var(--icon-w)">send</span>Send
+      <span style="font-family:var(--mono);font-size:10px;opacity:.75;margin-left:2px">⌘↩</span>
+    </div>
+  </div>
+
+  <div style="flex:none;display:flex;flex-direction:column;padding:0 24px">
+    <div onClick="{{ toggleFrom }}" style="display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:10px;min-height:40px;border-bottom:1px solid var(--line-soft);cursor:pointer">
+      <span style="font-size:12px;color:var(--ink-3);text-align:right">From</span>
+      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 6px 2px 3px;border-radius:6px;background:{{ fromBg }}" style-hover="background:var(--line-soft)">
+          <span style="height:18px;padding:0 4px;border-radius:5px;display:grid;place-items:center;font-family:var(--mono);font-size:9px;font-weight:600;background:oklch(var(--tint-l) var(--tint-c) 70 / 0.22);box-shadow:inset 0 0 0 1px oklch(var(--tint-l) var(--tint-c) 70 / 0.6)">{{ from.mono }}</span>
+          <span style="font-weight:500">{{ from.name }}</span>
+          <span style="color:var(--ink-2)">{{ from.local }}<span style="color:var(--ink-3)">{{ from.domain }}</span></span>
+          <span style="font-family:'Material Symbols Rounded';font-size:17px;color:var(--ink-3)">expand_more</span>
+        </span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:64px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:40px;border-bottom:1px solid {{ toLine }}">
+      <span style="font-size:12px;color:var(--ink-3);text-align:right">To</span>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:6px 0;min-width:0">
+        <sc-for list="{{ to }}" as="t" hint-placeholder-count="0">
+          <span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 4px 0 3px;border-radius:99px;background:{{ t.bg }};box-shadow:inset 0 0 0 1px {{ t.ring }};color:{{ t.fg }}">
+            <span style="width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:8px;font-weight:600;background:var(--line-soft);color:var(--ink-2)">{{ t.initials }}</span>{{ t.name }}<span style="font-family:'Material Symbols Rounded';font-size:13px;color:var(--ink-3)">{{ t.icon }}</span>
+          </span>
+        </sc-for>
+        <span style="display:inline-flex;align-items:center;min-width:40px;color:var(--ink-3)">{{ toHint }}<sc-if value="{{ caretTo }}" hint-placeholder-val="{{ false }}"><span style="width:1px;height:15px;background:var(--accent)"></span></sc-if></span>
+      </div>
+      <sc-if value="{{ ccHidden }}" hint-placeholder-val="{{ true }}">
+        <span onClick="{{ showCc }}" style="font-size:12px;color:var(--ink-2);padding:2px 6px;border-radius:5px;cursor:pointer" style-hover="background:var(--line-soft);color:var(--ink)">Cc Bcc</span>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ ccShown }}" hint-placeholder-val="{{ false }}">
+      <div style="display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:10px;min-height:40px;border-bottom:1px solid var(--line-soft)">
+        <span style="font-size:12px;color:var(--ink-3);text-align:right">Cc</span>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:6px 0">
+          <sc-for list="{{ cc }}" as="t" hint-placeholder-count="1">
+            <span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px 0 3px;border-radius:99px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--line)">
+              <span style="width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:8px;font-weight:600;background:var(--line-soft);color:var(--ink-2)">{{ t.initials }}</span>{{ t.name }}
+            </span>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:10px;min-height:40px;border-bottom:1px solid var(--line-soft)">
+        <span style="font-size:12px;color:var(--ink-3);text-align:right">Bcc</span>
+        <span style="color:var(--ink-3)"></span>
+      </div>
+    </sc-if>
+
+    <div style="display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:10px;min-height:44px;border-bottom:1px solid var(--line-soft)">
+      <span style="font-size:12px;color:var(--ink-3);text-align:right">Subject</span>
+      <span style="font-family:var(--display);font-weight:var(--display-w);font-size:18px;letter-spacing:-0.01em;color:{{ subjectFg }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ subject }}</span>
+    </div>
+  </div>
+
+  <div style="flex:1;min-height:0;overflow:hidden;padding:18px 24px 0 98px;display:flex;flex-direction:column;gap:12px;font-size:14px;line-height:1.6">
+    <sc-if value="{{ hasBody }}" hint-placeholder-val="{{ false }}">
+      <sc-for list="{{ body }}" as="p" hint-placeholder-count="2">
+        <p style="margin:0;max-width:600px;text-wrap:pretty">{{ p.t }}</p>
+      </sc-for>
+    </sc-if>
+    <sc-if value="{{ noBody }}" hint-placeholder-val="{{ true }}">
+      <span style="display:flex;align-items:center;gap:1px;color:var(--ink-3)"><span style="width:1px;height:18px;background:var(--accent)"></span></span>
+    </sc-if>
+    <div style="display:flex;flex-direction:column;gap:2px;padding-top:6px;max-width:600px;color:var(--ink-2);font-size:13px;line-height:1.5">
+      <span style="color:var(--ink-3)">—</span>
+      <sc-for list="{{ sigLines }}" as="l" hint-placeholder-count="2"><span>{{ l.t }}</span></sc-for>
+    </div>
+    <sc-if value="{{ hasAtt }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;padding-top:6px">
+        <sc-for list="{{ attachments }}" as="a" hint-placeholder-count="2">
+          <div style="display:flex;align-items:center;gap:10px;height:44px;padding:0 10px 0 8px;border-radius:var(--r-md);box-shadow:inset 0 0 0 1px var(--line);background:var(--bg);min-width:200px">
+            <span style="width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:var(--line-soft);font-family:'Material Symbols Rounded';font-size:17px;color:var(--ink-2)">{{ a.icon }}</span>
+            <div style="flex:1;display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.name }}</span><span style="font-family:var(--mono);font-size:10px;color:var(--ink-3)">{{ a.size }}</span></div>
+            <div style="display:flex;align-items:center;gap:2px;margin-left:4px">
+              <span title="Quick Look (Space)" style="width:24px;height:24px;display:grid;place-items:center;border-radius:5px;font-family:'Material Symbols Rounded';font-size:16px;color:var(--ink-2);cursor:pointer;font-variation-settings:'wght' var(--icon-w)" style-hover="background:var(--line-soft);color:var(--ink)">visibility</span>
+              <span title="Download" style="width:24px;height:24px;display:grid;place-items:center;border-radius:5px;font-family:'Material Symbols Rounded';font-size:16px;color:var(--ink-2);cursor:pointer;font-variation-settings:'wght' var(--icon-w)" style-hover="background:var(--line-soft);color:var(--ink)">download</span>
+              <span style="width:1px;height:14px;background:var(--line);margin:0 2px"></span>
+              <span title="Remove" style="width:24px;height:24px;display:grid;place-items:center;border-radius:5px;font-family:'Material Symbols Rounded';font-size:15px;color:var(--ink-3);cursor:pointer" style-hover="background:var(--line-soft);color:var(--ink)">close</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+  </div>
+
+  <div style="height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 16px 0 24px;border-top:1px solid var(--line-soft);background:var(--bg);font-size:12px;color:var(--ink-2)">
+    <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 6px;border-radius:5px" style-hover="background:var(--line-soft)">
+      <span style="font-family:'Material Symbols Rounded';font-size:16px;font-variation-settings:'wght' var(--icon-w)">signature</span>{{ sigName }}<span style="font-family:'Material Symbols Rounded';font-size:15px;color:var(--ink-3)">expand_more</span>
+    </span>
+    <span style="font-size:11px;color:var(--ink-3)">{{ sigScope }}</span>
+    <span style="flex:1"></span>
+    <sc-if value="{{ warn }}" hint-placeholder-val="{{ false }}">
+      <span style="display:inline-flex;align-items:center;gap:5px;color:var(--ink)"><span style="font-family:'Material Symbols Rounded';font-size:16px;color:var(--warn);font-variation-settings:'FILL' 1">warning</span>{{ warnText }}</span>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{ fromOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;top:92px;left:92px;z-index:5;width:340px;max-height:400px;padding:5px;border-radius:var(--r-md);background:var(--surface);box-shadow:0 12px 32px -8px rgba(0,0,0,.3),0 0 0 1px var(--line);display:flex;flex-direction:column;font-size:13px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:6px;height:28px;margin:2px 3px 6px;padding:0 8px;border-radius:6px;background:var(--line-soft);color:var(--ink-3);font-size:12px"><span style="font-family:'Material Symbols Rounded';font-size:15px">search</span>Filter 15 addresses</div>
+      <sc-for list="{{ fromGroups }}" as="g" hint-placeholder-count="2">
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 8px 3px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)">
+          <span style="height:14px;padding:0 3px;border-radius:4px;display:grid;place-items:center;font-family:var(--mono);font-size:8px;font-weight:600;color:var(--ink);letter-spacing:0;background:oklch(var(--tint-l) var(--tint-c) 70 / 0.22);box-shadow:inset 0 0 0 1px oklch(var(--tint-l) var(--tint-c) 70 / 0.6)">{{ g.mono }}</span>{{ g.domain }}
+        </div>
+        <sc-for list="{{ g.items }}" as="i" hint-placeholder-count="2">
+          <div onClick="{{ i.pick }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:5px;cursor:pointer;opacity:{{ i.op }}" style-hover="background:#0063e1;color:#fff">
+            <span style="width:14px;font-family:'Material Symbols Rounded';font-size:15px">{{ i.check }}</span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.local }}<span style="opacity:.6">{{ i.domain }}</span></span>
+            <span style="font-size:11px;opacity:.7">{{ i.note }}</span>
+          </div>
+        </sc-for>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:820,&quot;height&quot;:620},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;new&quot;,&quot;filled&quot;,&quot;from&quot;,&quot;warn&quot;],&quot;default&quot;:&quot;new&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { cc: undefined, from: undefined, fromOpen: undefined };
+
+  static FROM = [
+    { domain: 'acme.co', mono: 'AC', items: [['sales', 'Acme Sales', 1], ['team', 'Acme Team', 1], ['hello', 'Acme', 1], ['careers', 'Acme Careers', 0]] },
+    { domain: 'fieldnotes.press', mono: 'FI', items: [['editor', 'Field Notes', 1], ['subscribe', 'Field Notes', 0]] },
+    { domain: 'ariwize.com', mono: 'AR', items: [['me', 'Ari Wizemann', 1]] }
+  ];
+
+  renderVals() {
+    const variant = this.props.variant ?? 'new';
+    const filled = variant !== 'new';
+    const fromId = this.state.from ?? (filled ? 'sales@acme.co' : 'hello@acme.co');
+    const [fl, fd] = fromId.split('@');
+    const g = Component.FROM.find(x => x.domain === fd);
+    const it = g.items.find(x => x[0] === fl);
+    const fromOpen = this.state.fromOpen ?? variant === 'from';
+    const ccShown = this.state.cc ?? filled;
+    const warn = variant === 'warn';
+
+    const to = filled ? [
+      { name: 'Erik Halvorsen', initials: 'EH', bg: 'var(--bg)', ring: 'var(--line)', fg: 'var(--ink)', icon: '' },
+      ...(warn ? [{ name: 'erik@halvorsen', initials: '?', bg: 'oklch(from var(--danger) l c h / 0.08)', ring: 'oklch(from var(--danger) l c h / 0.5)', fg: 'var(--danger)', icon: 'error' }] : [])
+    ] : [];
+
+    const fromGroups = Component.FROM.map(gr => ({
+      domain: gr.domain, mono: gr.mono,
+      items: gr.items.map(([l, n, can]) => ({ local: l + '@', domain: gr.domain, check: `${l}@${gr.domain}` === fromId ? 'check' : '', op: can ? 1 : 0.4, note: can ? '' : 'Can’t send', pick: can ? () => this.setState({ from: `${l}@${gr.domain}`, fromOpen: false }) : () => {} }))
+    }));
+
+    const sig = filled
+      ? { name: 'Sales team', scope: 'Mailbox signature · sales@', lines: ['The Acme Sales team', 'sales@acme.co · +1 212 555 0142'] }
+      : { name: 'Legal footer', scope: 'Domain default · acme.co', lines: ['Acme Co. · 41 Hudson St, New York'] };
+
+    return {
+      windowTitle: filled ? 'Proposal — Halvorsen rebrand' : 'New Message',
+      saveState: filled ? 'Draft saved' : '',
+      sendOp: filled && !warn ? 1 : 0.45,
+      from: { mono: g.mono, name: it[1], local: fl + '@', domain: fd },
+      fromBg: fromOpen ? 'var(--line-soft)' : 'transparent',
+      toggleFrom: () => this.setState({ fromOpen: !fromOpen }),
+      fromOpen, fromGroups,
+      to, toHint: filled ? '' : 'Name or address', caretTo: !filled, toLine: 'var(--line-soft)',
+      ccShown, ccHidden: !ccShown, showCc: () => this.setState({ cc: true }),
+      cc: [{ name: 'Dana Cole', initials: 'DC' }],
+      subject: filled ? 'Proposal — Halvorsen rebrand' : 'Subject', subjectFg: filled ? 'var(--ink)' : 'var(--ink-3)',
+      hasBody: filled, noBody: !filled,
+      body: [{ t: 'Hi Erik,' }, { t: 'Following Dana’s intro, here’s how we’d approach the rebrand in three phases: an audit of what you have today, a new identity system, and a rollout across the site and print by spring.' }, { t: 'The attached deck has timelines and a rough budget. Happy to walk through it this week.' }],
+      sigLines: sig.lines.map(t => ({ t })), sigName: sig.name, sigScope: sig.scope,
+      hasAtt: filled, attachments: [{ icon: 'slideshow', name: 'Halvorsen — proposal.key', size: '8.4 MB' }, { icon: 'picture_as_pdf', name: 'Acme case studies.pdf', size: '2.1 MB' }],
+      warn, warnText: '“erik@halvorsen” isn’t a valid address'
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -177,6 +177,35 @@ struct SidebarTests {
         #expect(SidebarAccountCard.accessibilityLabel(account: "Studio", unread: 25) == "Account: Studio, 25 unread")
         #expect(SidebarPresentation.itemHeight(for: .comfortable) == 30)
         #expect(SidebarPresentation.itemHeight(for: .compact) == 26)
+        #expect(SidebarPresentation.mailboxFilterPrompt(count: 1) == "Filter 1 mailbox")
+        #expect(SidebarPresentation.mailboxFilterPrompt(count: 7) == "Filter 7 mailboxes")
+        #expect(SidebarPresentation.mailboxFilterPrompt(count: 0) == "Filter 0 mailboxes")
+    }
+
+    /// V2 audit: `defaultMinListRowHeight` alone left Compact sidebar rows at
+    /// the medium size's 30pt. Compact must ask the system for `.small` rows
+    /// (measured 24pt) and floor the content so the drawn row is 26; the
+    /// floors differ by density, so a single shared value fails here.
+    @Test("Compact sidebar rows use the small row size, padded to 26")
+    func sidebarRowSizing() {
+        #expect(SidebarPresentation.rowSize(for: .comfortable) == .medium)
+        #expect(SidebarPresentation.rowSize(for: .compact) == .small)
+        #expect(SidebarPresentation.itemContentMinHeight(for: .comfortable) == 18)
+        #expect(SidebarPresentation.itemContentMinHeight(for: .compact) == 20)
+    }
+
+    /// V2 audit (5a-8): the 290pt account popover centred on a 232pt card
+    /// hung past the window's leading edge. Anchored at half its width it
+    /// starts on the card's leading edge; it never anchors left of centre.
+    @Test("The account popover attaches so it starts at the card's leading edge")
+    func accountPopoverAnchor() {
+        #expect(abs(SidebarPresentation.accountPopoverAnchorX(cardWidth: 232, popoverWidth: 290) - 145.0 / 232.0) < 1e-9)
+        // A card wider than the popover: centred is already inside it.
+        #expect(SidebarPresentation.accountPopoverAnchorX(cardWidth: 400, popoverWidth: 290) == 0.5)
+        // A very narrow card never anchors past its trailing edge.
+        #expect(SidebarPresentation.accountPopoverAnchorX(cardWidth: 100, popoverWidth: 290) == 1)
+        // Not measured yet.
+        #expect(SidebarPresentation.accountPopoverAnchorX(cardWidth: 0, popoverWidth: 290) == 0.5)
     }
 
     /// The account card's number is the All domains Inbox unread — hidden

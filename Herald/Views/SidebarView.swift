@@ -31,12 +31,13 @@ struct SidebarView: View {
     @State private var transient = SidebarTransientState()
     @AccessibilityFocusState private var focusedLevel: Int?
 
+    private var density: ListDensity { ListDensity(rawValue: densityRaw) ?? .comfortable }
+
     var body: some View {
         let level = model.sidebarLevel
         let preferences = environment.domainPreferencesObserved()
         let tint = environment.accountTint(for: model.accountID)
         let monograms = DomainBadgeResolver.monograms(for: model.monogramDomains, accountID: model.accountID, in: preferences)
-        let density = ListDensity(rawValue: densityRaw) ?? .comfortable
         List(selection: selection) {
             switch level {
             case .domains:
@@ -49,6 +50,7 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, SidebarPresentation.itemHeight(for: density))
+        .environment(\.sidebarRowSize, SidebarPresentation.rowSize(for: density))
         .accessibilityIdentifier(AccessibilityID.Sidebar.list)
         // The level swap is the `scope` motion (rows cross-fade); Reduce Motion
         // makes it instant.
@@ -173,6 +175,7 @@ struct SidebarView: View {
                 symbol: MailTheme.Symbol.allDomains, title: "All domains", isStrong: true,
                 unread: model.allDomainsInboxUnread
             )
+            .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
             .tag(MailViewModel.SidebarRow.allDomains)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allDomains")
             ForEach(shown) { domain in
@@ -220,6 +223,7 @@ struct SidebarView: View {
             SidebarCount(unread)
             SidebarChevron()
         }
+        .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
         .tag(MailViewModel.SidebarRow.domain(domain.id))
         .contextMenu { domainMenu(domain, unread: unread) }
         .accessibilityElement(children: .ignore)
@@ -265,6 +269,7 @@ struct SidebarView: View {
         }
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { labelTapped(label.id) })
+        .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
         .tag(MailViewModel.SidebarRow.label(label.id))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(count > 0 ? "\(label.name) label, \(count) conversations" : "\(label.name) label")
@@ -279,6 +284,7 @@ struct SidebarView: View {
         let mailboxes = (domain?.mailboxIDs ?? []).compactMap { id in model.mailboxes.first { $0.id == id } }
         let shown = SidebarPresentation.filter(mailboxes, query: transient.mailboxFilter, name: \.address)
         SidebarItem(symbol: MailTheme.Symbol.allDomains, title: "All mailboxes", isStrong: true, unread: model.inboxUnreadByDomain[domainID] ?? 0)
+            .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
             .tag(MailViewModel.SidebarRow.allMailboxes)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allMailboxes")
         ForEach(shown) { mailbox in
@@ -304,6 +310,7 @@ struct SidebarView: View {
             SidebarCount(unread)
             SidebarChevron()
         }
+        .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
         .tag(MailViewModel.SidebarRow.mailbox(mailbox.id))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(SidebarPresentation.accessibilityLabel(mailbox.address, unread: unread))
@@ -348,6 +355,7 @@ struct SidebarView: View {
             spoken = count > 0 ? "\(title), \(count) drafts" : title
         }
         return SidebarItem(symbol: symbol, title: title, isStrong: false, unread: count)
+            .frame(minHeight: SidebarPresentation.itemContentMinHeight(for: density))
             .tag(MailViewModel.SidebarRow.folder(folder))
             .accessibilityLabel(spoken)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "folder.\(NavigationPersistence.raw(for: folder))")
@@ -388,7 +396,7 @@ struct SidebarView: View {
                 .padding(.horizontal, MailTheme.Spacing.lg)
                 .padding(.bottom, MailTheme.Spacing.sm)
                 SidebarFilterField(
-                    text: $transient.mailboxFilter, prompt: "Filter \(domain?.mailboxIDs.count ?? 0) mailboxes"
+                    text: $transient.mailboxFilter, prompt: SidebarPresentation.mailboxFilterPrompt(count: domain?.mailboxIDs.count ?? 0)
                 )
                 .padding(.horizontal, SidebarAccountCard.gap)
                 .padding(.bottom, MailTheme.Spacing.sm)

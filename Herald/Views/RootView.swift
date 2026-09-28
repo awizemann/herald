@@ -77,6 +77,10 @@ struct MailWindow: View {
     /// the split view look restorable.
     private static let sidebarWidth: Double = 252
     private static let listWidth: Double = 344
+    /// Handoff §3.1: the reading pane is flexible with a 360 floor; its ideal
+    /// is what the 1180 default window leaves after the sidebar and list.
+    private static let readingMinWidth: Double = 360
+    private static let readingIdealWidth: Double = 1180 - sidebarWidth - listWidth
 
     var body: some View {
         // The status banner sits ABOVE the split view, not in a
@@ -106,6 +110,7 @@ struct MailWindow: View {
                 .navigationSplitViewColumnWidth(min: 280, ideal: Self.listWidth, max: 520)
         } detail: {
             ReadingPaneView(model: model)
+                .navigationSplitViewColumnWidth(min: Self.readingMinWidth, ideal: Self.readingIdealWidth)
         }
         .navigationTitle(model.accountLabel)
         .navigationSubtitle(model.scopeTitle)

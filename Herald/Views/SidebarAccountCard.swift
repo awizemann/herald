@@ -16,6 +16,8 @@ struct SidebarAccountCard: View {
     @Environment(\.openSettings) private var openSettings
     @Bindable var model: MailViewModel
     @State private var showsAccounts = false
+    /// The card's drawn width, for the popover's anchor (see below).
+    @State private var cardWidth: CGFloat = 0
 
     var body: some View {
         let tint = environment.accountTint(for: model.accountID)
@@ -82,7 +84,20 @@ struct SidebarAccountCard: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: MailTheme.Radius.md))
         .onTapGesture { showsAccounts.toggle() }
-        .popover(isPresented: $showsAccounts, arrowEdge: .bottom) {
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { cardWidth = $0 }
+        // Anchored so the 290pt popover starts at the card's LEADING edge and
+        // hangs right over the list (5a-8). Centred on the 232pt card it ran
+        // ~29pt past the window's left edge, clipping the checkmark column.
+        .popover(
+            isPresented: $showsAccounts,
+            attachmentAnchor: .point(UnitPoint(
+                x: SidebarPresentation.accountPopoverAnchorX(
+                    cardWidth: cardWidth, popoverWidth: SidebarAccountPopover.width
+                ),
+                y: 1
+            )),
+            arrowEdge: .bottom
+        ) {
             SidebarAccountPopover(
                 currentAccountID: model.accountID,
                 dismiss: { showsAccounts = false },

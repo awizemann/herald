@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import HeraldKit
 
 // The drill-down sidebar's logic (redesign R4): which level it shows, which row
@@ -374,6 +375,44 @@ nonisolated enum SidebarPresentation {
     /// one ("acme.co, 14 unread").
     static func accessibilityLabel(_ name: String, unread: Int) -> String {
         unread > 0 ? "\(name), \(unread) unread" : name
+    }
+
+    /// The system sidebar row size a density asks for. `defaultMinListRowHeight`
+    /// alone cannot shrink a `.sidebar` List row below the medium size's 30pt
+    /// (measured on macOS 27: Compact drew at 30), so Compact asks for
+    /// `.small` (24pt with an 18pt row) and pads its content back up to 26
+    /// with ``itemContentMinHeight(for:)``.
+    static func rowSize(for density: ListDensity) -> SidebarRowSize {
+        switch density {
+        case .comfortable: .medium
+        case .compact: .small
+        }
+    }
+
+    /// The row CONTENT's floor that, with the system insets of
+    /// ``rowSize(for:)`` (medium 12, small 6 — measured), lands the drawn row
+    /// on ``itemHeight(for:)``.
+    static func itemContentMinHeight(for density: ListDensity) -> CGFloat {
+        switch density {
+        case .comfortable: itemHeight(for: .comfortable) - 12
+        case .compact: itemHeight(for: .compact) - 6
+        }
+    }
+
+    /// Where along the account card (0 = leading, 1 = trailing) its popover
+    /// attaches. A popover centres on its anchor, so anchoring at half the
+    /// popover's width puts its leading edge on the card's (5a-8) instead of
+    /// hanging past the window's edge. Never left of centre; an unmeasured
+    /// card (0 wide) falls back to centre.
+    static func accountPopoverAnchorX(cardWidth: CGFloat, popoverWidth: CGFloat) -> CGFloat {
+        guard cardWidth > 0 else { return 0.5 }
+        return min(1, max(0.5, popoverWidth / 2 / cardWidth))
+    }
+
+    /// Level 2's filter field placeholder: "Filter 7 mailboxes", singular for
+    /// a one-mailbox domain.
+    static func mailboxFilterPrompt(count: Int) -> String {
+        count == 1 ? "Filter 1 mailbox" : "Filter \(count) mailboxes"
     }
 
     /// A sidebar item's height at a density (handoff §1: 30 / 26).

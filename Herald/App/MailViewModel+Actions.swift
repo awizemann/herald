@@ -216,6 +216,24 @@ extension MailViewModel {
         }
     }
 
+    /// "Download All": one folder chooser, then every attachment copied in.
+    /// A partial failure names the files that did not make it; the rest stay.
+    func saveAllAttachments(_ attachments: [Attachment], progress: @escaping (Int, Int) -> Void) async {
+        guard !attachments.isEmpty, let folder = await AttachmentBatchSaver.chooseFolder() else { return }
+        let api = api
+        // Pinned from download until the copy is done, so the staging cache
+        // cannot evict a file between the two.
+        let report = await AttachmentBatchSaver.save(
+            attachments,
+            into: folder,
+            fetch: { try await AttachmentFile.shared.url(for: $0, using: api, pinned: true) },
+            release: { await AttachmentFile.shared.unpin($0.id) },
+            progress: progress
+        )
+        for _ in report.saved { record(.attachmentSaved) }
+        if let message = report.failureMessage { actionError = message }
+    }
+
     func requestCompose(_ kind: ComposeRequest.Kind) {
         requestCompose(
             kind,

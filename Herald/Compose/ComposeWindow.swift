@@ -1,5 +1,6 @@
 import AppKit
 import HeraldKit
+import QuickLook
 import SwiftUI
 
 /// The compose scene: one NSWindow per draft, keyed by the request id that
@@ -61,6 +62,9 @@ private struct ComposeWindowRoot: View {
         }
         .onDisappear {
             guard let requestID, let model else { return }
+            // The local attachment copies go with the window (Quick Look and
+            // Download on compose cards are a this-window-session affordance).
+            model.releaseLocalFiles()
             Task {
                 // Flush before releasing: the window may be going away inside the
                 // autosave debounce.
@@ -82,6 +86,9 @@ struct ComposeView: View {
     /// just means "never invalidated from Settings".
     @Environment(AppEnvironment.self) private var environment: AppEnvironment?
     @State private var isDropTarget = false
+    /// The compose card Quick Look is showing (a local copy; see `localFile`).
+    @State private var attachmentPreviewURL: URL?
+    @State private var attachmentsHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -333,36 +340,54 @@ struct ComposeView: View {
         .padding(.vertical, MailTheme.Spacing.sm)
     }
 
+    /// Two rows of cards before the section scrolls instead of eating the body.
+    private static let maxAttachmentsHeight = AttachmentCard.height * 2 + MailTheme.Spacing.sm * 3
+
     private var attachmentBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: MailTheme.Spacing.sm) {
+        // Sized to its cards up to two rows, then scrolls (measured: a
+        // ScrollView otherwise takes every point it is offered).
+        ScrollView(.vertical) {
+            attachmentCards.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { attachmentsHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(max(attachmentsHeight, AttachmentCard.height), Self.maxAttachmentsHeight))
+        .quickLookPreview($attachmentPreviewURL)
+        // A card removed while Quick Look shows it must not leave the panel on
+        // a file that is about to be deleted.
+        .onChange(of: model.attachments.map(\.id)) { _, _ in
+            if let url = attachmentPreviewURL, !model.attachments.contains(where: { model.localFile(for: $0) == url }) {
+                attachmentPreviewURL = nil
+            }
+        }
+        .accessibilityLabel("Attachments")
+    }
+
+    private var attachmentCards: some View {
+            AttachmentFlowLayout(spacing: MailTheme.Spacing.sm, maxItemWidth: AttachmentCard.maxWidth) {
                 ForEach(model.attachments) { attachment in
-                    AttachmentChip(filename: attachment.filename, sizeBytes: attachment.sizeBytes) {
-                        Button { Task { await model.removeAttachment(attachment) } } label: {
-                            Image(systemName: MailTheme.Symbol.removeAttachment)
-                                .iconButtonStyle("Remove \(attachment.filename)")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+                    let local = model.localFile(for: attachment)
+                    AttachmentCard(
+                        filename: attachment.filename,
+                        contentType: attachment.contentType,
+                        sizeBytes: attachment.sizeBytes,
+                        // Only with a local copy (a file attached in THIS window):
+                        // the API has no GET for a draft's attachment.
+                        onQuickLook: local.map { url in { attachmentPreviewURL = url } },
+                        onDownload: local.map { _ in { Task { await model.saveLocalAttachment(attachment) } } },
+                        onRemove: { Task { await model.removeAttachment(attachment) } }
+                    )
                 }
                 ForEach(model.pendingUploads) { pending in
-                    AttachmentChip(
+                    AttachmentCard(
                         filename: pending.filename,
                         sizeBytes: pending.byteCount,
-                        isInFlight: true
-                    ) {
-                        Button { model.cancelUpload(pending.id) } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .iconButtonStyle("Cancel uploading \(pending.filename)")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+                        isInFlight: true,
+                        onCancel: { model.cancelUpload(pending.id) }
+                    )
                 }
             }
             .padding(.horizontal, MailTheme.Spacing.md)
             .padding(.vertical, MailTheme.Spacing.sm)
-        }
-        .accessibilityLabel("Attachments")
     }
 
     private func errorBar(_ message: String) -> some View {

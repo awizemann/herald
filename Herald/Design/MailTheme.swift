@@ -79,6 +79,7 @@ enum MailTheme {
         static let download = "arrow.down.circle"
         static let downloadAll = "arrow.down.circle"
         static let removeAttachment = "xmark"
+        static let cancelUpload = "xmark.circle.fill"
         static let archive = "archivebox"
         static let trash = "trash"
         static let send = "paperplane.fill"
@@ -321,6 +322,9 @@ enum MailTheme {
     /// An icon-only button's frame (handoff §1 "Hit target"): 30 wide × 28
     /// tall — the 28pt minimum, a touch wider so adjacent glyphs don't crowd.
     static let iconButtonSize = CGSize(width: 30, height: 28)
+    /// An attachment card's icon buttons DRAW at 24pt (§3.1); their hit area is
+    /// still the 28pt minimum (see `AttachmentCard`).
+    static let compactIconButtonDiameter: CGFloat = 24
 
     /// Height of the sidebar's sync-status slot. FIXED and always occupied: the
     /// status used to appear and disappear, pushing the whole folder list down
@@ -520,6 +524,8 @@ enum MailTheme {
         static let tag = Style(.text, size: 10, relativeTo: .caption)
         /// Geist 11 medium — the name on the list header's label-filter chip.
         static let chip = Style(.textMedium, size: 11, relativeTo: .subheadline)
+        /// Geist 12 medium — an attachment card's filename (§3.1 Attachments).
+        static let attachmentName = Style(.textMedium, size: 12, relativeTo: .callout)
         /// Serif 18 — a list empty state's title ("Nothing in Sent").
         static let emptyTitle = Style(.serifSubhead, size: 18, relativeTo: .title3)
         /// 14 semibold — the sidebar's level-2 domain header (handoff: 14/600).

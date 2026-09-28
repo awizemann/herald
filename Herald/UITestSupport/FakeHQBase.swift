@@ -598,6 +598,17 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
         let parts = request.path.dropFirst("/api/v1/".count).split(separator: "/").map(String.init)
         let withLabels = request.query["includeLabels"] == "true"
         switch (request.method, parts.count, parts.first ?? "") {
+        case ("GET", 2, "attachments"):
+            guard let index = parts[1].split(separator: "-att").last.flatMap({ Int($0) }),
+                  Self.fixtureFiles.indices.contains(index) else {
+                return .notFound("ATTACHMENT_NOT_FOUND")
+            }
+            let file = Self.fixtureFiles[index]
+            return FakeHTTPResponse(
+                status: 200,
+                headers: ["Content-Type": "application/octet-stream"],
+                body: Data(repeating: 0x41, count: file.size)
+            )
         case ("GET", 1, "mailboxes"):
             return .json(200, [mailboxJSON()])
         case ("GET", 1, "labels"):
@@ -883,7 +894,7 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
             "to": message.to,
             "subject": message.subject,
             "snippet": String(message.text.prefix(120)),
-            "hasAttachments": false,
+            "hasAttachments": !Self.fixtureAttachments(for: message).isEmpty,
             "createdAt": Self.iso(message.createdAt),
         ]
         row["fromName"] = message.fromName
@@ -903,9 +914,34 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
         row["htmlAvailable"] = true
         row["messageId"] = "<\(message.id)@\(host)>"
         row["references"] = [String]()
-        row["attachments"] = [Any]()
+        row["attachments"] = Self.fixtureAttachments(for: message)
         if message.direction == "inbound" { row["deliveredToAddress"] = mailboxAddress }
         return row
+    }
+
+    /// Visual-audit fixture: with `-HeraldFakeAttachments YES`, every inbound
+    /// message carries these (off by default, so the UI suite's data is unchanged).
+    private static let fixtureFiles: [(name: String, type: String, size: Int)] = [
+        ("Q3 Proposal.pdf", "application/pdf", 245_000),
+        ("floor-plan.png", "image/png", 1_200_000),
+        ("Budget 2026 — revised final numbers.xlsx", "application/octet-stream", 48_000),
+    ]
+
+    private static func fixtureAttachments(for message: MessageRecord) -> [Any] {
+        guard UserDefaults.standard.bool(forKey: "HeraldFakeAttachments"), message.direction == "inbound" else {
+            return []
+        }
+        return fixtureFiles.enumerated().map { index, file in
+            [
+                "id": "\(message.id)-att\(index)",
+                "messageId": message.id,
+                "filename": file.name,
+                "contentType": file.type,
+                "sizeBytes": file.size,
+                "disposition": "attachment",
+                "createdAt": iso(message.createdAt),
+            ] as [String: Any]
+        }
     }
 
     private func draftJSON(_ draft: DraftRecord) -> [String: Any] {

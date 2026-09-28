@@ -56,7 +56,6 @@ enum AttachmentSaver {
     }
 
     static func save(_ attachment: Attachment, using api: any MailAPIClient) async -> Outcome {
-        let panel = NSSavePanel()
         // Staged FIRST, and pinned: the cache is the one download (previewing and
         // then saving used to fetch the same attachment twice), and its filename
         // is the one the extension correction resolved from the actual bytes — so
@@ -72,6 +71,14 @@ enum AttachmentSaver {
         }
         defer { Task { await AttachmentFile.shared.unpin(attachment.id) } }
 
+        return await save(stagedFile: source, logID: attachment.id)
+    }
+
+    /// Save-panel flow for a file that is ALREADY on disk: a message
+    /// attachment staged above, or a composer's local copy of a file the user
+    /// attached this window session (compose attachments have no GET).
+    static func save(stagedFile source: URL, logID: String = "local") async -> Outcome {
+        let panel = NSSavePanel()
         panel.nameFieldStringValue = source.lastPathComponent
         panel.canCreateDirectories = true
         guard await panel.begin() == .OK, let url = panel.url else { return .cancelled }
@@ -80,30 +87,36 @@ enum AttachmentSaver {
             // File I/O off the main actor; the URLs are Sendable-safe as paths.
             let destination = url
             try await Task.detached(priority: .userInitiated) { @Sendable in
-                // Written beside the destination and swapped in: deleting the
-                // existing file first would destroy the user's copy if the write
-                // then failed halfway (an attachment can be tens of MiB).
-                let staging = destination.deletingLastPathComponent()
-                    .appendingPathComponent(".\(UUID().uuidString).\(destination.lastPathComponent)")
-                try FileManager.default.copyItem(at: source, to: staging)
-                quarantine(staging)
-                do {
-                    if FileManager.default.fileExists(atPath: destination.path) {
-                        _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
-                    } else {
-                        try FileManager.default.moveItem(at: staging, to: destination)
-                    }
-                } catch {
-                    try? FileManager.default.removeItem(at: staging)
-                    throw error
-                }
+                try install(source, at: destination)
             }.value
             return .saved
         } catch {
             logger.error(
-                "Attachment \(attachment.id, privacy: .public) save failed: \(error.localizedDescription, privacy: .private)"
+                "Attachment \(logID, privacy: .public) save failed: \(error.localizedDescription, privacy: .private)"
             )
             return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Copies `source` to `destination`, quarantined, replacing whatever is
+    /// there only once the copy is complete.
+    nonisolated static func install(_ source: URL, at destination: URL) throws {
+        // Written beside the destination and swapped in: deleting the
+        // existing file first would destroy the user's copy if the write
+        // then failed halfway (an attachment can be tens of MiB).
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).\(destination.lastPathComponent)")
+        try FileManager.default.copyItem(at: source, to: staging)
+        quarantine(staging)
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+            } else {
+                try FileManager.default.moveItem(at: staging, to: destination)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
         }
     }
 }

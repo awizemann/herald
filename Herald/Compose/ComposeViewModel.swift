@@ -939,6 +939,35 @@ final class ComposeViewModel {
     /// pass the check and the server would 413 the second.
     @ObservationIgnored private var uploadChain: Task<Void, Never>?
     @ObservationIgnored private var enqueuedCount = 0
+    /// Local copies of files attached this window session (Quick Look /
+    /// Download on a compose card). See ``ComposeLocalAttachments``.
+    private(set) var localAttachments = ComposeLocalAttachments()
+    /// Set once the window has gone: an upload landing after that discards its
+    /// copy instead of recording it into a map nobody will clean up.
+    @ObservationIgnored private var localFilesReleased = false
+
+    /// The local copy behind a card's Quick Look / Download; `nil` hides both.
+    func localFile(for attachment: DraftAttachment) -> URL? {
+        localAttachments.url(for: attachment.id, in: attachments)
+    }
+
+    /// Saves a card's local copy through the save panel.
+    func saveLocalAttachment(_ attachment: DraftAttachment) async {
+        guard let file = localFile(for: attachment) else { return }
+        if case .failed(let message) = await AttachmentSaver.save(stagedFile: file) {
+            status = .failed(message)
+        }
+    }
+
+    /// Window close: deletes every local copy. Idempotent.
+    func releaseLocalFiles() {
+        localFilesReleased = true
+        for url in localAttachments.removeAll() { AttachmentScratchpad.discard(url) }
+    }
+
+    private func pruneLocalFiles() {
+        for url in localAttachments.prune(keeping: attachments) { AttachmentScratchpad.discard(url) }
+    }
 
     /// Runs the open panel and uploads whatever the user picked.
     ///
@@ -1057,6 +1086,9 @@ final class ComposeViewModel {
         // adopted, not after the (possibly long) upload.
         var creating = beginDraftCreation(for: sent)
         defer { endDraftCreation(creating) }
+        var localCopy: URL?
+        // A copy the upload never adopted (a failure, a throw) is ours to delete.
+        defer { if let localCopy { AttachmentScratchpad.discard(localCopy) } }
         do {
             if creating, !Self.limitsRefuse(pending.byteCount, onto: sent) {
                 let created = try await outbox.saveDraft(sent)
@@ -1070,12 +1102,28 @@ final class ComposeViewModel {
                 sent = draft
                 binding = outboxBinding
             }
+            // The local copy is taken while the upload's scope is held; a copy
+            // that fails only costs this card its Quick Look, never the upload.
+            let source = url
+            if !Self.limitsRefuse(pending.byteCount, onto: sent) {
+                localCopy = try? await Task.detached(priority: .userInitiated) { @Sendable in
+                    try ComposeLocalAttachments.stageCopy(of: source)
+                }.value
+            }
             let saved = try await outbox.attach(url, to: sent)
+            let before = draft.uploadedAttachments
             // Adopted even when this upload was CANCELLED: the bytes reached the
             // server, so the local attachment list has to include them or every
             // later per-draft total is measured short and the server 413s the
             // next upload. Cancellation only suppresses the status change.
             draft.adoptServerState(from: saved, sent: sent)
+            if let copy = localCopy {
+                localCopy = nil
+                let unrecorded = localFilesReleased
+                    ? copy
+                    : localAttachments.record(copy, before: before, after: draft.uploadedAttachments)
+                if let unrecorded { AttachmentScratchpad.discard(unrecorded) }
+            }
             // Published for the same reason it is adopted above, cancellation
             // included: the bytes are on the server draft, so the Drafts folder's
             // copy has to say so too.
@@ -1168,6 +1216,7 @@ final class ComposeViewModel {
         do {
             let saved = try await outbox.removeAttachment(attachment.id, from: sent)
             draft.adoptServerState(from: saved, sent: sent)
+            pruneLocalFiles()
             publishDraftState()
         } catch {
             logger.warning("Removing an attachment failed: \(error.logCode, privacy: .public)")

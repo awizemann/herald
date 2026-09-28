@@ -481,6 +481,42 @@ struct MessageBodySection: View {
     }
 }
 
+/// Header copy for the reading pane's attachment section.
+enum ReadingPaneAttachments {
+    nonisolated static func summary(count: Int) -> String {
+        count == 1 ? "1 attachment" : "\(count) attachments"
+    }
+}
+
+private struct DownloadAllProgress: Equatable {
+    let finished: Int
+    let total: Int
+}
+
+/// The header's "Download All" text button (§3.1: 12, ink2; hover lineSoft + ink).
+private struct DownloadAllButton: View {
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("Download All")
+                .textStyle(MailTheme.Typography.snippet)
+                .foregroundStyle(isHovered ? MailTheme.Color.ink : MailTheme.Color.ink2)
+                .padding(.horizontal, MailTheme.Spacing.xs + 2)
+                .frame(minHeight: MailTheme.hitTarget)
+                .background(
+                    isHovered ? MailTheme.Color.lineSoft : .clear,
+                    in: RoundedRectangle(cornerRadius: MailTheme.Radius.sm)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Download all attachments to a folder")
+    }
+}
+
 private struct AttachmentBar: View {
     @Bindable var model: MailViewModel
     let attachments: [Attachment]
@@ -493,16 +529,26 @@ private struct AttachmentBar: View {
     /// so instead of looking like a click that did nothing.
     @State private var loadingIDs: Set<String> = []
 
+    /// "Download All" in progress: (finished, total). `nil` while idle.
+    @State private var downloadAllProgress: DownloadAllProgress?
+    @State private var cardsHeight: CGFloat = 0
+
+    /// Three rows of cards before the section scrolls instead of growing.
+    private static let maxCardsHeight = AttachmentCard.height * 3 + MailTheme.Spacing.sm * 2
+
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: MailTheme.Spacing.sm) {
-                ForEach(attachments) { attachment in
-                    chip(for: attachment)
-                }
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.sm) {
+            header
+            // Sized to its cards up to three rows, then scrolls: measured,
+            // because a ScrollView otherwise takes every point it is offered.
+            ScrollView(.vertical) {
+                cards.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardsHeight = $0 }
             }
-            .padding(.horizontal, MailTheme.Spacing.md)
-            .padding(.vertical, MailTheme.Spacing.sm)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(max(cardsHeight, AttachmentCard.height), Self.maxCardsHeight))
         }
+        .padding(.horizontal, MailTheme.Spacing.lg)
+        .padding(.vertical, MailTheme.Spacing.md)
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in
             if url == nil { releasePin() }
@@ -519,31 +565,55 @@ private struct AttachmentBar: View {
         }
     }
 
-    private func chip(for attachment: Attachment) -> some View {
-        AttachmentChip(
-            filename: attachment.filename,
-            sizeBytes: attachment.sizeBytes,
-            isInFlight: loadingIDs.contains(attachment.id)
-        ) {
-            HStack(spacing: MailTheme.Spacing.xxs) {
-                Button { preview(attachment) } label: {
-                    Image(systemName: MailTheme.Symbol.quickLook)
-                        .iconButtonStyle("Quick Look \(attachment.filename)")
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    Task { await model.saveAttachment(attachment) }
-                } label: {
-                    Image(systemName: MailTheme.Symbol.download)
-                        .iconButtonStyle("Save \(attachment.filename)…")
-                }
-                .buttonStyle(.plain)
+    private var header: some View {
+        HStack(spacing: MailTheme.Spacing.sm) {
+            Image(systemName: MailTheme.Symbol.attachment)
+                .accessibilityHidden(true)
+            Text(ReadingPaneAttachments.summary(count: attachments.count))
+                .textStyle(MailTheme.Typography.caption)
+            Spacer(minLength: MailTheme.Spacing.sm)
+            if let downloadAllProgress {
+                ProgressView().controlSize(.mini).accessibilityHidden(true)
+                Text("Downloading \(downloadAllProgress.finished) of \(downloadAllProgress.total)…")
+                    .textStyle(MailTheme.Typography.caption)
+            } else {
+                DownloadAllButton { downloadAll() }
             }
         }
-        // Dragging the chip drags the FILE: the provider downloads only when the
+        .foregroundStyle(MailTheme.Color.ink3)
+    }
+
+    private var cards: some View {
+        AttachmentFlowLayout(spacing: MailTheme.Spacing.sm, maxItemWidth: AttachmentCard.maxWidth) {
+            ForEach(attachments) { attachment in
+                card(for: attachment)
+            }
+        }
+    }
+
+    private func card(for attachment: Attachment) -> some View {
+        AttachmentCard(
+            filename: attachment.filename,
+            contentType: attachment.contentType,
+            sizeBytes: attachment.sizeBytes,
+            isInFlight: loadingIDs.contains(attachment.id),
+            inFlightDescription: "Downloading",
+            onQuickLook: { preview(attachment) },
+            onDownload: { Task { await model.saveAttachment(attachment) } }
+        )
+        // Dragging the card drags the FILE: the provider downloads only when the
         // drop target actually asks for the bytes, so a stray drag costs nothing.
         .onDrag { AttachmentDrag.itemProvider(for: attachment, api: model.api) }
+    }
+
+    private func downloadAll() {
+        let batch = attachments
+        Task {
+            await model.saveAllAttachments(batch) { finished, total in
+                downloadAllProgress = finished < total ? DownloadAllProgress(finished: finished, total: total) : nil
+            }
+            downloadAllProgress = nil
+        }
     }
 
     /// Downloads (once) and hands the file to Quick Look.

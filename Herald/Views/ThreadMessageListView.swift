@@ -79,6 +79,7 @@ struct ThreadMessageListView: View {
     private var header: some View {
         let conversation = model.selectedConversation
         let attribution = model.rowAttributionIndex().attribution(forMailbox: conversation?.latest.mailboxID)
+        let summary = Self.headerSummary(model.threadMessages)
         return VStack(alignment: .leading, spacing: ListColumn.Layout.threadHeaderGap) {
             Text(subject)
                 .textStyle(MailTheme.Typography.threadTitle)
@@ -91,16 +92,20 @@ struct ThreadMessageListView: View {
                 if !attribution.isEmpty {
                     RowAttributionView(attribution: attribution, tint: model.listAccountTint)
                 }
-                Text(ListColumn.threadSummary(model.threadMessages))
-                    .textStyle(MailTheme.Typography.caption)
-                    .foregroundStyle(MailTheme.Color.ink3)
-                    .lineLimit(1)
+                if let summary {
+                    Text(summary)
+                        .textStyle(MailTheme.Typography.caption)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                        .lineLimit(1)
+                }
             }
+            // Holds the line's height while the messages load, so the header
+            // does not grow a line when the summary arrives.
+            .frame(minHeight: ListColumn.Layout.badgeRowHeight, alignment: .leading)
             // One sentence for VoiceOver: "sales@acme.co, 5 messages · 3 people".
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
-                [attribution.spoken, ListColumn.threadSummary(model.threadMessages)]
-                    .compactMap { $0 }.joined(separator: ", ")
+                [attribution.spoken, summary].compactMap { $0 }.joined(separator: ", ")
             )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -119,6 +124,14 @@ struct ThreadMessageListView: View {
         let subject = model.selectedConversation?.latest.subject ?? ""
         return subject.isEmpty ? "(No subject)" : subject
     }
+
+    /// "5 messages · 3 people", or `nil` while the thread's messages are still
+    /// loading — selecting a thread clears `threadMessages` until
+    /// `loadThread` fills it, and "0 messages · 0 people" there is a lie about
+    /// a thread the user can see has messages.
+    nonisolated static func headerSummary(_ messages: [MessageSummary]) -> String? {
+        messages.isEmpty ? nil : ListColumn.threadSummary(messages)
+    }
 }
 
 /// The back link's face: `chevron.left` + the folder, ink2 → ink on hover,
@@ -131,7 +144,7 @@ private struct BackLinkLabel: View {
     var body: some View {
         HStack(spacing: MailTheme.Spacing.xxs) {
             Image(systemName: "chevron.left")
-                .font(.body.weight(.medium))
+                .font(MailTheme.Typography.backChevronGlyph)
             Text(title)
                 .textStyle(MailTheme.Typography.snippet)
         }
@@ -161,7 +174,8 @@ struct ThreadMessageRow: View {
             ThreadAvatar(
                 initials: ListColumn.initials(message.fromAddress),
                 tint: isOwn ? accountTint : nil,
-                isUnread: message.isUnread
+                isUnread: message.isUnread,
+                isSelected: isSelected
             )
 
             VStack(alignment: .leading, spacing: ListColumn.Layout.messageLineGap) {
@@ -213,7 +227,8 @@ struct ThreadMessageRow: View {
         parts.append("To: \(message.to.joined(separator: ", "))")
         if message.isUnread { parts.append("unread") }
         if message.isStarred { parts.append("starred") }
-        parts.append(message.snippet)
+        // The cleaned preview the row draws, not the raw server snippet.
+        parts.append(SnippetCleaner.clean(message.snippet))
         return parts.joined(separator: ", ")
     }
 }
@@ -223,11 +238,16 @@ struct ThreadMessageRow: View {
 /// messages. The unread dot sits on its top-left edge, ringed in the list
 /// background so it reads against either fill. Decorative — the row summary
 /// speaks sender and unread state.
+///
+/// On a SELECTED row the dot turns `.primary` (white on the focused accent
+/// selection, like ``UnreadDot``) and loses its ring: a `bg`-coloured ring
+/// would cut a pale hole out of the selection fill around it.
 struct ThreadAvatar: View {
     let initials: String
     /// Non-nil for the user's own message.
     let tint: MailTheme.AccountTint?
     let isUnread: Bool
+    var isSelected = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -235,17 +255,17 @@ struct ThreadAvatar: View {
                 .fill(tint?.solid ?? MailTheme.Color.lineSoft)
                 .overlay {
                     Text(initials)
-                        .font(MailTheme.Typography.font(.textSemibold, size: 11, relativeTo: .caption))
+                        .font(MailTheme.Typography.avatarInitials.font)
                         .foregroundStyle(tint?.avatarText ?? MailTheme.Color.ink2)
                 }
                 .frame(width: ListColumn.Layout.avatarDiameter, height: ListColumn.Layout.avatarDiameter)
             if isUnread {
                 Circle()
-                    .fill(MailTheme.unreadIndicator)
+                    .fill(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.unreadIndicator))
                     .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
                     .background(
                         Circle()
-                            .fill(MailTheme.Color.bg)
+                            .fill(isSelected ? AnyShapeStyle(.clear) : AnyShapeStyle(MailTheme.Color.bg))
                             .padding(-ListColumn.Layout.dotRingWidth)
                     )
                     // The design's top −2 / left −4.

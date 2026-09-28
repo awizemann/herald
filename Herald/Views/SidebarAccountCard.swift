@@ -168,7 +168,7 @@ private struct SidebarAccountPopover: View {
                 .opacity(isCurrent ? 1 : 0)
                 .frame(width: Self.checkWidth)
                 .accessibilityHidden(true)
-            SettingsAccountAvatar(label: account.label, tint: environment.accountTint(for: account.id), diameter: 24)
+            SettingsAccountAvatar(label: account.label, tint: environment.accountTint(for: account.id), diameter: Self.avatarDiameter)
             VStack(alignment: .leading, spacing: 0) {
                 Text(account.label)
                     .textStyle(isCurrent ? MailTheme.Typography.headline : MailTheme.Typography.body)
@@ -193,6 +193,8 @@ private struct SidebarAccountPopover: View {
     }
 
     static let width: CGFloat = 290
+    /// An account row's avatar — smaller than the card's own.
+    static let avatarDiameter: CGFloat = 24
     /// The check column, so Add Account… and Settings… line up with the names
     /// (the mock's 30pt left inset = check column + gap).
     static let checkWidth: CGFloat = 14
@@ -301,7 +303,7 @@ struct SyncStatusLabel: View {
         // does not clear 4.5:1 at regular weight, and this is the only signal
         // that sync is broken.
         if isProblem {
-            text.font(.caption.bold()).foregroundStyle(MailTheme.failure).lineLimit(1)
+            text.font(MailTheme.Typography.statusProblem).foregroundStyle(MailTheme.failure).lineLimit(1)
         } else {
             text.textStyle(MailTheme.Typography.caption).foregroundStyle(MailTheme.syncing).lineLimit(1)
         }

@@ -22,18 +22,13 @@ struct SidebarView: View {
     @AppStorage(ListDensity.storageKey) private var densityRaw = ListDensity.comfortable.rawValue
     @Bindable var model: MailViewModel
 
-    /// A drill row the ARROW KEYS landed on: highlighted, not yet opened
-    /// (Return or → opens it). Cleared by any navigation.
-    @State private var keyboardHighlight: MailViewModel.SidebarRow?
-    @State private var domainFilter = ""
-    @State private var mailboxFilter = ""
-    /// Set when a click on a label row changed the selection (and so opened
-    /// the label), so the same click's tap does not close it again — see
-    /// ``labelTapped(_:)``.
-    @State private var labelOpenedBySelection = false
-    /// A level change the user made HERE, whose header should take VoiceOver
-    /// focus once it is on screen.
-    @State private var movesFocusOnLevelChange = false
+    /// Everything this view remembers between renders, in ONE value so an
+    /// account switch can drop all of it at once (see the `accountID`
+    /// `onChange`): only the middle column is `.id(accountID)`-reset, and a
+    /// highlight or filter left over from account A would otherwise drive
+    /// account B's sidebar. Not an `.id()` reset of this view — that would tear
+    /// down the account card and its popover mid-interaction.
+    @State private var transient = SidebarTransientState()
     @AccessibilityFocusState private var focusedLevel: Int?
 
     var body: some View {
@@ -59,7 +54,7 @@ struct SidebarView: View {
         // makes it instant.
         .animation(reduceMotion ? nil : MailTheme.Animation.scope, value: level)
         .onKeyPress(keys: [.return, .rightArrow]) { _ in
-            guard let row = keyboardHighlight, row.drillsIn else { return .ignored }
+            guard let row = transient.keyboardHighlight, row.drillsIn else { return .ignored }
             drill(into: row)
             return .handled
         }
@@ -68,12 +63,18 @@ struct SidebarView: View {
             back()
             return .handled
         }
-        .onChange(of: model.location) { keyboardHighlight = nil }
+        .onChange(of: model.location) { transient.keyboardHighlight = nil }
+        // Another account's sidebar starts clean: no highlight, filter or
+        // pending label click carried over from the one just left.
+        .onChange(of: model.accountID) {
+            transient = SidebarTransientState()
+            focusedLevel = nil
+        }
         .onChange(of: level) {
-            domainFilter = ""
-            mailboxFilter = ""
-            if movesFocusOnLevelChange {
-                movesFocusOnLevelChange = false
+            transient.domainFilter = ""
+            transient.mailboxFilter = ""
+            if transient.movesFocusOnLevelChange {
+                transient.movesFocusOnLevelChange = false
                 focusedLevel = level.depth
             }
         }
@@ -101,33 +102,37 @@ struct SidebarView: View {
     /// Window Architecture": an explicitly Optional tag matches nothing.
     private var selection: Binding<MailViewModel.SidebarRow?> {
         Binding(
-            get: { keyboardHighlight ?? model.sidebarSelection },
+            get: { transient.keyboardHighlight ?? model.sidebarSelection },
             set: { row in
                 guard let row else { return }
                 let isPointer = SidebarPresentation.isPointerEvent(NSApp.currentEvent)
                 if row.drillsIn, !isPointer {
-                    keyboardHighlight = row
+                    transient.keyboardHighlight = row
                     return
                 }
-                keyboardHighlight = nil
+                transient.keyboardHighlight = nil
                 if case .label(let id) = row, isPointer {
-                    labelOpenedBySelection = model.selectedLabelID != id || model.isShowingDrafts
+                    if model.selectedLabelID != id || model.isShowingDrafts {
+                        transient.labelClicks.noteOpened(id, at: ProcessInfo.processInfo.systemUptime)
+                    } else {
+                        transient.labelClicks.reset()
+                    }
                 }
-                if row.drillsIn { movesFocusOnLevelChange = true }
+                if row.drillsIn { transient.movesFocusOnLevelChange = true }
                 model.activate(row)
             }
         )
     }
 
     private func drill(into row: MailViewModel.SidebarRow) {
-        keyboardHighlight = nil
-        movesFocusOnLevelChange = true
+        transient.keyboardHighlight = nil
+        transient.movesFocusOnLevelChange = true
         model.activate(row)
     }
 
     private func back() {
-        keyboardHighlight = nil
-        movesFocusOnLevelChange = true
+        transient.keyboardHighlight = nil
+        transient.movesFocusOnLevelChange = true
         model.sidebarBack()
     }
 
@@ -135,11 +140,12 @@ struct SidebarView: View {
     /// it again … clears it") — but a click on a row that is already selected
     /// does not change a `List` selection, so the selection binding never hears
     /// it; this tap does. When the same click DID change the selection (it
-    /// opened the label), the binding already acted and the tap stands down.
+    /// opened the label), the binding already acted and the tap stands down —
+    /// but only for THAT click (``LabelClickDeduper``): a mark whose tap never
+    /// arrived expires instead of swallowing the next click on the open label.
     /// If the list swallows the click entirely, the tap alone opens/closes.
     private func labelTapped(_ id: String) {
-        if labelOpenedBySelection {
-            labelOpenedBySelection = false
+        if transient.labelClicks.tapIsSameClick(id, at: ProcessInfo.processInfo.systemUptime) {
             return
         }
         model.pendingNavigationSource = .sidebar
@@ -158,10 +164,10 @@ struct SidebarView: View {
     ) -> some View {
         let visible = SidebarPresentation.visibleDomains(model.domains, accountID: model.accountID, preferences: preferences)
         let filtersDomains = SidebarPresentation.showsDomainFilter(domainCount: visible.count)
-        let shown = filtersDomains ? SidebarPresentation.filter(visible, query: domainFilter, name: \.name) : visible
+        let shown = filtersDomains ? SidebarPresentation.filter(visible, query: transient.domainFilter, name: \.name) : visible
         Section {
             if filtersDomains {
-                SidebarFilterField(text: $domainFilter, prompt: "Filter \(visible.count) domains")
+                SidebarFilterField(text: $transient.domainFilter, prompt: "Filter \(visible.count) domains")
             }
             SidebarItem(
                 symbol: "tray.2", title: "All domains", isStrong: true,
@@ -200,7 +206,12 @@ struct SidebarView: View {
     private func domainRow(_ domain: MailDomain, tint: MailTheme.AccountTint, monogram: String) -> some View {
         let unread = model.inboxUnreadByDomain[domain.id] ?? 0
         return HStack(spacing: Self.itemGap) {
-            DomainBadge(monogram: monogram, tint: tint, size: .sidebar)
+            // Arrow keys can rest the selection on a domain row; the badge's
+            // fixed ink letters then swap to follow it.
+            DomainBadge(
+                monogram: monogram, tint: tint, size: .sidebar,
+                isSelected: selection.wrappedValue == .domain(domain.id)
+            )
             Text(domain.name)
                 .textStyle(unread > 0 ? MailTheme.Typography.headline : MailTheme.Typography.body)
                 .lineLimit(1)
@@ -266,7 +277,7 @@ struct SidebarView: View {
     private func mailboxesLevel(domainID: MailDomain.ID) -> some View {
         let domain = model.domains.first { $0.id == domainID }
         let mailboxes = (domain?.mailboxIDs ?? []).compactMap { id in model.mailboxes.first { $0.id == id } }
-        let shown = SidebarPresentation.filter(mailboxes, query: mailboxFilter, name: \.address)
+        let shown = SidebarPresentation.filter(mailboxes, query: transient.mailboxFilter, name: \.address)
         SidebarItem(symbol: "tray.2", title: "All mailboxes", isStrong: true, unread: model.inboxUnreadByDomain[domainID] ?? 0)
             .tag(MailViewModel.SidebarRow.allMailboxes)
             .accessibilityIdentifier(AccessibilityID.Sidebar.rowPrefix + "allMailboxes")
@@ -359,7 +370,7 @@ struct SidebarView: View {
                 HStack(spacing: Self.itemGap) {
                     DomainBadge(monogram: monograms[domainID] ?? DomainMonogram.derive(from: name), tint: tint, size: .header)
                     Text(name)
-                        .textStyle(MailTheme.Typography.headline)
+                        .textStyle(MailTheme.Typography.sidebarHeader)
                         .foregroundStyle(MailTheme.Color.ink)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -377,7 +388,7 @@ struct SidebarView: View {
                 .padding(.horizontal, MailTheme.Spacing.lg)
                 .padding(.bottom, MailTheme.Spacing.sm)
                 SidebarFilterField(
-                    text: $mailboxFilter, prompt: "Filter \(domain?.mailboxIDs.count ?? 0) mailboxes"
+                    text: $transient.mailboxFilter, prompt: "Filter \(domain?.mailboxIDs.count ?? 0) mailboxes"
                 )
                 .padding(.horizontal, SidebarAccountCard.gap)
                 .padding(.bottom, MailTheme.Spacing.sm)
@@ -420,6 +431,62 @@ struct SidebarView: View {
     static let itemGap = MailTheme.Spacing.sm + MailTheme.Spacing.xxs
     /// The icon column, so badges, glyphs and dots line their names up.
     static let iconWidth: CGFloat = 18
+}
+
+// MARK: - Transient state
+
+/// ``SidebarView``'s own memory, reset as a whole on an account switch.
+struct SidebarTransientState {
+    /// A drill row the ARROW KEYS landed on: highlighted, not yet opened
+    /// (Return or → opens it). Cleared by any navigation.
+    var keyboardHighlight: MailViewModel.SidebarRow?
+    var domainFilter = ""
+    var mailboxFilter = ""
+    /// The click that opened a label through the selection, so its own tap
+    /// does not close it again.
+    var labelClicks = LabelClickDeduper()
+    /// A level change the user made HERE, whose header should take VoiceOver
+    /// focus once it is on screen.
+    var movesFocusOnLevelChange = false
+}
+
+/// Pairs the two halves of ONE click on a sidebar label row.
+///
+/// The `List` selection setter fires on mouse-down and opens the label; the
+/// row's `simultaneousGesture` tap fires on mouse-up and, on its own, toggles
+/// the label — so the tap must stand down when the setter just opened the
+/// SAME label, or the click would open and immediately close it. A bare Bool
+/// could outlive its click (a tap the list swallowed, a drag off the row) and
+/// then swallow the NEXT click on the open label, so the mark carries the
+/// label id and a time, is consumed by the first tap, and expires.
+/// Pure — clock values are handed in — so the pairing is testable.
+nonisolated struct LabelClickDeduper: Equatable {
+    /// How long a mouse-down's mark waits for its mouse-up. Generous for a slow
+    /// press, far shorter than a deliberate second click on the open label.
+    static let window: TimeInterval = 1
+
+    private var mark: Mark?
+
+    private struct Mark: Equatable {
+        let labelID: String
+        let time: TimeInterval
+    }
+
+    /// The selection setter opened `labelID` from a pointer click at `time`.
+    mutating func noteOpened(_ labelID: String, at time: TimeInterval) {
+        mark = Mark(labelID: labelID, time: time)
+    }
+
+    mutating func reset() { mark = nil }
+
+    /// Whether the tap on `labelID` at `time` is the tail of the click that
+    /// just opened it (stand down) rather than a click of its own (toggle).
+    /// Consumes the mark either way: it pairs with ONE tap at most.
+    mutating func tapIsSameClick(_ labelID: String, at time: TimeInterval) -> Bool {
+        defer { mark = nil }
+        guard let mark else { return false }
+        return mark.labelID == labelID && time >= mark.time && time - mark.time <= Self.window
+    }
 }
 
 // MARK: - Pieces

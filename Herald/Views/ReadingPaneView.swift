@@ -27,9 +27,13 @@ struct ReadingPaneView: View {
                 content
             }
         }
-        .frame(minWidth: 360)
+        .frame(minWidth: Self.minWidth)
         .background(MailTheme.Color.surface)
     }
+
+    /// The narrowest the pane gets before the split view takes width from the
+    /// other columns — enough for the 44pt insets and a readable body line.
+    static let minWidth: CGFloat = 360
 
     private var content: some View {
         VStack(spacing: 0) {
@@ -42,7 +46,9 @@ struct ReadingPaneView: View {
             // view is reused and only reloads when its rendered body changes.
             SelectedMessageHeader(
                 message: model.selectedMessage,
-                subject: model.selectedConversation?.latest.subject ?? "",
+                subject: ReadingPaneSender.subject(
+                    selectedMessage: model.selectedMessage, conversation: model.selectedConversation
+                ),
                 position: ReadingPaneMessagePosition.resolve(
                     threadMessages: model.threadMessages,
                     selectedMessageID: model.selectedMessageID,
@@ -105,8 +111,9 @@ private struct ReadingPaneEmptyState: View {
 nonisolated enum ReadingPaneEdgeAlignment {
     /// The header's own edge inset (mirrors ``ReadingPaneView/horizontalPadding``).
     static let headerInset: CGFloat = 44
-    /// The shared web document's CSS `body { margin: … }` (handoff `body` rule
-    /// in `MailViewModel+HTMLAssembly.swift`).
+    /// The shared web document's CSS `body { margin: … }`. The ONE source: the
+    /// stylesheet in `MailViewModel+HTMLAssembly.swift` interpolates this value
+    /// (in whole px), so the two edges cannot drift apart.
     static let webContentCSSMargin: CGFloat = 16
     /// What's left to add in SwiftUI so the two text edges land on the same
     /// pixel. `max(0, …)`: if the CSS margin ever grew past the header inset,
@@ -195,6 +202,37 @@ nonisolated enum ReadingPaneMailboxAddress {
     }
 }
 
+/// Pure derivation of the header's sender block and subject, so the parsing
+/// that is easy to get wrong — a quoted "Last, First" display name, a bare
+/// address, an older message of the thread being read — is assertable without
+/// a rendered header. The sender helpers are the SAME ones the list rows use
+/// (`ListColumn.senderName` / `.initials`), so a sender reads identically in
+/// the list and in the pane.
+nonisolated enum ReadingPaneSender {
+    /// What the name line shows: `"Mara Okafor" <mara@acme.co>` → "Mara Okafor".
+    static func name(_ fromAddress: String) -> String { ListColumn.senderName(fromAddress) }
+
+    /// The avatar's two letters: "Weber, Jonas" → "WJ", ops@north.io → "OP".
+    static func initials(_ fromAddress: String) -> String { ListColumn.initials(fromAddress) }
+
+    /// The bare address, for the name's tooltip and the spoken value.
+    static func address(_ fromAddress: String) -> String { ListColumn.bareAddress(fromAddress) }
+
+    /// The address for the header's accessibility VALUE, or `nil` when the
+    /// name line already IS the address (no display name) — said once, not twice.
+    static func spokenAddress(_ fromAddress: String) -> String? {
+        let bare = address(fromAddress)
+        return bare.isEmpty || bare == name(fromAddress) ? nil : bare
+    }
+
+    /// The SELECTED message's subject once it has loaded — a reply deep in a
+    /// thread can carry a different subject from the latest message — and the
+    /// conversation row's until then, so the pane is never blank in between.
+    static func subject(selectedMessage: MessageSummary?, conversation: ConversationSummary?) -> String {
+        selectedMessage?.subject ?? conversation?.latest.subject ?? ""
+    }
+}
+
 /// Labels for the MESSAGE being read.
 ///
 /// Message-level, where the conversation list's menu is thread-level, and on
@@ -260,15 +298,10 @@ private struct SelectedMessageHeader: View {
     /// Hoisted: building a `Date.FormatStyle` per render is pure waste.
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
 
-    /// The 36pt neutral initials avatar (handoff §3.1). Unlike a thread row's
+    /// The neutral initials avatar (handoff §3.1). Unlike a thread row's
     /// own-message avatar (R5), this one is never account-tinted — it draws
     /// whoever sent THIS message, not "was this me".
-    private func initials(for message: MessageSummary) -> String {
-        let letters = message.fromAddress
-            .split(separator: "@").first
-            .map(String.init) ?? message.fromAddress
-        return String(letters.prefix(2)).uppercased()
-    }
+    static let avatarDiameter: CGFloat = 36
 
     var body: some View {
         VStack(alignment: .leading, spacing: MailTheme.Spacing.xl) {
@@ -288,11 +321,11 @@ private struct SelectedMessageHeader: View {
                     // below: never colour alone.
                     ZStack {
                         Circle().fill(MailTheme.Color.lineSoft)
-                        Text(initials(for: message))
+                        Text(ReadingPaneSender.initials(message.fromAddress))
                             .textStyle(MailTheme.Typography.headline)
                             .foregroundStyle(MailTheme.Color.ink2)
                     }
-                    .frame(width: 36, height: 36)
+                    .frame(width: Self.avatarDiameter, height: Self.avatarDiameter)
                     .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                         HStack(spacing: MailTheme.Spacing.xs) {
@@ -300,9 +333,13 @@ private struct SelectedMessageHeader: View {
                                 .fill(message.isUnread ? MailTheme.unreadIndicator : .clear)
                                 .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
                                 .accessibilityHidden(true)
-                            Text(message.fromAddress)
+                            // The display name, as the list row shows it; the
+                            // bare address is the tooltip (and is spoken).
+                            Text(ReadingPaneSender.name(message.fromAddress))
                                 .textStyle(MailTheme.Typography.headline)
                                 .foregroundStyle(MailTheme.Color.ink)
+                                .lineLimit(1)
+                                .help(ReadingPaneSender.address(message.fromAddress))
                         }
                         AddressChip(info: mailboxAddress)
                     }
@@ -323,6 +360,7 @@ private struct SelectedMessageHeader: View {
             [
                 ReadingPaneMessagePosition.label(position),
                 message?.isUnread == true ? "Unread" : nil,
+                message.flatMap { ReadingPaneSender.spokenAddress($0.fromAddress) },
                 mailboxAddress.map { "\($0.word) \($0.address)" },
                 LabelChipRow.accessibilityPhrase(for: labels),
             ]

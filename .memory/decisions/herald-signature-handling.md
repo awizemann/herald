@@ -7,7 +7,7 @@ source_paths: [HeraldKit/Sources/HeraldKit/Model/Signature.swift, HeraldKit/Sour
 source_paths_inferred: false
 source_sha: 3e800d803cb0ccfe73452910958f0b166b296c0b
 created: 2026-09-04
-updated: 2026-09-19
+updated: 2026-09-28
 reviewed: 2026-09-27
 reviewed_by: audit:claude-code (background)
 ---
@@ -49,10 +49,17 @@ Adopting `signatures:manage`. The send-time invariant above is UNCHANGED: managi
 - Every mutation is followed by a fresh `list()`, never a local array patch: the server demotes the previous default of a scope, a rule no local edit could reproduce.
 - Grouping order is total and deterministic (personal → mailbox → domain, then label, then name) so a refresh cannot reshuffle rows under the cursor.
 - Preview keeps `MessageWebView`'s containment posture: JS off, nil base URL, `RemoteContentBlocker` rule list required (refuses to render without it), all navigation but our own cancelled through the shared `NavigationPolicy`.
-- Compose invalidation: `AppEnvironment.signatureRevision` is bumped after any mutation and `ComposeWindow`'s candidate `.task(id:)` is keyed on it, so an already-open composer stops offering a renamed/deleted signature.
+- Compose invalidation: `AppEnvironment.signatureRevision` is bumped after any mutation and `ComposeWindow`'s candidate `.task(id:)` is keyed on it, so an already-open composer stops offering a signature that was just renamed or deleted.
 
-Commit 3eee453. Tests: 12 HeraldKit (318→330), 16 app-hosted (255→271).
+Commits 3eee453 (initial), d9e7bfe (P3 reauth), db538bd (R8 token adoption). Tests: 12 HeraldKit (318→330), 16 app-hosted (255→271).
 
+
+### Design & code organization (R8 redesign: domain signatures page, Sept 2026)
+
+- [done] Extracted `SignatureStateMessagePane` view and `.signatureManagementModifiers()` view modifier to share loading/error/reauth screens and sheet/confirmation/announcement plumbing across the Settings ▸ Signatures pane and the domain Signatures page, eliminating duplicated state handling (commit db538bd).
+- [done] Migrated all icon names to `MailTheme.Symbol` tokens (send, trash, attachment, removeAttachment, warning) per design token adoption (commit db538bd).
+- [done] Added `SignatureSettingsModel.beginCreate(preferring scope:)` and `offersScope(_:)` to support domain page pre-selecting a scope, guarding against silently substituting the wrong scope when a caller's preferred scope isn't yet loaded (commit db538bd).
+- [done] Added `domainEnabled` field to `MailboxAddress` in openapi.json (server tracks whether a domain is enabled; omitted by earlier servers, treated as enabled; used in R8 domain UI).
 
 ### Hardening pass (2026-09-19 — audit F2, t-45bafcc3)
 
@@ -60,3 +67,10 @@ Commit 3eee453. Tests: 12 HeraldKit (318→330), 16 app-hosted (255→271).
 - [gotcha] `save()` cleared `self.editor` unconditionally after its await, so a save landing after the user cancelled and opened a NEW sheet closed the new one and discarded what they had typed. The check is identity (`if self.editor === editor`), not existence #compose
 - [gotcha] The delete confirmation was titled off `pendingDeletion?.name`, which `confirmDeletion()` clears immediately — SwiftUI re-reads the title through the dismissal animation and retitled it "Delete ""?" in front of the user. `deletionPromptName` outlives `pendingDeletion` on purpose #signatures
 - [convention] `SignatureManagementError.logCode` is payload-free and forwards `MailAPIError.logCode` for `.api`. `String(describing:)` on this enum prints the server's free-text `message`, which is the rule every other Herald call site already avoided #logging
+
+
+## Update (2026-09-28 — V5 compose model, commit bd1e15a)
+- [decision] From ↔ mailbox coupling: `ComposeViewModel.selectFrom(_:)` sets `draft.fromAddress` AND `draft.mailboxID` together (never one alone); refuses `canSend == false` candidates. It drops the old address's signature list at once; the window's `.task(id: SignatureFetchKey)` refetches.
+- [decision] Signature reset rule: after a From change, when the new address's list arrives, a hand-picked `.selected(id)` not in it resets to `.automatic` (server would 400 SIGNATURE_NOT_AVAILABLE). A signature valid for both addresses is kept. Reopened drafts are NOT reset (they show the "saved copy" row). `loadSignatures` discards a result whose address no longer matches the draft's From.
+- [decision] Reply/reply-all/forward From = the mailbox's sendable address the original was sent to: own sent message's From, then Delivered-To, then To, then Cc (case-insensitive, `Name <a@b>` stripped) — `ComposeFrom.replyAddress`; else mailbox primary. New message: scope (mailbox → its sendable; domain → account primary if in domain else domain's first sendable) then account primary (= first composable mailbox's primary sendable) — `ComposeFrom.defaultAddress`. Drafts keep stored From.
+- [fact] Footer caption `signatureCaption` scope text: "Mailbox signature · sales@", "Domain default · acme.co", "Personal".

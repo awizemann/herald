@@ -7,7 +7,7 @@ source_paths: [Herald/Support/AttachmentFile.swift, Herald/Support/AttachmentSav
 source_paths_inferred: false
 source_sha: 8f315ecb297bd54db7ebec7cdb14ebf150868626
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-28
 reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
@@ -20,6 +20,14 @@ P3 of the upstream-1.3.4 adoption (commit b863712) reworked how received attachm
 - [decision] Inline-ness is `Attachment.disposition` from the server (1.3.4), never `contentID != nil` — a content ID does not make a part inline, and the old inference hid Content-ID-carrying PDFs from the attachment bar #disposition
 - [decision] Attachment METADATA (not bytes) is cached on `CachedMessageBody.attachments`; a failed `GET /messages/{id}` rebuilds a MessageDetail from summary + body sidecar so the bar survives offline — EXCEPT on a decoding failure, which is the server contract breaking and must surface instead of serving stale detail forever #offline
 - [gotcha] `substituteInlineImages` matches only QUOTED `src`/`background` attribute values (case-insensitive attribute name, escapedPattern/escapedTemplate); a global string replace rewrote the sender's prose, and an unquoted form cannot be told apart from `src=cid:` sitting inside another attribute without parsing the tag. The staged-file LRU (16) is refcounted: `url(for:pinned:)` pins INSIDE the actor, so eviction cannot delete a file under a live Quick Look panel, a drag (30s grace) or a save #inline
+
+## Attachment cards (redesign v3 V4, commit 984286b)
+- [design] `AttachmentCard` (Herald/Design/AttachmentCard.swift) replaced `AttachmentChip` in the reading pane AND compose: 44pt, min 220 / max 320 in `AttachmentFlowLayout` (gap 8), bg fill + 1px line ring, 28pt lineSoft file-type tile (`MailTheme.Symbol.fileType(filename:contentType:)` — EXTENSION wins over content type because servers send octet-stream; content type only for extension-less names), name 12/500 middle-truncated over mono-10 size. Buttons DRAW 24pt (`MailTheme.compactIconButtonDiameter`) but hit area is 28 (`MailTheme.hitTarget`) via outer frame + contentShape. Any `nil` action is not drawn and gets no accessibility action. Card is `.focusable` when it has Quick Look; Space triggers it #attachments
+- [decision] Download All = one `NSOpenPanel` folder chooser → `AttachmentBatchSaver.save` fetches each via `AttachmentFile.url(pinned:)`, copies (staged `.uuid.name` then move) with Finder-style de-dup ("name 2.pdf") and quarantine, unpins after each copy, reports partial failure through `actionError` ("could not download N of M: names"). Single Download keeps the save panel (`AttachmentSaver.save(stagedFile:)`, shared `install(_:at:)`) — the spec's "~/Downloads" line was NOT adopted #download-all
+- [decision] Compose has no GET for draft attachments, so each upload is COPIED into `AttachmentScratchpad` while its security scope is held (`ComposeLocalAttachments`, keyed by the one new attachment id; ambiguous diffs record nothing). No scope outlives the upload. Copies are deleted on Remove (prune) and on window close (`releaseLocalFiles()` from ComposeWindowRoot.onDisappear); a late upload after close discards its copy. Reopened drafts show Remove only #compose
+- [gotcha] A `ScrollView` capping the card flow takes every point offered (ViewThatFits + maxHeight left a big gap under the header): measure the flow with `onGeometryChange` and frame the ScrollView to `min(contentHeight, cap)` #layout
+- [procedure] Visual audit with attachments: add `-HeraldFakeAttachments YES` to the `-HeraldUITest twoAccounts` launch; every inbound message then carries 3 fixture attachments (ids `<msg>-att<i>`, bytes served octet-stream from `GET /attachments/{id}`). Off by default so UI-suite data is unchanged #visual-audit
+
 
 ## Relations
 - relates_to [[Herald Sync Model]]

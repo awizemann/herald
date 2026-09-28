@@ -2,11 +2,13 @@
 title: Herald Redesign R2: Domain Model and Herald-Only Preferences
 type: note
 permalink: hqbase-mac/decisions/herald-redesign-r2-domain-model-and-herald-only-preferences
-source_paths: [Herald/Design/MailboxColorAssignment.swift, Herald/App/SignatureSettingsModel.swift]
+source_paths: [Herald/App/SignatureSettingsModel.swift, Herald/Design/AccountTintAssignment.swift]
 source_paths_inferred: false
-source_sha: a29354f5c5323ef8bca650bbc105d13fb4bf8d17
+source_sha: db538bd984d6059832d0ed07712103e28caf1685
 created: 2026-09-27
 updated: 2026-09-28
+reviewed: 2026-09-28
+reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations

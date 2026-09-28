@@ -5,10 +5,10 @@ permalink: hqbase-mac/operations/herald-build-and-toolchain
 tags: [build, xcode]
 source_paths: [scripts/build-detached.sh, project.yml]
 source_paths_inferred: false
-source_sha: 5097194ad8a505144220b87af67b1b89a863e718
+source_sha: f6c2d650ab02b6ee02cbfdf8276a48292bd5b22b
 created: 2026-08-16
 updated: 2026-09-27
-reviewed: 2026-09-27
+reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
 

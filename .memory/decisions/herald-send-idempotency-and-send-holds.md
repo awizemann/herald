@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/herald-send-idempotency-and-send-holds
 tags: [herald, compose, outbox, upstream-140, idempotency]
 source_paths: [HeraldKit/Sources/HeraldKit/Compose/ComposeDraft.swift, HeraldKit/Sources/HeraldKit/Compose/OutboxService.swift, HeraldKit/Sources/HeraldKit/Compose/OutboxError.swift, HeraldKit/Sources/HeraldKit/Compose/ComposePrefill.swift, Herald/Compose/ComposeViewModel.swift]
 source_paths_inferred: false
-source_sha: a82a8d7cce5a32c719d4a94f4f07bc68fc504033
+source_sha: 9d9a3b76352059446b894af6c1f31b27de4b6bbe
 created: 2026-09-19
 updated: 2026-09-19
-reviewed: 2026-09-20
+reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
 

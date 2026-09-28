@@ -7,7 +7,7 @@ source_paths: [Herald/App/MailViewModel+HTMLAssembly.swift, Herald/App/MailViewM
 source_paths_inferred: false
 source_sha: 5097194ad8a505144220b87af67b1b89a863e718
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-27
 reviewed: 2026-09-27
 reviewed_by: audit:claude-code (background)
 ---
@@ -27,3 +27,10 @@ P4 (task t-d60a1704, commit c55fd8f) settled how the reading pane turns a `Messa
 - relates_to [[Herald Error Handling and Security Rules]]
 - relates_to [[Herald Design System and Accessibility]]
 - relates_to [[HQBase Mail API v1 Contract]]
+
+
+
+## Update (2026-09-27 — redesign R6, task t-91abc484, commit 02948d3)
+
+- [decision] The reading-pane HEADER (subject, "Message N of M", sender block with the To/From domain-badged address chip, toolbar reorder) is rebuilt to the handoff — full layout in "Herald Design System and Accessibility"'s R6 update. `MailViewModel.composeBody`'s fragment assembly (html + collapsed `<details>` quotedHtml + afterQuotedHtml) is UNCHANGED — still the single assembly point this note describes #reading-pane
+- [fact] The shared web-document CSS (`MailViewModel+HTMLAssembly.swift`'s `styleSheet`, the one emitter every WKWebView in the app uses) gained one line: `body { … max-width: 600px; }` — the handoff's reading-pane body width cap. Shared with `SignaturePreviewView`, whose own preview box is already narrower than 600px, so this is a no-op there #webkit

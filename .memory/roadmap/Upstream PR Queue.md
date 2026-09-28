@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/roadmap/upstream-pr-queue
 tags: [upstream, roadmap]
 created: 2026-08-16
-updated: 2026-09-04
+updated: 2026-09-28
 ---
 
 Owner decision 2026-08-15: submit upstream changes as separate PRs, in order, smallest first; the
@@ -74,3 +74,9 @@ client itself comes last after UI polish. Branches live in the fork ~/Developer/
 - [fact] CORRECTION 2026-09-04: the earlier #labels claim that `GET /drafts` returns `labels` undeclared in the OpenAPI docs is WRONG at v1.3.4 — `Draft` declares `labels` (required, items Label) in both documents. Verified defects instead: the Draft `allOf` double-decode of `signature` (real) and mixed OpenAPI 3.1 nullable spellings (anyOf-null vs type-array-null) #correction
 
 - [fact] FILED 2026-09-04 (drafts in documents/upstream/issues-2026-09-04/): #113 Draft allOf signature double-decode + mixed nullable spellings (spec-only; offered the DraftFields-split PR); #114 session binding — tokens die with the 7d browser session, two options offered (refresh renews bound session / bind native tokens to user), open question whether the join is deliberate revocation; #115 labels embed on v1 behind ?includeLabels=true (recommended; alternatives: journal-only labels, v1→v2 token migration). With #112 (signature CRUD), four asks now pending upstream; Herald 0.4.0 released and verified same day — next release after these land #issues
+
+
+
+## Update (2026-09-28 — domainEnabled on v1 mailbox addresses)
+- [fact] Issue OPENED: https://github.com/HQBase/hqbase/issues/131. The code branch is `feat/v1-mailbox-address-domain-enabled` (4f7f431 + 3f75bf3 on upstream/main a1161f1), in a scratchpad worktree of session dceff1ae. The spec-first companion is on hqbase-site branch `docs/v1-mailbox-domain-enabled` (0081b58, in a scratchpad clone). Both pushed and OPENED 2026-09-28 with Alan's approval: spec PR https://github.com/HQBase/hqbase-site/pull/57 and code PR https://github.com/HQBase/hqbase/pull/132 (Closes #131). The CLA check already passes on both (it carries over from earlier PRs). The scratch worktree and site clone were removed 2026-09-28; the branches live on the forks. Issue and PR text: documents/plans/hqbase-upstream-domain-enabled-2026-09-27.md #domain-enabled
+- [fact] How upstream work goes: 1) an issue with the design, 2) a spec-first companion PR in hqbase-site from the fork awizemann/hqbase-site, 3) a code PR from awizemann/hqbase-fork whose body starts with a link to the companion. PR bodies end with the Claude Code line #process

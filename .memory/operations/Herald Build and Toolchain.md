@@ -13,10 +13,11 @@ reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations
-- [fact] Toolchain at kickoff (2026-08-15): Xcode 27.0 beta (27A5237l), Swift 6.4, xcodegen 2.45+; macOS deployment target 15.0 (lowered 2026-08-15; nothing 26-only used); project.yml is the source of truth and Herald.xcodeproj is a generated, gitignored artifact — run `xcodegen generate` #toolchain
+- [fact] Toolchain at kickoff (2026-08-15): Xcode 27.0 beta (27A5237l), Swift 6.0, xcodegen 2.45+; macOS deployment target 15.0 (lowered 2026-08-15; nothing 26-only used); project.yml is the source of truth and Herald.xcodeproj is a generated, gitignored artifact — run `xcodegen generate` #toolchain
 - [rule] Always pass -project Herald.xcodeproj -scheme Herald -destination 'platform=macOS' and, from the CLI while Xcode has the project open, a throwaway -derivedDataPath (why: two build systems on one DerivedData corrupts build.db — "disk I/O error"/.air.tmp rename failures that look like disk problems) #xcodebuild
 - [fact] `scripts/build-detached.sh` (no args) regenerates the project if needed, builds into ./DerivedData, and launches a dev copy quitting only its own previous instance #dogfood
 - [rule] Never push to the remote without explicit approval; commit freely on main, branch for larger work #git
+- [fact] Font bundling system (added 2026-09-27): Herald excludes the `Fonts/` subfolder from regular sources, then includes `Herald/Fonts` as a folder resource (buildPhase: resources). At launch, Info.plist's `ATSApplicationFontsPath: Fonts` registers every font in `Contents/Resources/Fonts` declaratively — fonts are available before any view requests them, no CTFontManager call needed. Registered fonts are process-scoped (no sandbox entitlement required). See MailTheme.Typography #fonts
 
 ## Relations
 - relates_to [[Herald Architecture]]

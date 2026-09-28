@@ -5,7 +5,7 @@ permalink: hqbase-mac/conventions/herald-ui-testing
 tags: [testing, uitest, xcuitest]
 source_paths: [Herald/UITestSupport, HeraldUITests, scripts/ui-tests.sh, scripts/verify-release-identity.sh, Herald/Support/AccessibilityID.swift, project.yml, HeraldTests/UITestHarnessTests.swift, HeraldTests/DebugIdentityTests.swift]
 source_paths_inferred: false
-source_sha: 5097194ad8a505144220b87af67b1b89a863e718
+source_sha: 5169529659f8afb7fa242b30613e13c6977ea33d
 created: 2026-09-27
 updated: 2026-09-27
 reviewed: 2026-09-27
@@ -106,3 +106,9 @@ Current-state knowledge of Herald's XCUITest suite (scheme `HeraldUITests`) and 
 - relates_to [[Sign-In Recoverability and the Presentation Watchdog]]
 - relates_to [[Herald Architecture]]
 - relates_to [[HQBase Mail API v1 Contract]]
+
+
+
+## Update (2026-09-27 — R4 sidebar page objects)
+
+- [fact] `SidebarPage` now drives the account card: `accountCard`, `addAccount()` (card → popover button `sidebar.accountCard.addAccount`), `switchAccount(to:)` (popover rows `sidebar.accountCard.account.<id>`), `signOut()` = the MENU BAR's "Sign Out…"-prefixed item (the sidebar has no Sign Out; Settings › Account's asks first). "Two accounts signed in" is `hasSeveralAccounts`/`waitForSeveralAccounts()` = the menu bar item titled "Sign Out of …" exists (`AppEnvironment.signOutMenuTitle`) — readable while a sheet blocks the window. Changed: `RecoveryAccessibilityTests.testRecoveryControlsHaveLabels`, `SignInFailureTests` (activation failure, sign-out failure, add-account refusal via `addAccount()`) — not yet run #uitest

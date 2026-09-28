@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/herald-attachment-handling
 tags: [attachments, quicklook, decision, cache]
 source_paths: [Herald/Support/AttachmentFile.swift, Herald/Support/AttachmentSaver.swift, Herald/Views/ReadingPaneView.swift, Herald/App/MailViewModel+HTMLAssembly.swift, HeraldKit/Sources/HeraldKit/API/Mapping.swift, HeraldKit/Sources/HeraldKit/Sync/CachedModels.swift]
 source_paths_inferred: false
-source_sha: 7e5eb159db68edaac988bfd21ae27c5ae670639d
+source_sha: 8f315ecb297bd54db7ebec7cdb14ebf150868626
 created: 2026-09-04
 updated: 2026-09-04
-reviewed: 2026-09-09
+reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
 

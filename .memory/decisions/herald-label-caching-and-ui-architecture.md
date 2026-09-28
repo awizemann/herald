@@ -5,9 +5,9 @@ permalink: hqbase-mac/decisions/herald-label-caching-and-ui-architecture
 tags: [labels, sync, swiftdata, ui]
 source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailStore+Labels.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, HeraldKit/Sources/HeraldKit/Sync/CachedModels.swift, HeraldKit/Sources/HeraldKit/Sync/MailActionService.swift, HeraldKit/Sources/HeraldKit/Model/MailLabel.swift, Herald/App/MailViewModel+Labels.swift, Herald/Design/LabelChip.swift, Herald/Views/SidebarView.swift]
 source_paths_inferred: false
-source_sha: 5097194ad8a505144220b87af67b1b89a863e718
+source_sha: 3e800d803cb0ccfe73452910958f0b166b296c0b
 created: 2026-09-04
-updated: 2026-09-19
+updated: 2026-09-27
 reviewed: 2026-09-27
 reviewed_by: audit:claude-code (background)
 ---
@@ -195,3 +195,19 @@ Structural: `SyncEngine.swift` 1352 → 996 lines; the labels region is now
 Stored properties stay on the actor (an extension cannot declare storage), and
 the members the extensions reach are internal rather than `private` — which is
 file-scoped, so `fileprivate` would not have helped either.
+
+
+
+## Label ∩ folder (redesign R3a, 2026-09-27)
+
+SUPERSEDES the `#ui` observation above ("`SidebarItem.label(id)`, a THIRD listing mode… a label spans every folder"): owner-approved decision N3 in `documents/plans/herald-redesign-plan-v2-2026-09-27.md`.
+
+- [decision] A label is now the third axis of `MailViewModel.Location`, not a listing mode: the list is scope ∩ folder ∩ label via `MailStore.conversations(withLabel:accountID:folder:mailboxIDs:limit:)` (nil folder / nil mailboxIDs keep the old span-everything behaviour for other callers). Inbox + Client therefore hides an archived Client thread until the user picks Archived. `refilter()` applies the folder presentation rule inside a label too, and restore/put-back IS offered inside a label now (every row is in the folder the request names) #ui
+- [decision] Server-search hits are unioned inside a label only when `labelIDsByThread` says the thread carries it (search has no label filter; the index includes reconciliation rows for uncached messages) #search
+- [gotcha] `#Predicate` with a captured `Set<String>.contains($0.column)` DOES compile and filter correctly on this toolchain (Xcode 27 beta / macOS 27 SDK), verified against a real in-memory container including a 2,501-id set (no SQLite bound-parameter failure) — `MailStoreScopeTests`. Still: never hand the store an EMPTY collection for `contains` (answer "nothing" before fetching), and fold "every mailbox" into a separate predicate rather than `(any || set.contains(...))` #predicate
+- [done] (R3b, commit 0d7d327) Sidebar label badges count label ∩ CURRENT folder ∩ scope — see the R3b section below #counts
+
+## Per-folder label counts (redesign R3b, 2026-09-27)
+
+- [decision] `MailStore.labelIndex(accountID:folder:mailboxIDs:)` narrows only `threadCounts` — the SAME conversation walk with a tighter predicate (`listFolder`, `mailboxKey ∈ set`; nil = unfiltered, empty set = all zero), no extra query. `idsByThread` stays account-wide (row chips + server-search union can show threads outside the counted folder). `MailViewModel.labelCountLocation` = (current conversation folder, `mailboxIDs(for: scope)`); under Drafts it counts the INBOX (where `openLabel` from Drafts lands). Every navigation refreshes it because `reloadConversations` rebuilds the index. Badge == listing count holds per folder+scope; the listing's client-side presentation rule (`belongs(_:to:)` for optimistic moves) can still differ transiently #counts
+- [fact] Tests: `LabelSyncTests.countsNarrowToFolderAndScope` (HeraldKit), `DomainEffectsTests.labelCountsFollowFolderAndScope`; `LabelsTests.badgeCountsArePrecomputed`/`badgeFollowsAnOptimisticToggle` now assert Inbox-scoped numbers #testing

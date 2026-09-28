@@ -63,7 +63,14 @@ extension MailViewModel {
         }
         // A draft that vanished under the cursor (sent elsewhere, deleted) must
         // not leave a selection pointing at nothing.
-        if let selectedDraftID, !drafts.contains(where: { $0.id == selectedDraftID }) {
+        clearHiddenDraftSelection()
+    }
+
+    /// Drops the draft selection when the row is no longer listed — gone from
+    /// the scope, or hidden by the search filter — so Return / Delete can never
+    /// act on a draft the user cannot see.
+    func clearHiddenDraftSelection() {
+        if let selectedDraftID, !presentedDrafts.contains(where: { $0.id == selectedDraftID }) {
             self.selectedDraftID = nil
         }
     }

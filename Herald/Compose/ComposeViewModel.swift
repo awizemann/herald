@@ -367,6 +367,11 @@ final class ComposeViewModel {
         return fromCandidates.first { $0.id == key }
     }
 
+    /// Replies (and reply-all, including a reopened reply draft) go out from
+    /// the address the original was sent to (``ComposeFrom/replyAddress(for:in:)``)
+    /// and can't be changed; forwards and new messages keep the picker.
+    var isFromLocked: Bool { draft.mode.replyToMessageID != nil }
+
     /// Set by a From change: once the new address's signatures arrive, a
     /// hand-picked signature that is not among them resets to automatic.
     @ObservationIgnored private var revalidatesSignatureOnLoad = false
@@ -378,7 +383,7 @@ final class ComposeViewModel {
     /// a candidate that cannot send; returns whether anything changed.
     @discardableResult
     func selectFrom(_ candidate: FromCandidate) -> Bool {
-        guard candidate.canSend, !isClosed,
+        guard candidate.canSend, !isClosed, !isFromLocked,
               candidate.address.lowercased() != draft.fromAddress.lowercased()
                 || candidate.mailboxID != draft.mailboxID
         else { return false }

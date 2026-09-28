@@ -107,6 +107,62 @@ struct ComposeFromTests {
         #expect(ComposeFrom.defaultAddress(scope: .allDomains, mailboxes: [mute], domains: domains) == nil)
     }
 
+    /// Domain scope with a "Default From address" preference. Fails on the
+    /// older rule (acme's default was always the account primary info@).
+    @Test("A domain's default From wins in its scope; a stale one falls back")
+    func domainDefaultFromPreference() async throws {
+        let harness = try await Self.harness()
+        let acme = try #require(harness.model.domains.first { $0.name == "acme.co" })
+        harness.model.selectScope(.domain(acme.id))
+        await harness.settle()
+
+        DomainPreferences.setDefaultFrom("Support@Acme.co", accountID: ScopeHarness.account, domainID: acme.id, in: harness.defaults)
+        var context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .new)))
+        #expect(context.fromAddress == "support@acme.co")
+        #expect(context.mailboxID == "mbInfo")
+
+        DomainPreferences.setDefaultFrom("sales@acme.co", accountID: ScopeHarness.account, domainID: acme.id, in: harness.defaults)
+        context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .new)))
+        #expect(context.fromAddress == "sales@acme.co")
+        #expect(context.mailboxID == "mbSales", "From and mailbox move together")
+
+        // Stale: receive-only, then gone entirely → the older rule (primary).
+        for stale in ["noreply@acme.co", "gone@acme.co"] {
+            DomainPreferences.setDefaultFrom(stale, accountID: ScopeHarness.account, domainID: acme.id, in: harness.defaults)
+            context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .new)))
+            #expect(context.fromAddress == "info@acme.co", "\(stale)")
+        }
+
+        // Another domain's preference never leaks into All domains or a mailbox scope.
+        DomainPreferences.setDefaultFrom("sales@acme.co", accountID: ScopeHarness.account, domainID: acme.id, in: harness.defaults)
+        harness.model.selectScope(.allDomains)
+        await harness.settle()
+        context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .new)))
+        #expect(context.fromAddress == "info@acme.co")
+        harness.model.selectScope(.mailbox("mbTeam"))
+        await harness.settle()
+        context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .new)))
+        #expect(context.fromAddress == "team@acme.co")
+    }
+
+    /// The pure resolution Settings shows: explicit, single-address auto,
+    /// nothing (Automatic) when there is a choice and no preference.
+    @Test func domainDefaultResolution() {
+        let info = Self.address("mbInfo", "info@acme.co", primary: true)
+        let support = Self.address("mbInfo", "support@acme.co", primary: false)
+        #expect(ComposeFrom.domainDefault(storedAddress: nil, sendable: [info]) == info, "single address is auto-selected")
+        #expect(ComposeFrom.domainDefault(storedAddress: "stale@acme.co", sendable: [info]) == info)
+        #expect(ComposeFrom.domainDefault(storedAddress: nil, sendable: [info, support]) == nil)
+        #expect(ComposeFrom.domainDefault(storedAddress: "support@acme.co", sendable: [info, support]) == support)
+        #expect(ComposeFrom.domainDefault(storedAddress: "stale@acme.co", sendable: [info, support]) == nil)
+        #expect(ComposeFrom.domainDefault(storedAddress: nil, sendable: []) == nil)
+
+        let mailboxes = [Self.infoMailbox, ScopeHarness.mailbox("mbOps", "ops@north.io", domain: ScopeHarness.north)]
+        let acme = MailDomain.domains(from: mailboxes).first { $0.name == "acme.co" }!
+        #expect(ComposeFrom.domainSendableAddresses(domain: acme, mailboxes: mailboxes).map(\.address)
+            == ["info@acme.co", "support@acme.co"], "receive-only noreply and other domains left out")
+    }
+
     /// Mail sent to sales@ is answered from sales@, even though the mailbox's
     /// primary is info@. Fails on the pre-V5 rule (always the primary).
     @Test("Reply, reply-all and forward go out from the address the original was sent to", arguments: [
@@ -193,6 +249,36 @@ struct ComposeFromTests {
         #expect(!model.selectFrom(noreply))
         #expect(model.draft.fromAddress == "info@acme.co")
         #expect(model.draft.mailboxID == "mbInfo")
+    }
+
+    /// Replies are locked to the address the original was sent to; forwards
+    /// and new messages keep the picker.
+    @Test("Reply and reply-all lock the From; forward and new do not", arguments: [
+        (ComposeRequest.Kind.reply, true), (.replyAll, true), (.forward, false), (.new, false),
+    ])
+    func replyLocksFrom(kind: ComposeRequest.Kind, locked: Bool) {
+        let message = Self.detail(id: "m1", mailbox: "mbInfo", to: ["info@acme.co"])
+        let model = Self.composer(kind: kind, message: kind == .new ? nil : message)
+        #expect(model.isFromLocked == locked)
+        let support = model.fromCandidates.first { $0.address == "support@acme.co" }!
+        #expect(model.selectFrom(support) == !locked)
+        #expect(model.draft.fromAddress == (locked ? "info@acme.co" : "support@acme.co"))
+    }
+
+    /// A reopened reply draft stays locked to its stored From.
+    @Test func reopenedReplyDraftIsLocked() async throws {
+        let harness = try await Self.harness()
+        let draft = Draft(
+            id: "drf_r", version: 1, updatedAt: MailFixtures.epoch, attachments: [],
+            content: DraftInput(mailboxID: "mbInfo", replyToMessageID: "m_orig", from: "support@acme.co", subject: "Re: s")
+        )
+        _ = try await harness.store.reconcileDrafts([draft], accountID: ScopeHarness.account)
+        let context = try #require(await harness.model.composeContext(for: ComposeRequest(kind: .draft, draftID: "drf_r")))
+        let model = ComposeViewModel(context: context, outbox: FakeOutbox(), autosaveDelay: .seconds(3600))
+        #expect(model.isFromLocked)
+        let info = try #require(model.fromCandidates.first { $0.address == "info@acme.co" })
+        #expect(!model.selectFrom(info))
+        #expect(model.draft.fromAddress == "support@acme.co")
     }
 
     // MARK: - From change

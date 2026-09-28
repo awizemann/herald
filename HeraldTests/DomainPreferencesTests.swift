@@ -246,6 +246,7 @@ struct DomainPreferencesTests {
         DomainPreferences.setIncludeInAll(false, accountID: "acct1", domainID: "dom1", in: defaults)
         DomainPreferences.setHidden(true, accountID: "acct1", domainID: "dom2", in: defaults)
         DomainPreferences.setMonogramOverride("NW", accountID: "acct1", domainID: "dom1", in: defaults)
+        DomainPreferences.setDefaultFrom("sales@acme.co", accountID: "acct1", domainID: "dom1", in: defaults)
         DomainPreferences.setIncludeInAll(false, accountID: "acct2", domainID: "dom1", in: defaults)
 
         DomainPreferences.purgeAll(accountID: "acct1", from: defaults)
@@ -253,7 +254,25 @@ struct DomainPreferencesTests {
         #expect(DomainPreferences.includeInAll(accountID: "acct1", domainID: "dom1", in: defaults) == true) // back to default
         #expect(DomainPreferences.isHidden(accountID: "acct1", domainID: "dom2", in: defaults) == false)
         #expect(DomainPreferences.monogramOverride(accountID: "acct1", domainID: "dom1", in: defaults) == nil)
+        #expect(DomainPreferences.defaultFrom(accountID: "acct1", domainID: "dom1", in: defaults) == nil)
         // Untouched: acct2's key survives.
         #expect(DomainPreferences.includeInAll(accountID: "acct2", domainID: "dom1", in: defaults) == false)
+    }
+
+    // MARK: - Default From
+
+    @Test("defaultFrom is stored lowercased under its own key; nil or blank clears it")
+    func defaultFromRoundTrip() {
+        let defaults = makeDefaults()
+        #expect(DomainPreferences.defaultFromKey(accountID: "acct1", domainID: "dom1") == "domain.acct1.dom1.defaultFrom")
+        #expect(DomainPreferences.defaultFrom(accountID: "acct1", domainID: "dom1", in: defaults) == nil)
+        DomainPreferences.setDefaultFrom(" Sales@Acme.CO ", accountID: "acct1", domainID: "dom1", in: defaults)
+        #expect(defaults.string(forKey: "domain.acct1.dom1.defaultFrom") == "sales@acme.co")
+        #expect(DomainPreferences.defaultFrom(accountID: "acct1", domainID: "dom1", in: defaults) == "sales@acme.co")
+        DomainPreferences.setDefaultFrom("  ", accountID: "acct1", domainID: "dom1", in: defaults)
+        #expect(defaults.object(forKey: "domain.acct1.dom1.defaultFrom") == nil)
+        DomainPreferences.setDefaultFrom("a@b.co", accountID: "acct1", domainID: "dom1", in: defaults)
+        DomainPreferences.setDefaultFrom(nil, accountID: "acct1", domainID: "dom1", in: defaults)
+        #expect(defaults.object(forKey: "domain.acct1.dom1.defaultFrom") == nil)
     }
 }

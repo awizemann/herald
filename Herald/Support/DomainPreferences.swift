@@ -85,6 +85,12 @@ nonisolated enum DomainPreferences {
         key("tint", accountID: accountID, domainID: domainID)
     }
 
+    /// `domain.<accountID>.<domainID>.defaultFrom` — the address (lowercased)
+    /// a new message in this domain's scope starts from.
+    static func defaultFromKey(accountID: String, domainID: String) -> String {
+        key("defaultFrom", accountID: accountID, domainID: domainID)
+    }
+
     static func includeInAllKey(accountID: String, domainID: String) -> String {
         key("includeInAll", accountID: accountID, domainID: domainID)
     }
@@ -163,6 +169,31 @@ nonisolated enum DomainPreferences {
             return
         }
         defaults.set(name, forKey: key)
+    }
+
+    // MARK: - Default From
+
+    /// The stored default From address, lowercased, or `nil` ("Automatic").
+    /// Whether it is still sendable is decided where the domain's addresses
+    /// are known (``ComposeFrom/domainDefault(storedAddress:sendable:)``): a
+    /// stale value reads as unset there.
+    static func defaultFrom(accountID: String, domainID: String, in defaults: UserDefaults) -> String? {
+        guard let raw = defaults.string(forKey: defaultFromKey(accountID: accountID, domainID: domainID)) else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// `nil` (or blank) returns the domain to "Automatic".
+    static func setDefaultFrom(_ address: String?, accountID: String, domainID: String, in defaults: UserDefaults) {
+        let key = defaultFromKey(accountID: accountID, domainID: domainID)
+        let trimmed = address?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if trimmed.isEmpty {
+            defaults.removeObject(forKey: key)
+        } else {
+            defaults.set(trimmed, forKey: key)
+        }
     }
 
     // MARK: - Toggles

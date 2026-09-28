@@ -67,6 +67,7 @@ struct DomainOverviewSettingsPage: View {
                             }
                         )
                     }
+                    DomainDefaultFromRow(accountID: accountID, domain: item.domain)
                 }
             }
             SettingsSection(title: "On this Mac") {
@@ -180,6 +181,64 @@ private struct DomainMonogramField: View {
     // keystroke no longer pays for a `reloadConversations` + `reloadDrafts`.
     private func write(_ apply: @escaping (UserDefaults) -> Void) {
         Task { await environment.updateDomainPreferences(accountID: accountID, reloads: false, apply) }
+    }
+}
+
+/// "Default From address": which of the domain's sendable addresses a new
+/// message started in this domain's scope goes out from. "Automatic" keeps the
+/// older rule; a domain with exactly one sendable address shows that address
+/// as the (only) choice. A stored address that is no longer sendable reads as
+/// Automatic (``ComposeFrom/domainDefault(storedAddress:sendable:)``).
+private struct DomainDefaultFromRow: View {
+    @Environment(AppEnvironment.self) private var environment
+    let accountID: Account.ID
+    let domain: MailDomain
+
+    private static let automatic = ""
+
+    var body: some View {
+        let sendable = ComposeFrom.domainSendableAddresses(
+            domain: domain, mailboxes: environment.graphs[accountID]?.mail.mailboxes ?? []
+        )
+        let stored = DomainPreferences.defaultFrom(
+            accountID: accountID, domainID: domain.id, in: environment.domainPreferencesObserved()
+        )
+        let effective = ComposeFrom.domainDefault(storedAddress: stored, sendable: sendable)
+        let isSingle = sendable.count == 1
+        SettingsRow(
+            title: "Default From address",
+            note: isSingle
+                ? "The only address on this domain that can send."
+                : "New messages written in this domain start from this address. Replies use the address the message was sent to.",
+            source: .herald
+        ) {
+            Picker("Default From address", selection: Binding(
+                get: { isSingle ? (effective?.address.lowercased() ?? Self.automatic) : (stored.flatMap { value in
+                    sendable.contains { $0.address.lowercased() == value } ? value : nil
+                } ?? Self.automatic) },
+                set: { newValue in
+                    Task {
+                        await environment.updateDomainPreferences(accountID: accountID, reloads: false) { defaults in
+                            DomainPreferences.setDefaultFrom(
+                                newValue == Self.automatic ? nil : newValue,
+                                accountID: accountID, domainID: domain.id, in: defaults
+                            )
+                        }
+                    }
+                }
+            )) {
+                if !isSingle {
+                    Text("Automatic").tag(Self.automatic)
+                }
+                ForEach(sendable, id: \.address) { address in
+                    Text(address.address).tag(address.address.lowercased())
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .disabled(sendable.count <= 1)
+            .accessibilityIdentifier(AccessibilityID.Settings.domainDefaultFrom)
+        }
     }
 }
 

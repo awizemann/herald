@@ -57,6 +57,8 @@ struct ComposeFromField: View {
     let badge: (String) -> DomainBadgeResolver.Info?
     @State private var isPicking = false
 
+    static let lockedHint = "Replies are sent from the address the message was sent to"
+
     var body: some View {
         Button { isPicking.toggle() } label: {
             HStack(spacing: MailTheme.Spacing.sm - MailTheme.Spacing.xxs) {
@@ -71,18 +73,22 @@ struct ComposeFromField: View {
                 } else {
                     FromAddressText(address: model.draft.fromAddress)
                 }
-                Image(systemName: MailTheme.Symbol.folderMenu)
-                    .font(MailTheme.Typography.inlineGlyph)
-                    .foregroundStyle(MailTheme.Color.ink3)
+                if !model.isFromLocked {
+                    Image(systemName: MailTheme.Symbol.folderMenu)
+                        .font(MailTheme.Typography.inlineGlyph)
+                        .foregroundStyle(MailTheme.Color.ink3)
+                }
             }
             .lineLimit(1)
+            .opacity(model.isFromLocked ? MailTheme.Compose.lockedFromOpacity : 1)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.fromCandidates.isEmpty || model.isBusy)
+        .disabled(model.fromCandidates.isEmpty || model.isBusy || model.isFromLocked)
+        .help(model.isFromLocked ? Self.lockedHint : "")
         .accessibilityLabel("From")
         .accessibilityValue(model.selectedFrom.map { "\($0.displayName) \($0.address)" } ?? model.draft.fromAddress)
-        .accessibilityHint("Choose the address this message is sent from")
+        .accessibilityHint(model.isFromLocked ? Self.lockedHint : "Choose the address this message is sent from")
         .accessibilityIdentifier(AccessibilityID.Compose.from)
         .popover(isPresented: $isPicking, arrowEdge: .bottom) {
             FromPicker(model: model, badge: badge) { isPicking = false }

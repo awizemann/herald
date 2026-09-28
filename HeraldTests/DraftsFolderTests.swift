@@ -197,6 +197,28 @@ struct DraftsFolderTests {
         #expect(await harness.store.isDraftOpen(id: "dft_1", accountID: DraftHarness.account) == false)
     }
 
+    /// Fails if the search filter can hide the selected draft while leaving it
+    /// selected — Return would then open a draft the user cannot see.
+    @Test("Search that hides the selected draft clears the selection")
+    func searchHidingSelectionClearsIt() async throws {
+        let harness = try await DraftHarness.make()
+        try await harness.seed([
+            DraftHarness.draft(id: "dft_1", subject: "Quote"),
+            DraftHarness.draft(id: "dft_2", subject: "Invoice"),
+        ])
+        await harness.model.reloadDrafts()
+        harness.model.selectedDraftID = "dft_1"
+
+        harness.model.searchQuery = "Quote"
+        #expect(harness.model.selectedDraftID == "dft_1", "still listed: kept")
+
+        harness.model.searchQuery = "Invoice"
+        #expect(harness.model.presentedDrafts.map(\.id) == ["dft_2"])
+        #expect(harness.model.selectedDraftID == nil)
+        harness.model.openSelectedDraft()
+        #expect(harness.model.composeRequest == nil, "Return opens nothing")
+    }
+
     /// Fails if the composer is seeded from the network instead of the cache —
     /// opening a draft would cost a round trip and fail offline.
     @Test("Opening a draft builds its composer context from the cache alone")

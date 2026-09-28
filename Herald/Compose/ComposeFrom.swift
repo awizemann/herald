@@ -84,14 +84,42 @@ nonisolated enum ComposeFrom {
         mailboxes.lazy.compactMap { $0.sendableAddresses.first }.first
     }
 
-    /// Where a new message starts: the sidebar scope's mailbox (a mailbox
-    /// scope → its sendable address; a domain scope → the account primary when
-    /// it is in that domain, else the domain's first sendable address), then
-    /// the account primary. `nil` when nothing in `mailboxes` can send.
+    /// Every sendable address of `domain`'s mailboxes among `mailboxes`, in the
+    /// mailbox list's order (primary first within a mailbox), deduplicated
+    /// case-insensitively. What Settings › Domain › Overview's "Default From
+    /// address" picker offers.
+    static func domainSendableAddresses(domain: MailDomain, mailboxes: [Mailbox]) -> [MailboxAddress] {
+        let inDomain = Set(domain.mailboxIDs)
+        var seen: Set<String> = []
+        return mailboxes
+            .filter { inDomain.contains($0.id) }
+            .flatMap(\.sendableAddresses)
+            .filter { !$0.address.isEmpty && seen.insert($0.address.lowercased()).inserted }
+    }
+
+    /// The domain's effective default From: the stored preference when it is
+    /// still one of the domain's sendable addresses (a stale or unsendable
+    /// value counts as unset), else the domain's ONLY sendable address when it
+    /// has exactly one, else `nil` (the caller applies the older rule).
+    static func domainDefault(storedAddress: String?, sendable: [MailboxAddress]) -> MailboxAddress? {
+        if let stored = storedAddress?.lowercased(),
+           let match = sendable.first(where: { $0.address.lowercased() == stored }) {
+            return match
+        }
+        return sendable.count == 1 ? sendable[0] : nil
+    }
+
+    /// Where a new message starts: the sidebar scope's address (a mailbox
+    /// scope → its sendable address; a domain scope → the domain's default
+    /// From — `domainDefaultFrom`, the stored preference, else the domain's
+    /// single sendable address — then the account primary when it is in that
+    /// domain, else the domain's first sendable address), then the account
+    /// primary. `nil` when nothing in `mailboxes` can send.
     static func defaultAddress(
         scope: MailViewModel.Scope,
         mailboxes: [Mailbox],
-        domains: [MailDomain]
+        domains: [MailDomain],
+        domainDefaultFrom: String? = nil
     ) -> MailboxAddress? {
         let primary = accountPrimary(in: mailboxes)
         switch scope {
@@ -100,14 +128,14 @@ nonisolated enum ComposeFrom {
                 return address
             }
         case .domain(let id):
-            let inDomain = Set(domains.first { $0.id == id }?.mailboxIDs ?? [])
-            if let primary, inDomain.contains(primary.mailboxID) { return primary }
-            if let first = mailboxes.lazy
-                .filter({ inDomain.contains($0.id) })
-                .compactMap({ $0.sendableAddresses.first })
-                .first {
-                return first
+            guard let domain = domains.first(where: { $0.id == id }) else { break }
+            let sendable = domainSendableAddresses(domain: domain, mailboxes: mailboxes)
+            if let chosen = domainDefault(storedAddress: domainDefaultFrom, sendable: sendable) {
+                return chosen
             }
+            let inDomain = Set(domain.mailboxIDs)
+            if let primary, inDomain.contains(primary.mailboxID) { return primary }
+            if let first = sendable.first { return first }
         case .allDomains:
             break
         }

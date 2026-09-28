@@ -363,6 +363,8 @@ enum MailTheme {
         static let fromPopoverWidth: CGFloat = 340
         static let disabledSendOpacity: Double = 0.45
         static let unsendableOpacity: Double = 0.4
+        /// A reply's From: shown, but locked to the address the original was sent to.
+        static let lockedFromOpacity: Double = 0.6
         static let invalidTokenFill: Double = 0.08
         static let invalidTokenRing: Double = 0.5
         static let shortcutHintOpacity: Double = 0.75

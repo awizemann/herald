@@ -95,6 +95,7 @@ nonisolated enum AccessibilityID {
         static let domainIncludeInAll = "settings.domain.includeInAll"
         static let domainCountInBadge = "settings.domain.countInBadge"
         static let domainNotify = "settings.domain.notify"
+        static let domainDefaultFrom = "settings.domain.defaultFrom"
         /// Settings › Domain › Mailboxes' read-only table.
         static let domainMailboxTable = "settings.domain.mailboxTable"
         /// Settings › Domain › Signatures' "New Signature" button.

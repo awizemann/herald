@@ -710,6 +710,7 @@ final class MailViewModel {
             // list never shows the old query's server hits under the new one.
             cancelServerSearch()
             refilter()
+            clearHiddenDraftSelection()
             // NOT reported here: this fires on every debounced keystroke, so
             // "typed one word" would arrive as five searches. A search is what
             // the user COMMITTED — see ``submitSearch()``.
@@ -2422,7 +2423,8 @@ final class MailViewModel {
 
     /// The From a compose request starts with (V5, spec §3.3 / §4):
     /// - a NEW message with no mailbox of its own: the scope's address, then
-    ///   the account primary (``ComposeFrom/defaultAddress(scope:mailboxes:domains:)``);
+    ///   the account primary (``ComposeFrom/defaultAddress(scope:mailboxes:domains:domainDefaultFrom:)``);
+    ///   a domain scope honours the domain's "Default From address" preference;
     /// - a reply, reply-all or forward: the address of its mailbox the original
     ///   was actually sent to (``ComposeFrom/replyAddress(for:in:)``) — mail to
     ///   sales@ is answered from sales@ even when the mailbox's primary is info@;
@@ -2430,7 +2432,15 @@ final class MailViewModel {
     /// Drafts keep their stored From (``composeContext(for:)``).
     func composeFrom(kind: ComposeRequest.Kind, mailboxID: String?, message: MessageDetail?) -> (mailboxID: String?, address: String) {
         if kind == .new, mailboxID == nil {
-            if let address = ComposeFrom.defaultAddress(scope: scope, mailboxes: composableMailboxes(), domains: domains) {
+            var domainDefaultFrom: String?
+            if case .domain(let domainID) = scope {
+                domainDefaultFrom = DomainPreferences.defaultFrom(
+                    accountID: accountID, domainID: domainID, in: observedDefaults
+                )
+            }
+            if let address = ComposeFrom.defaultAddress(
+                scope: scope, mailboxes: composableMailboxes(), domains: domains, domainDefaultFrom: domainDefaultFrom
+            ) {
                 return (address.mailboxID, address.address)
             }
             let fallback = defaultComposeMailboxID()

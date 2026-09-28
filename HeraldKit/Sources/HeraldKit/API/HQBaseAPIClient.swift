@@ -186,7 +186,7 @@ public actor HQBaseAPIClient: MailAPIClient {
         try await perform {
             switch try await client.getAttachment(.init(path: .init(id: id))) {
             case .ok(let ok):
-                let data = try await Self.collect(ok.body.binary)
+                let data = try await Self.collect(ok.body.any)
                 // The generated client does not surface the response's
                 // `Content-Type` for this route, and the hardcoded
                 // `application/octet-stream` that used to sit here staged every

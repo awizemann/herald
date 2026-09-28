@@ -1023,7 +1023,7 @@
           "200": {
             "description": "Attachment",
             "content": {
-              "application/octet-stream": {
+              "*/*": {
                 "schema": {
                   "type": "string",
                   "contentEncoding": "binary"

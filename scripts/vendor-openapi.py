@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Normalise the vendored HQBase Mail API v1 spec for swift-openapi-generator.
 
-Three independent rewrites: two work around swift-openapi-generator 1.7 gaps,
-the third keeps Herald compatible with older HQBase servers.
+Four independent rewrites: two work around swift-openapi-generator 1.7 gaps,
+the third keeps Herald compatible with older HQBase servers, the fourth matches
+what the server actually sends.
 
 1. NULLABLE PROPERTIES. The upstream spec expresses nullable properties as OAS 3.1
 `anyOf: [ {..}, {type: "null"} ]`. swift-openapi-generator 1.7 does not support
@@ -35,6 +36,13 @@ non-optional Swift property whose absence fails the whole decode (keyNotFound),
 i.e. every sync against that server. Each name in `KEEP_OPTIONAL` is dropped
 from its schema's `required` list; `Mapping.swift` supplies the default.
 
+4. ANY-TYPE DOWNLOADS. Upstream declares `GET /api/v1/attachments/{id}` as
+`application/octet-stream`, but the server answers with the attachment's own
+stored Content-Type (`image/png`, `application/pdf`, …). The generated client
+rejects any response type the spec does not list, so every typed attachment
+failed as "a response Herald could not read". Each route in `ANY_CONTENT` has
+its 200 body re-declared as `*/*`.
+
 Usage (idempotent):
     python3 scripts/vendor-openapi.py [path-to-openapi.json]
 
@@ -53,6 +61,23 @@ KEEP_OPTIONAL = {
     # Domain-level "Active" switch; absent on servers that predate it (= enabled).
     "MailboxAddress": ["domainEnabled"],
 }
+
+
+# operationId -> the 200 response whose body may carry any media type (rewrite 4).
+ANY_CONTENT = ["getAttachment"]
+
+
+def any_content(spec, widened):
+    """Re-declare each ANY_CONTENT operation's 200 body as `*/*`."""
+    for methods in spec.get("paths", {}).values():
+        for op in methods.values():
+            if not isinstance(op, dict) or op.get("operationId") not in ANY_CONTENT:
+                continue
+            content = op.get("responses", {}).get("200", {}).get("content")
+            if isinstance(content, dict) and list(content) != ["*/*"]:
+                schema = next(iter(content.values()))
+                op["responses"]["200"]["content"] = {"*/*": schema}
+                widened.append(op["operationId"])
 
 
 def is_null_schema(schema):
@@ -136,10 +161,13 @@ def main():
     spec = walk(spec, changed, collapsed)
     kept = []
     keep_optional(spec, kept)
+    widened = []
+    any_content(spec, widened)
     path.write_text(json.dumps(spec, indent=2) + "\n")
     print(f"{path}: relaxed {len(changed)} nullable properties: {sorted(set(changed))}")
     print(f"{path}: collapsed {len(collapsed)} at-least-one-of objects: {collapsed}")
     print(f"{path}: kept {len(kept)} properties optional: {kept}")
+    print(f"{path}: widened {len(widened)} downloads to */*: {widened}")
 
 
 if __name__ == "__main__":

@@ -1164,6 +1164,15 @@ final class ComposeViewModel {
             announce(Self.accountSignedOutSaveReason)
             return
         }
+        // The server refuses a draft with a malformed address, so `saveNow`
+        // skips it silently — closing here would throw the whole message away.
+        // Keep the window and say which address is wrong.
+        if hasInvalidAddresses {
+            let reason = validationMessage ?? "Fix the highlighted address to save this draft."
+            status = .failed(reason)
+            announce(reason)
+            return
+        }
         await waitForUploads()
         await saveNow()
         guard status.message == nil else { return } // Save failed: keep the window.

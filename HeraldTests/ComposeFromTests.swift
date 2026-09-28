@@ -369,6 +369,20 @@ struct ComposeFromTests {
         #expect(model.isClosed)
     }
 
+    /// Fails if Save Draft with a malformed address closes the window: the save
+    /// is skipped, so closing would lose the whole message.
+    @Test func saveDraftWithAnInvalidAddressKeepsTheWindow() async {
+        let outbox = FakeOutbox()
+        let model = Self.composer(outbox: outbox)
+        model.subject = "Hi"
+        model.setPendingText("erik@halvorsen", for: .to)
+        model.requestClose()
+        await model.saveAndClose()
+        #expect(!model.isClosed)
+        #expect(model.status.message?.contains("erik@halvorsen") == true)
+        #expect(await outbox.lastSaved == nil)
+    }
+
     /// The window going away (flushAndStop) saves pending text too.
     @Test func flushOnCloseCommitsPendingRecipientText() async {
         let outbox = FakeOutbox()

@@ -25,14 +25,22 @@
 - [ ] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
 - [ ] Page the conversation list beyond 100 rows (id: t-92aa90a1) (added: 2026-09-28)
 - [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
-- [ ] Redesign v3 V7: orchestrator audit, memory audit, delete v1/v2 designs (id: t-9d5ee412) (added: 2026-09-28) (priority: high)
+- [ ] Journal deletes should re-list every cached listing of the thread (id: t-2962c745) (added: 2026-09-28) (priority: low)
+- [ ] Live-verify sent reply appears in thread and Inbox row in the app (id: t-2e603441) (added: 2026-09-28)
 
 ## Doing
 
-- [ ] Redesign v3 V6: compose window UI (id: t-e6034361) (added: 2026-09-28) (priority: high)
 
 ## Done
 
+- [x] Redesign v3 follow-up: per-domain default From + locked reply From (id: t-15ccc070) (added: 2026-09-28)
+- [x] Redesign v3 follow-up: scope-aware window title + search in Drafts (id: t-aed42e21) (added: 2026-09-28)
+- [x] Redesign v3 follow-up: app fonts everywhere + analytics events (id: t-b337ca4c) (added: 2026-09-28)
+- [x] Sent-reply visibility P3: trigger a sync pass immediately after a successful send (id: t-ddf71e50) (added: 2026-09-28) (priority: high)
+- [x] Sent-reply visibility P1: verify server threads and journals sent replies (id: t-a2551142) (added: 2026-09-28) (priority: high)
+- [x] Sent-reply visibility P2: re-list every conversation scope holding an upserted thread (id: t-c01fa50d) (added: 2026-09-28) (priority: high)
+- [x] Redesign v3 V7: orchestrator audit, memory audit, delete v1/v2 designs (id: t-9d5ee412) (added: 2026-09-28) (priority: high)
+- [x] Redesign v3 V6: compose window UI (id: t-e6034361) (added: 2026-09-28) (priority: high)
 - [x] Redesign v3 V5: compose model (From, Cc/Bcc, validation) (id: t-b46f23df) (added: 2026-09-28) (priority: high)
 - [x] Redesign v3 V4: attachment cards + Download All (id: t-41a2ec26) (added: 2026-09-28) (priority: high)
 - [x] Redesign v3 V3: settings visual audit + fix (id: t-c3fda870) (added: 2026-09-28)

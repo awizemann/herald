@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herald — a native Mac client for HQBase</title>
+<meta name="description" content="Herald is a native macOS mail-triage client for self-hosted HQBase shared mailboxes. Free and open source (AGPL-3.0).">
+<meta name="color-scheme" content="light dark">
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./">Herald</a>
+    <nav aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="https://github.com/awizemann/herald">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero wrap">
+    <p class="eyebrow">For macOS 15 and later · Free &amp; open source</p>
+    <h1>Every domain, every shared mailbox, one quiet Mac window.</h1>
+    <p class="lede">Herald is a native macOS client for <strong>HQBase</strong>, the self-hosted shared-mailbox workspace. It is built for triage: scope to a domain or a mailbox, read the thread, reply from the right address, move on.</p>
+    <p class="cta">
+      <a class="btn" href="https://github.com/awizemann/herald/releases/latest">Download Herald</a>
+      <a class="btn ghost" href="https://github.com/awizemann/herald">View source on GitHub</a>
+    </p>
+    <p class="fine">Signed and notarized by Apple. Updates itself via Sparkle.</p>
+    <figure class="shot hero-shot">
+      <img src="img/window.jpg" width="1600" height="963" alt="Herald's main window: a sidebar listing five domains with unread counts and three labels, an Inbox across all domains with sender, mailbox and domain badges on each row, and a reading pane showing a message with two attachment cards." fetchpriority="high">
+    </figure>
+  </section>
+
+  <section class="wrap about" aria-labelledby="about-h">
+    <h2 id="about-h">What it is — and isn't</h2>
+    <div class="cols">
+      <div class="card">
+        <h3>It is</h3>
+        <ul>
+          <li>A native SwiftUI app for Mac, fast and keyboard-friendly.</li>
+          <li>A client for the HQBase Mail API. Your server stays the system of record; Herald keeps a local cache it can rebuild.</li>
+          <li>Multi-account: several HQBase workspaces side by side.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>It isn't</h3>
+        <ul>
+          <li>Affiliated with or endorsed by the HQBase project. It's an independent, community-built client.</li>
+          <li>A general email app. No IMAP, POP or Gmail — HQBase only.</li>
+          <li>A hosted service. You need your own HQBase server.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="note"><strong>Requires</strong> a self-hosted HQBase server, version <strong>1.3.4 or newer</strong>, and macOS 15 Sequoia or later.</p>
+  </section>
+
+  <section id="features" class="wrap features" aria-labelledby="feat-h">
+    <h2 id="feat-h">Built for triage</h2>
+
+    <article class="feature">
+      <div class="copy">
+        <h3>Domains first</h3>
+        <p>The sidebar drills from account to domain to mailbox to folder. “All domains” shows everything, with a small badge on each row so you always know which address a message came to. Unread counts per domain, workspace labels underneath.</p>
+      </div>
+      <figure class="shot narrow"><img src="img/sidebar.jpg" width="335" height="505" loading="lazy" alt="Sidebar with an All domains row selected, five domains each with a two-letter badge and unread count, and a Labels section with Client, Contracts and Follow up."></figure>
+    </article>
+
+    <article class="feature flip">
+      <div class="copy">
+        <h3>Threads that read well</h3>
+        <p>Open a conversation and it drills in right in the list, newest first. The reading pane is set in a calm serif and sans pairing, with reply, reply all, forward, archive and labels one click away.</p>
+      </div>
+      <figure class="shot"><img src="img/thread.jpg" width="1000" height="619" loading="lazy" alt="Reading pane showing message 3 of 3 in the thread “Q4 retainer — revised scope”, with the sender, recipient mailbox chip, body text and two attachment cards."></figure>
+    </article>
+
+    <article class="feature">
+      <div class="copy">
+        <h3>Reply from the right address</h3>
+        <p>The From picker groups every address you can send from by domain, filters as you type, and marks the ones you can't send from. Signatures follow the mailbox. Drafts save as you go.</p>
+      </div>
+      <figure class="shot"><img src="img/compose.jpg" width="1100" height="449" loading="lazy" alt="Compose window with the From picker open, listing addresses grouped by domain, with two marked “Can’t send”."></figure>
+    </article>
+
+    <article class="feature flip">
+      <div class="copy">
+        <h3>Attachments, handled</h3>
+        <p>Every attachment is a card: Quick Look it with a click, download one or all. Drag files into compose to attach them, and see upload progress before you send.</p>
+      </div>
+      <div class="chips" aria-hidden="true">
+        <span class="att"><b>Q4 scope v2.pdf</b><i>1.8 MB</i></span>
+        <span class="att"><b>Q4 budget.xlsx</b><i>64 KB</i></span>
+        <span class="att"><b>proposal.key</b><i>8.4 MB</i></span>
+      </div>
+    </article>
+
+    <article class="feature">
+      <div class="copy">
+        <h3>Settings per domain</h3>
+        <p>Choose which domains count toward the Dock badge, which ones notify, and which appear in “All domains”. Server facts and Herald-only preferences are labelled so you know what lives where.</p>
+      </div>
+      <figure class="shot"><img src="img/settings.jpg" width="1000" height="672" loading="lazy" alt="Domain settings for acme.co: name and mailbox count from the server, a monogram field, and toggles for including the domain in All domains, the Dock badge and notifications."></figure>
+    </article>
+  </section>
+
+  <section id="privacy" class="wrap privacy" aria-labelledby="priv-h">
+    <h2 id="priv-h">Private by default</h2>
+    <p>Herald talks only to your HQBase server. Your mail, contacts and credentials never leave it; sign-in tokens live in your Mac's Keychain.</p>
+    <p>Herald sends a small amount of <strong>anonymous</strong> usage data (app version, macOS version, which features are used) to help decide what to build next. It contains no mail, no addresses and no account details, and you can turn it off at any time in <em>Settings › Privacy</em>. The complete list of events is in the source: <a href="https://github.com/awizemann/herald/blob/main/Herald/Analytics/UsageEvent.swift">UsageEvent.swift</a>.</p>
+    <p>This site has no cookies, trackers or analytics.</p>
+  </section>
+
+  <section class="wrap download" aria-labelledby="dl-h">
+    <h2 id="dl-h">Get Herald</h2>
+    <p>Free. Open source under the <a href="https://github.com/awizemann/herald/blob/main/LICENSE">GNU AGPL-3.0</a>.</p>
+    <p class="cta">
+      <a class="btn" href="https://github.com/awizemann/herald/releases/latest">Download the latest release</a>
+      <a class="btn ghost" href="https://github.com/awizemann/herald/issues">Report an issue</a>
+    </p>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <p>Herald is an independent project and is not affiliated with HQBase. Screenshots use sample data.</p>
+  <p>Typeset in <a href="https://vercel.com/font">Geist</a> and <a href="https://github.com/adobe-fonts/source-serif">Source Serif 4</a> (SIL Open Font License). © Alan Wizemann.</p>
+</footer>
+</body>
+</html>

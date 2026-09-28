@@ -160,6 +160,14 @@ public actor SyncEngine {
     /// skipping a matching sweep is safe live in `SyncEngine+Labels.swift`.
     var lastSweepDigests: [String: SweepDigest] = [:]
 
+    /// Where a CAPPED conversation page-walk stopped: the first cursor it never
+    /// fetched, per listing scope. ``loadOlderConversations(mailboxIDs:folder:)``
+    /// (in `SyncEngine+Paging.swift`) resumes from here when the list is
+    /// scrolled past the cache. Only ever deepened by a backfill, never reset by
+    /// a later capped pass, so a re-walk does not rewind the user's paging; a
+    /// walk that reaches the end drops it. Cleared by `start()`.
+    var conversationResumeCursors: [ConversationScope: String] = [:]
+
     private let eventStream: AsyncStream<SyncEvent>
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
 
@@ -184,7 +192,7 @@ public actor SyncEngine {
     /// began under and every step compares it to the current one: the moment they
     /// diverge the pass unwinds instead of writing more rows into a store the app
     /// is about to purge.
-    private var passGeneration = 0
+    var passGeneration = 0
     private var runningPassGeneration = 0
 
     /// Wait state: the loop parks on `wakeContinuation` until either the cadence
@@ -248,6 +256,7 @@ public actor SyncEngine {
         // A different account (or a restarted engine) has never polled ITS drafts.
         lastDraftPoll = nil
         lastLabelPoll = nil
+        conversationResumeCursors = [:]
         // The digests describe the PREVIOUS account's membership; keeping them
         // would let the first sweep of a new account skip a write it must make.
         lastSweepDigests.removeAll()
@@ -776,7 +785,7 @@ public actor SyncEngine {
     }
 
     /// One (mailbox, conversation folder) listing the journal made stale.
-    private nonisolated struct ConversationScope: Sendable, Hashable {
+    nonisolated struct ConversationScope: Sendable, Hashable {
         let mailboxID: String?
         let folder: ConversationFolder
     }
@@ -906,12 +915,18 @@ public actor SyncEngine {
             cursor = next
         }
 
+        let listingScope = ConversationScope(mailboxID: mailboxID, folder: folder)
         if !reachedEnd {
+            // The first page NOT fetched. Kept if a backfill already went deeper.
+            if let cursor, conversationResumeCursors[listingScope] == nil {
+                conversationResumeCursors[listingScope] = cursor
+            }
             logger.warning(
                 "Conversation page cap (\(self.maxConversationPages, privacy: .public)) hit for \(folder.rawValue, privacy: .public); skipping tombstoning to avoid deleting unseen pages"
             )
             return changes
         }
+        conversationResumeCursors[listingScope] = nil
         try checkPassIsCurrent()
         changes.formUnion(
             try await store.deleteMissingConversations(

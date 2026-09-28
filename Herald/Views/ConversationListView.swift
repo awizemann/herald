@@ -70,42 +70,53 @@ struct ConversationListView: View {
         let attribution = model.rowAttributionIndex()
         let accountTint = model.listAccountTint
         let rowHeight = metrics.conversationRowHeight(.current)
-        List(model.presentedConversations, selection: $model.selectedThreadID) { row in
-            ConversationRow(
-                row: row,
-                // The COMMITTED query, not the field's text: the rows on screen
-                // were filtered with this one, so marking them with a needle the
-                // user is still typing would highlight what is not matched yet.
-                highlight: model.searchQuery,
-                // Only the levels the scope has not fixed (handoff §2).
-                attribution: attribution.attribution(forMailbox: row.latest.mailboxID),
-                accountTint: accountTint,
-                metrics: metrics,
-                minHeight: rowHeight,
-                isSelected: model.selectedThreadID == row.id,
-                labels: model.labels(forThread: row.id),
-                toggleStar: { Task { await model.toggleStar(row) } },
-                archive: model.offersArchiveAction
-                    ? { Task { await model.perform(.archive, onThread: row.id) } }
-                    : nil,
-                restoreTitle: model.restoreActionTitle,
-                restore: model.restoreAction.map { action in
-                    { Task { await model.perform(action, onThread: row.id) } }
-                },
-                // In the Trash there is nothing to trash: the rotor action goes
-                // away rather than offering a no-op.
-                trash: model.offersTrashAction
-                    ? { Task { await model.perform(.trash, onThread: row.id) } }
-                    : nil,
-                openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
-            )
-            .tag(row.id)
-            // The row draws its own padding (14/7 × 12, handoff §3.1).
-            .listRowInsets(EdgeInsets())
-            // Selection itself drills into a multi-message thread (see
-            // MailViewModel.selectedThreadID). No tap gesture here: issue #4 —
-            // a simultaneous TapGesture on the row content raced the List's own
-            // selection, so clicks on text often failed to select at all.
+        List(selection: $model.selectedThreadID) {
+            ForEach(model.presentedConversations) { row in
+                ConversationRow(
+                    row: row,
+                    // The COMMITTED query, not the field's text: the rows on screen
+                    // were filtered with this one, so marking them with a needle the
+                    // user is still typing would highlight what is not matched yet.
+                    highlight: model.searchQuery,
+                    // Only the levels the scope has not fixed (handoff §2).
+                    attribution: attribution.attribution(forMailbox: row.latest.mailboxID),
+                    accountTint: accountTint,
+                    metrics: metrics,
+                    minHeight: rowHeight,
+                    isSelected: model.selectedThreadID == row.id,
+                    labels: model.labels(forThread: row.id),
+                    toggleStar: { Task { await model.toggleStar(row) } },
+                    archive: model.offersArchiveAction
+                        ? { Task { await model.perform(.archive, onThread: row.id) } }
+                        : nil,
+                    restoreTitle: model.restoreActionTitle,
+                    restore: model.restoreAction.map { action in
+                        { Task<Void, Never> { await model.perform(action, onThread: row.id) } }
+                    },
+                    // In the Trash there is nothing to trash: the rotor action goes
+                    // away rather than offering a no-op.
+                    trash: model.offersTrashAction
+                        ? { Task { await model.perform(.trash, onThread: row.id) } }
+                        : nil,
+                    openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
+                )
+                .tag(row.id)
+                // The row draws its own padding (14/7 × 12, handoff §3.1).
+                .listRowInsets(EdgeInsets())
+                // Selection itself drills into a multi-message thread (see
+                // MailViewModel.selectedThreadID). No tap gesture here: issue #4 —
+                // a simultaneous TapGesture on the row content raced the List's own
+                // selection, so clicks on text often failed to select at all.
+            }
+            // Scrolling to the end pages in more. Keyed on the limit so the row
+            // is a NEW view after each page: one still on screen (a filtered
+            // list, a short page) fires again instead of stalling, while a
+            // failed load waits for the next scroll back to the end.
+            if model.canLoadMoreConversations {
+                LoadMoreRow(isLoading: model.isLoadingMoreConversations)
+                    .id(model.conversationListLimit)
+                    .onAppear { Task { await model.loadMoreConversations() } }
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -242,6 +253,27 @@ struct LabelMenu: View {
                 }
             }
         }
+    }
+}
+
+/// The list's last row while more conversations can be paged in: a small
+/// spinner while a page loads (blank otherwise), not selectable, silent to
+/// VoiceOver (the rows arriving are the news).
+struct LoadMoreRow: View {
+    let isLoading: Bool
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            ProgressView()
+                .controlSize(.small)
+                .opacity(isLoading ? 1 : 0)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, MailTheme.Spacing.sm)
+        .listRowInsets(EdgeInsets())
+        .selectionDisabled()
+        .accessibilityHidden(true)
     }
 }
 

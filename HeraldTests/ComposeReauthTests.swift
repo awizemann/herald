@@ -584,4 +584,38 @@ import Testing
         #expect(await apiA.composeRequestCount == calls, "a signed-out account's composer reached its server")
         #expect(model.bodyText == "Hello")
     }
+
+    /// A send from A's composer syncs A — not the selected account B — right
+    /// away. Measured as a sync pass (`listMailboxes`) on each account's own
+    /// server after both initial passes settle; the idle poll is minutes away,
+    /// so a new pass within the timeout can only be the refresh. Fails if the
+    /// send triggers no pass (the reply waits for the poll) or syncs B.
+    @Test func anAcceptedSendSyncsTheComposingAccountNow() async throws {
+        let environment = Self.environment()
+        let store = try MailStore.inMemory()
+        let apiA = await Self.composeAPI()
+        let apiB = await Self.composeAPI()
+        await environment.install(account: Self.a, api: apiA, store: store)
+        let id = try #require(await environment.prepareCompose(ComposeRequest(kind: .new)))
+        await environment.install(account: Self.b, api: apiB, store: store)
+        #expect(environment.selectedAccountID == Self.b.id)
+        try await wait("both initial passes") {
+            let a = await apiA.mailboxRequestCount; let b = await apiB.mailboxRequestCount; return a > 0 && b > 0
+        }
+        // Let any in-flight pass finish before taking the baseline.
+        try await Task.sleep(for: .milliseconds(200))
+        let baseA = await apiA.mailboxRequestCount
+        let baseB = await apiB.mailboxRequestCount
+
+        let model = try #require(environment.makeComposeViewModel(id: id))
+        model.toText = "friend@example.com"
+        model.bodyText = "Hello"
+        #expect(await model.send())
+
+        try await wait("A's sync pass after the send") {
+            await apiA.mailboxRequestCount > baseA
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await apiB.mailboxRequestCount == baseB, "the send synced the selected account, not the composing one")
+    }
 }

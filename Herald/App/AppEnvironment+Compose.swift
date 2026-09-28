@@ -56,6 +56,12 @@ extension AppEnvironment {
             self?.reauthError(accountID: accountID)
         }, saveAttempted: { [weak self] in
             self?.composeSaveAttempted?()
+        }, sent: { [weak self] in
+            // The composing account's engine, looked up fresh like `draftCache`:
+            // a sync pass now brings the sent message into its thread and
+            // listings instead of at the next poll. No graph (signed out) — no-op.
+            guard let sync = self?.graphs[accountID]?.sync else { return }
+            Task { await sync.refreshNow() }
         })
         session.model = model
         composeSessions[id] = session

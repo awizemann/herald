@@ -253,6 +253,44 @@ actor FakeOutbox: Outboxing {
 
     // MARK: - Send holds (upstream 1.4.0 503s)
 
+    /// An accepted send asks for a sync pass exactly once, so the reply shows
+    /// in its thread without waiting for the poll; a failed send and a send
+    /// hold ask for none. Fails if the hook is never called, called twice, or
+    /// called for a send the server did not accept.
+    @Test func onlyAnAcceptedSendAsksForASyncPass() async {
+        for failure in [OutboxError.api(.notFound), .sendOnHold(.recovering), .sendOnHold(.storageNotReady)] {
+            let outbox = FakeOutbox()
+            await outbox.setSendError(failure)
+            var sentCount = 0
+            let model = ComposeViewModel(
+                context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+                outbox: outbox,
+                autosaveDelay: .seconds(3600),
+                sent: { sentCount += 1 }
+            )
+            model.toText = "friend@example.com"
+            model.bodyText = "Hello"
+            #expect(await model.send() == false)
+            #expect(sentCount == 0, "a failed send (\(failure)) asked for a sync pass")
+        }
+
+        let outbox = FakeOutbox()
+        var sentCount = 0
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600),
+            sent: { sentCount += 1 }
+        )
+        model.toText = "friend@example.com"
+        model.bodyText = "Hello"
+        #expect(await model.send())
+        #expect(sentCount == 1)
+        // A closed composer refuses a second Send: still exactly one pass.
+        #expect(await model.send() == false)
+        #expect(sentCount == 1)
+    }
+
     /// `SEND_RECOVERY_UNAVAILABLE` means the mail was ACCEPTED and the server
     /// cannot confirm it. The compose window must therefore stop offering Send:
     /// the one thing the server asks for is that the client not try again. Fails

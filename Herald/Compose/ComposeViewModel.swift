@@ -243,6 +243,10 @@ final class ComposeViewModel {
     /// these (`saveAttempts=`), because a save refused by a latched grant never
     /// reaches the server and so shows up in no server counter. Default no-op.
     @ObservationIgnored private let saveAttempted: @MainActor () -> Void
+    /// Told once when a send is ACCEPTED, so the composing account syncs now
+    /// and the reply shows in its thread and listings instead of at the next
+    /// poll. Never on a failure or a send hold. Default no-op.
+    @ObservationIgnored private let sent: @MainActor () -> Void
 
     init(
         context: ComposeContext,
@@ -253,7 +257,8 @@ final class ComposeViewModel {
         reauthenticate: @escaping @MainActor () async -> Void = {},
         isReauthenticating: @escaping @MainActor () -> Bool = { false },
         reauthError: @escaping @MainActor () -> String? = { nil },
-        saveAttempted: @escaping @MainActor () -> Void = {}
+        saveAttempted: @escaping @MainActor () -> Void = {},
+        sent: @escaping @MainActor () -> Void = {}
     ) {
         let draft = context.makeDraft()
         self.draft = draft
@@ -267,6 +272,7 @@ final class ComposeViewModel {
         self.isReauthenticating = isReauthenticating
         self.reauthError = reauthError
         self.saveAttempted = saveAttempted
+        self.sent = sent
         self.toText = draft.to.joined(separator: ", ")
         self.ccText = draft.cc.joined(separator: ", ")
         self.bccText = draft.bcc.joined(separator: ", ")
@@ -1101,6 +1107,7 @@ final class ComposeViewModel {
                 hasBCC: !draft.bcc.isEmpty
             ))
             if let serverDraftID { draftCache(.removed(serverDraftID)) }
+            sent()
             return true
         } catch {
             // Nothing is discarded: the window stays open with everything in it.

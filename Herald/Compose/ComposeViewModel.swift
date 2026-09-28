@@ -272,6 +272,14 @@ final class ComposeViewModel {
         self.bccText = draft.bcc.joined(separator: ", ")
         self.subject = draft.subject
         self.bodyText = draft.body
+        let candidates = ComposeFrom.candidates(from: context.fromMailboxes)
+        self.fromCandidates = candidates
+        var names: [String: String] = [:]
+        for candidate in candidates where !candidate.displayName.isEmpty {
+            names[candidate.id] = candidate.displayName
+        }
+        self.knownNames = names
+        self.ccBccRequested = context.kind == .replyAll || !draft.cc.isEmpty || !draft.bcc.isEmpty
         // Reopening an existing draft takes ownership of it straight away: the
         // fence this raises is what stops a poll that is already in flight from
         // writing a pre-edit listing over the row under the user.
@@ -313,6 +321,8 @@ final class ComposeViewModel {
         // and must never turn into a "save or discard?" sheet (real-run finding).
         guard !isClosed, draft.isDirty else { return false }
         return draft.to != initialDraft.to
+            || draft.fromAddress != initialDraft.fromAddress
+            || draft.mailboxID != initialDraft.mailboxID
             || draft.cc != initialDraft.cc
             || draft.bcc != initialDraft.bcc
             || draft.subject != initialDraft.subject
@@ -322,6 +332,177 @@ final class ComposeViewModel {
     }
 
     func invalid(_ field: Field) -> [String] { invalidAddresses[field] ?? [] }
+
+    // MARK: - From (V5)
+
+    /// Every address of the account's enabled mailboxes, sendable or not
+    /// (``ComposeContext/fromMailboxes``). Fixed for the window's life.
+    let fromCandidates: [FromCandidate]
+    /// The From picker's filter field.
+    var fromFilter = ""
+    /// The picker's sections for ``fromFilter``: by domain, domains
+    /// alphabetical, primary first.
+    var fromGroups: [FromCandidateGroup] { ComposeFrom.groups(fromCandidates, filter: fromFilter) }
+    /// The candidate matching the draft's From, if it is one of ours.
+    var selectedFrom: FromCandidate? {
+        let key = draft.fromAddress.lowercased()
+        return fromCandidates.first { $0.id == key }
+    }
+
+    /// Set by a From change: once the new address's signatures arrive, a
+    /// hand-picked signature that is not among them resets to automatic.
+    @ObservationIgnored private var revalidatesSignatureOnLoad = false
+
+    /// Picks the From address. Sets the address AND its mailbox in one step
+    /// — a draft whose From and mailbox disagree is one the server refuses —
+    /// then drops the old address's signature list (the window's
+    /// `.task(id: SignatureFetchKey)` refetches for the new address). Refuses
+    /// a candidate that cannot send; returns whether anything changed.
+    @discardableResult
+    func selectFrom(_ candidate: FromCandidate) -> Bool {
+        guard candidate.canSend, !isClosed,
+              candidate.address.lowercased() != draft.fromAddress.lowercased()
+                || candidate.mailboxID != draft.mailboxID
+        else { return false }
+        draft.mailboxID = candidate.mailboxID
+        draft.fromAddress = candidate.address
+        signatureCandidates = .empty
+        signaturesLoaded = false
+        if case .selected = draft.signature { revalidatesSignatureOnLoad = true }
+        edited(true)
+        return true
+    }
+
+    // MARK: - Cc / Bcc visibility (V5)
+
+    /// Whether the user (or the context: reply-all, a draft carrying cc/bcc)
+    /// asked for the Cc/Bcc rows.
+    private var ccBccRequested: Bool
+
+    /// Whether the Cc and Bcc rows are shown. False for a new message; true on
+    /// reply-all or when the draft already has cc/bcc; toggled by "Cc Bcc".
+    /// Never false while either field (or its pending text) has content —
+    /// hiding an address the message will be sent to is not allowed.
+    var showsCcBcc: Bool {
+        get {
+            ccBccRequested
+                || !ccText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !bccText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !pendingText(for: .cc).isEmpty || !pendingText(for: .bcc).isEmpty
+        }
+        set { ccBccRequested = newValue }
+    }
+
+    // MARK: - Recipient tokens (V5)
+
+    /// Lowercased address → a display name Herald already knows (the
+    /// account's own addresses). Everything else shows its address.
+    @ObservationIgnored private let knownNames: [String: String]
+    /// What is typed after the last token, per field. NOT part of the field's
+    /// string until committed (comma/Return/Tab/focus loss, or Send).
+    private(set) var pendingTexts: [Field: String] = [:]
+
+    func pendingText(for field: Field) -> String { pendingTexts[field] ?? "" }
+
+    /// The committed tokens of a field, parsed from its string.
+    func tokens(for field: Field) -> [RecipientToken] {
+        RecipientTokens.tokens(in: text(for: field), names: knownNames)
+    }
+
+    /// The token field's text input. Typing a separator commits everything
+    /// before it; the fragment after stays pending.
+    func setPendingText(_ typed: String, for field: Field) {
+        let split = RecipientTokens.splitTyped(typed)
+        if !split.commit.isEmpty { setText(RecipientTokens.committing(split.commit, onto: text(for: field)), for: field) }
+        pendingTexts[field] = split.pending
+    }
+
+    /// Commits a field's pending text as token(s).
+    func commitPending(_ field: Field) {
+        let pending = pendingText(for: field)
+        pendingTexts[field] = ""
+        guard !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        setText(RecipientTokens.committing(pending, onto: text(for: field)), for: field)
+    }
+
+    func commitAllPending() {
+        for field in [Field.to, .cc, .bcc] { commitPending(field) }
+    }
+
+    /// A paste into a field: split on commas, semicolons and whitespace; a
+    /// single fragment with no separator stays pending, anything more commits.
+    func paste(_ pasted: String, into field: Field) {
+        let combined = pendingText(for: field) + pasted
+        let parts = Self.parseAddresses(combined)
+        if parts.count <= 1, combined.rangeOfCharacter(from: CharacterSet(charactersIn: ",;").union(.whitespacesAndNewlines)) == nil {
+            pendingTexts[field] = combined
+        } else {
+            pendingTexts[field] = ""
+            setText(RecipientTokens.committing(combined, onto: text(for: field)), for: field)
+        }
+    }
+
+    func removeToken(at index: Int, in field: Field) {
+        setText(RecipientTokens.removing(at: index, from: text(for: field)), for: field)
+    }
+
+    /// Delete on an empty input: removes the last token. Returns whether
+    /// there was one (V6 selects it first, then calls this).
+    @discardableResult
+    func removeLastToken(in field: Field) -> Bool {
+        let count = tokens(for: field).count
+        guard count > 0, pendingText(for: field).isEmpty else { return false }
+        removeToken(at: count - 1, in: field)
+        return true
+    }
+
+    private func text(for field: Field) -> String {
+        switch field {
+        case .to: toText
+        case .cc: ccText
+        case .bcc: bccText
+        }
+    }
+
+    private func setText(_ text: String, for field: Field) {
+        switch field {
+        case .to: toText = text
+        case .cc: ccText = text
+        case .bcc: bccText = text
+        }
+    }
+
+    // MARK: - Footer validation and Send (V5)
+
+    /// Every recipient Send would use: committed tokens plus pending text
+    /// (which Send commits first).
+    private func recipients(in field: Field) -> [String] {
+        Self.parseAddresses(text(for: field) + "," + pendingText(for: field))
+    }
+
+    /// The footer's inline validation: the first problem as one sentence, or
+    /// `nil`. Fields in To, Cc, Bcc order.
+    var validationMessage: String? {
+        for field in [Field.to, .cc, .bcc] {
+            if let bad = recipients(in: field).first(where: { !EmailAddress.isValid($0) }) {
+                return Self.invalidAddressMessage(bad)
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func invalidAddressMessage(_ address: String) -> String {
+        "“\(address)” isn’t a valid address"
+    }
+
+    /// Whether Send is enabled: at least one valid recipient, no invalid one,
+    /// and nothing holding the send (``isSendBlocked``: a send hold or a
+    /// signed-out account). ``send()`` keeps its own guards regardless.
+    var isSendEnabled: Bool {
+        guard !isSendBlocked else { return false }
+        let all = [Field.to, .cc, .bcc].flatMap { recipients(in: $0) }
+        return !all.isEmpty && all.allSatisfy(EmailAddress.isValid)
+    }
 
     func hint(for field: Field) -> String? {
         let bad = invalid(field)
@@ -433,6 +614,33 @@ final class ComposeViewModel {
         return signatureOptions.first { $0.id == tag }?.label ?? "No signature"
     }
 
+    /// The footer's signature caption: the name, and its scope in words —
+    /// "Mailbox signature · sales@", "Domain default · acme.co", "Personal".
+    struct SignatureCaption: Equatable {
+        let name: String
+        let scope: String
+    }
+
+    /// The caption for the signature the draft resolves to (automatic follows
+    /// the server's mailbox → personal → domain pick), `nil` for none.
+    var signatureCaption: SignatureCaption? {
+        guard let signature = signatureCandidates.resolved(draft.signature) else { return nil }
+        return SignatureCaption(name: signature.name, scope: Self.captionScope(of: signature))
+    }
+
+    nonisolated static func captionScope(of signature: Signature) -> String {
+        switch signature.scope {
+        case .user:
+            return "Personal"
+        case .mailbox:
+            let label = signature.scopeLabel
+            let local = label.firstIndex(of: "@").map { String(label[..<$0]) + "@" } ?? label
+            return "Mailbox signature · \(local)"
+        case .domain:
+            return "Domain default · \(signature.scopeLabel)"
+        }
+    }
+
     private static func scopeLabel(of signature: Signature) -> String {
         switch signature.scope {
         case .user: return "Personal"
@@ -469,9 +677,23 @@ final class ComposeViewModel {
     /// Safe to call again — the view re-runs it if the From address arrives late.
     func loadSignatures() async {
         guard !draft.fromAddress.isEmpty, !isAccountSignedOut else { return }
+        let address = draft.fromAddress
         do {
-            signatureCandidates = try await outbox.signatures(from: draft.fromAddress)
+            let loaded = try await outbox.signatures(from: address)
+            // The From moved while this was in flight: the list is for an
+            // address the window no longer sends from.
+            guard address == draft.fromAddress else { return }
+            signatureCandidates = loaded
             signaturesLoaded = true
+            if revalidatesSignatureOnLoad {
+                revalidatesSignatureOnLoad = false
+                if case .selected(let id) = draft.signature, !loaded.signatures.contains(where: { $0.id == id }) {
+                    // Hand-picked for the OLD address and not usable from the
+                    // new one: the server would answer SIGNATURE_NOT_AVAILABLE.
+                    draft.signature = .automatic
+                    edited(true)
+                }
+            }
         } catch {
             logger.warning("Signatures unavailable: \(error.logCode, privacy: .public)")
         }
@@ -801,6 +1023,7 @@ final class ComposeViewModel {
             if let reason = sendHoldReason { status = .failed(reason) }
             return false
         }
+        commitAllPending()
         commitRecipients()
         guard !hasInvalidAddresses else {
             status = .failed(hint(for: .to) ?? hint(for: .cc) ?? hint(for: .bcc) ?? "Check the recipients.")

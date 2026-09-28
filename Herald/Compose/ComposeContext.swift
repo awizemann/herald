@@ -21,6 +21,9 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
     /// The stored draft being reopened (`.draft` only). Resolved from the CACHE,
     /// so opening a draft from the folder costs no round trip.
     let storedDraft: Draft?
+    /// The account's enabled mailboxes — what the From picker lists
+    /// (``ComposeFrom/candidates(from:)``). Sendable DTOs, never `@Model`.
+    let fromMailboxes: [Mailbox]
 
     init(
         id: UUID = UUID(),
@@ -29,7 +32,8 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
         fromAddress: String = "",
         ownAddresses: [String] = [],
         message: MessageDetail? = nil,
-        storedDraft: Draft? = nil
+        storedDraft: Draft? = nil,
+        fromMailboxes: [Mailbox] = []
     ) {
         self.id = id
         self.kind = kind
@@ -38,6 +42,7 @@ nonisolated struct ComposeContext: Sendable, Identifiable {
         self.ownAddresses = ownAddresses
         self.message = message
         self.storedDraft = storedDraft
+        self.fromMailboxes = fromMailboxes
     }
 
     /// Read-only preview of what the server will append below the authored text

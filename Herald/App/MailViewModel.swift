@@ -2390,14 +2390,44 @@ final class MailViewModel {
     /// when every enabled mailbox is in a hidden domain — the composer then
     /// opens with no From rather than a hidden one.
     func defaultComposeMailboxID() -> String? {
+        let visible = composableMailboxes().map(\.id)
+        let scopeIDs = mailboxIDs(for: scope)
+        // `visible` keeps the mailbox list's order, so "first" is stable.
+        return visible.first { Self.mailboxIDs(scopeIDs, contain: $0) } ?? visible.first
+    }
+
+    /// The enabled mailboxes a message may start from on its own: every one
+    /// not in a domain the user hid, in the mailbox list's order.
+    func composableMailboxes() -> [Mailbox] {
         let defaults = observedDefaults
         let hidden = Set(domains
             .filter { DomainPreferences.isHidden(accountID: accountID, domainID: $0.id, in: defaults) }
             .flatMap(\.mailboxIDs))
-        let visible = mailboxes.map(\.id).filter { !hidden.contains($0) }
-        let scopeIDs = mailboxIDs(for: scope)
-        // `visible` keeps the mailbox list's order, so "first" is stable.
-        return visible.first { Self.mailboxIDs(scopeIDs, contain: $0) } ?? visible.first
+        return mailboxes.filter { !hidden.contains($0.id) }
+    }
+
+    /// The From a compose request starts with (V5, spec §3.3 / §4):
+    /// - a NEW message with no mailbox of its own: the scope's address, then
+    ///   the account primary (``ComposeFrom/defaultAddress(scope:mailboxes:domains:)``);
+    /// - a reply, reply-all or forward: the address of its mailbox the original
+    ///   was actually sent to (``ComposeFrom/replyAddress(for:in:)``) — mail to
+    ///   sales@ is answered from sales@ even when the mailbox's primary is info@;
+    /// - otherwise the mailbox's primary (``sendAddress(forMailbox:)``).
+    /// Drafts keep their stored From (``composeContext(for:)``).
+    func composeFrom(kind: ComposeRequest.Kind, mailboxID: String?, message: MessageDetail?) -> (mailboxID: String?, address: String) {
+        if kind == .new, mailboxID == nil {
+            if let address = ComposeFrom.defaultAddress(scope: scope, mailboxes: composableMailboxes(), domains: domains) {
+                return (address.mailboxID, address.address)
+            }
+            let fallback = defaultComposeMailboxID()
+            return (fallback, fallback == nil ? "" : sendAddress(forMailbox: fallback))
+        }
+        if let message, kind != .new,
+           let mailbox = monogramMailboxes.first(where: { $0.id == mailboxID }),
+           let address = ComposeFrom.replyAddress(for: message, in: mailbox) {
+            return (mailboxID, address.address)
+        }
+        return (mailboxID, sendAddress(forMailbox: mailboxID))
     }
 
     static let disabledMailboxReplyError = "This mailbox is turned off on the server, so you can't reply from it."
@@ -2431,7 +2461,8 @@ final class MailViewModel {
                 mailboxID: mailboxID,
                 fromAddress: stored.content.from.isEmpty ? sendAddress(forMailbox: mailboxID) : stored.content.from,
                 ownAddresses: ownAddresses,
-                storedDraft: stored
+                storedDraft: stored,
+                fromMailboxes: mailboxes
             )
         }
 
@@ -2462,14 +2493,15 @@ final class MailViewModel {
         }
         // Nothing ties a new message to a mailbox: the scope's, never a
         // hidden domain's.
-        if request.kind == .new, mailboxID == nil { mailboxID = defaultComposeMailboxID() }
+        let from = composeFrom(kind: request.kind, mailboxID: mailboxID, message: message)
         return ComposeContext(
             id: request.id,
             kind: request.kind,
-            mailboxID: mailboxID,
-            fromAddress: sendAddress(forMailbox: mailboxID),
+            mailboxID: from.mailboxID,
+            fromAddress: from.address,
             ownAddresses: ownAddresses,
-            message: message
+            message: message,
+            fromMailboxes: mailboxes
         )
     }
 

@@ -895,13 +895,13 @@ public actor MailStore {
         pinnedLabels[LabelPinKey(accountID: accountID, messageID: messageID, labelID: labelID)] != nil
     }
 
-    /// Test seam: whether a message is currently fenced against journal upserts.
-    /// A leak here is a message the journal can never correct again.
     /// Threads with at least one message under the triage fence.
     func pendingThreadIDs(accountID: String) -> Set<String> {
         Set(pendingMutations.lazy.filter { $0.key.accountID == accountID }.map(\.value.threadID))
     }
 
+    /// Test seam: whether a message is currently fenced against journal upserts.
+    /// A leak here is a message the journal can never correct again.
     func hasPendingMutation(messageID: String, accountID: String) -> Bool {
         pendingMutations[PendingKey(accountID: accountID, messageID: messageID)] != nil
     }

@@ -9,6 +9,9 @@
 - [ ] WebKit-level navigation policy test + ⌘F search focus (id: t-8a1c0015) (added: 2026-08-15) (priority: low)
 - [ ] PrivacyInfo.xcprivacy + App Store readiness pass (id: t-8a1c0013) (added: 2026-08-15) (priority: low)
 - [ ] Upstream: PR pagination + updatedSince for GET /api/v1/messages (id: t-8a1c0007) (added: 2026-08-15) (priority: low)
+- [ ] Redesign dogfooding follow-ups (review after Alan uses the new design) (id: t-cb5651ac) (added: 2026-09-27)
+- [ ] Decide: undo or confirm for ⌫ on a draft (id: t-b135357d) (added: 2026-09-28) (priority: low)
+- [ ] Menu-bar items for folder switching and sidebar back (id: t-9f67ca60) (added: 2026-09-28) (priority: low)
 
 ## Todo
 
@@ -20,12 +23,29 @@
 - [ ] Upstream ask: expose caller user id (or accept scope.type=user without id) so a first personal signature can be created via /api/v1 (id: t-63c94c58) (added: 2026-09-19) (priority: low)
 - [ ] Multi-account inputs from 2026-09-26 session-recovery audit (id: t-09312c4d) (added: 2026-09-26)
 - [ ] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
+- [ ] Page the conversation list beyond 100 rows (id: t-92aa90a1) (added: 2026-09-28)
+- [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
 
 ## Doing
 
 
 ## Done
 
+- [x] Redesign A1–A4: Orchestrator audits (plan, memory, fresh-eyes, full surface) (id: t-4a65d84b) (added: 2026-09-27) (priority: high)
+- [x] Redesign F1: audit fixes — state, store, effects (id: t-bd14674c) (added: 2026-09-28) (priority: high)
+- [x] Redesign F3: audit fixes — settings, prefs, assets (id: t-3b201c98) (added: 2026-09-28) (priority: high)
+- [x] Redesign F2: audit fixes — main window views (id: t-bcc3b1be) (added: 2026-09-28) (priority: high)
+- [x] Redesign R9: Hide domain + Remove domain page (id: t-086f8f03) (added: 2026-09-27)
+- [x] Honor mailbox/domain active status in the domain list (id: t-b53c6b0e) (added: 2026-09-27) (priority: high)
+- [x] Redesign R8: Domain settings pages (id: t-b27d66e0) (added: 2026-09-27)
+- [x] Redesign R4: Sidebar drill-down + account popover (id: t-148ca9af) (added: 2026-09-27) (priority: high)
+- [x] Redesign R5: List column + thread view (id: t-a6c1bb11) (added: 2026-09-27) (priority: high)
+- [x] Redesign R7: Settings shell + root pages (id: t-e07965ec) (added: 2026-09-27) (priority: high)
+- [x] Redesign R3b: Per-domain effects + mailbox colour removal (id: t-d2494ffe) (added: 2026-09-27) (priority: high)
+- [x] Redesign R3a: Scope/folder/label state refactor (id: t-4e5d60a0) (added: 2026-09-27) (priority: high)
+- [x] Redesign R6: Reading pane (id: t-91abc484) (added: 2026-09-27)
+- [x] Redesign R1: Tokens & fonts (id: t-fdfaa5d4) (added: 2026-09-27) (priority: high)
+- [x] Redesign R2: Domain model & Herald-only prefs (id: t-0f1fd8a6) (added: 2026-09-27) (priority: high)
 - [x] UI tests: final audits (plan, memory, fresh-eyes, test-mode blast radius) (id: t-2ae42cb2) (added: 2026-09-26)
 - [x] UI tests U6b: make scenarios discriminate (poll pause, autosave quiet, no vacuous asserts, scoped menus, fake fidelity) + 5x rerun (id: t-8025fb2b) (added: 2026-09-27)
 - [x] UI tests U6a: separate Debug bundle id, refresh Keychain-failure fix, launch/release guards (id: t-a3485ec1) (added: 2026-09-27) (priority: high)

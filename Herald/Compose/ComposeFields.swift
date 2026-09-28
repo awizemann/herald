@@ -239,7 +239,11 @@ struct RecipientTokenField: View {
                         // binding write finishes (the editor ignores a rewrite
                         // from inside its own edit).
                         if model.setPendingText(typed, for: field) {
-                            Task { @MainActor in ComposeFieldEditor.sync(to: model.pendingText(for: field)) }
+                            // Captured now: by the time the Task runs focus may
+                            // have moved (Tab), and the rewrite must not land in
+                            // Subject or Body.
+                            let editor = ComposeFieldEditor.current
+                            Task { @MainActor in ComposeFieldEditor.sync(to: model.pendingText(for: field), in: editor) }
                         }
                     }
                 )
@@ -307,8 +311,16 @@ struct RecipientTokenField: View {
 /// field still showed the committed address), so a commit or paste that
 /// rewrites the pending text pushes it into the editor directly.
 enum ComposeFieldEditor {
-    static func sync(to text: String) {
-        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor,
+    /// The key window's field editor, if a text field is being edited.
+    static var current: NSTextView? {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return nil }
+        return editor
+    }
+
+    /// Rewrites `expected` (default: the current field editor) — and only if it
+    /// is still the one being edited.
+    static func sync(to text: String, in expected: NSTextView? = nil) {
+        guard let editor = current, expected == nil || editor === expected,
               editor.string != text
         else { return }
         editor.string = text

@@ -26,10 +26,10 @@
 
 ## Doing
 
-- [ ] 1.0: GitHub Pages product site on gh-pages (id: t-b9b3c8be) (added: 2026-09-28)
 
 ## Done
 
+- [x] 1.0: GitHub Pages product site on gh-pages (id: t-b9b3c8be) (added: 2026-09-28)
 - [x] 1.0: draft preview in reading pane + consistent list selection (id: t-658665ae) (added: 2026-09-29) (priority: high)
 - [x] 1.0: hardening pass (UI suite 5x, upgrade from 0.5.1, 1.3.4 compat) (id: t-ddb84f9e) (added: 2026-09-28)
 - [x] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)

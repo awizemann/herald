@@ -1,7 +1,7 @@
 ---
 id: t-b9b3c8be
 title: 1.0: GitHub Pages product site on gh-pages
-status: doing
+status: done
 added: 2026-09-28
 ---
 

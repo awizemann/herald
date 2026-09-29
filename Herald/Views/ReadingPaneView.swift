@@ -627,12 +627,16 @@ private struct AttachmentBar: View {
     /// Downloads (once) and hands the file to Quick Look.
     private func preview(_ attachment: Attachment) {
         guard loadingIDs.insert(attachment.id).inserted else { return }
+        // Captured once: the pin is taken under this account, so it must be
+        // recorded — and released — under the same one even if the account
+        // switches while the file downloads.
+        let accountID = model.accountID
         Task {
             defer { loadingIDs.remove(attachment.id) }
             do {
                 // Pinned inside the actor, in the same step that stages it.
                 let url = try await AttachmentFile.shared.url(
-                    for: attachment, accountID: model.accountID, using: model.api, pinned: true
+                    for: attachment, accountID: accountID, using: model.api, pinned: true
                 )
                 // The user may have moved to another message while this
                 // downloaded; opening Quick Look on the previous message's file
@@ -640,13 +644,18 @@ private struct AttachmentBar: View {
                 // CURRENT list — the closure captured the old view value before,
                 // so the check passed for a message no longer on screen.
                 guard model.detail?.downloadableAttachments.contains(where: { $0.id == attachment.id }) == true
-                else { return }
+                else {
+                    // Nobody will show this file: drop the pin taken above, or
+                    // the staged copy stays pinned for the rest of the session.
+                    await AttachmentFile.shared.unpin(attachment.id, accountID: accountID)
+                    return
+                }
                 // The pin is held for as long as the panel shows the file and
                 // released in `previewURL`'s change handler. The hand-over of
                 // `pinnedPreview` happens with NO await in between, so a
                 // concurrent `releasePin()` cannot drop the same pin twice.
                 let previous = pinnedPreview
-                pinnedPreview = (attachment.id, model.accountID)
+                pinnedPreview = (attachment.id, accountID)
                 previewURL = url
                 if let previous { await AttachmentFile.shared.unpin(previous.id, accountID: previous.accountID) }
             } catch {

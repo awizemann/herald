@@ -782,7 +782,7 @@ private struct DraftPreviewHeader: View {
                 VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
                     Text(DraftRow.senderTitle)
                         .textStyle(MailTheme.Typography.headline)
-                        .foregroundStyle(MailTheme.Color.danger)
+                        .foregroundStyle(MailTheme.Color.ink)
                         .lineLimit(1)
                     AddressChip(info: mailboxAddress)
                     ForEach(preview.recipientLines, id: \.self) { line in

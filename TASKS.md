@@ -15,24 +15,29 @@
 
 ## Todo
 
-- [ ] Optimistic action vs concurrent sync pass fence (id: t-8a1c0011) (added: 2026-08-15) (priority: medium)
 - [ ] Follow-ups from 2026-08-18 feature audit (compose test handshake, pendingRoute clearing, stale search field, quotedBody dead code) (id: t-19d0d9ef) (added: 2026-08-18) (priority: low)
 - [ ] Adopt GET /drafts/changes journal for the drafts cache (id: t-85cfa329) (added: 2026-09-04) (priority: low)
 - [ ] A5 (follow-up): WKURLSchemeHandler for inline images + streamed attachment downloads (id: t-c909a320) (added: 2026-09-04) (priority: low)
 - [ ] Localization: replace string-built UI/a11y sentences with LocalizedStringKey args (signatures, compose quoted, list a11y) (id: t-be4fbea9) (added: 2026-09-19) (priority: low)
 - [ ] Upstream ask: expose caller user id (or accept scope.type=user without id) so a first personal signature can be created via /api/v1 (id: t-63c94c58) (added: 2026-09-19) (priority: low)
 - [ ] Multi-account inputs from 2026-09-26 session-recovery audit (id: t-09312c4d) (added: 2026-09-26)
-- [ ] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
-- [ ] Page the conversation list beyond 100 rows (id: t-92aa90a1) (added: 2026-09-28)
 - [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
 - [ ] Journal deletes should re-list every cached listing of the thread (id: t-2962c745) (added: 2026-09-28) (priority: low)
-- [ ] Live-verify sent reply appears in thread and Inbox row in the app (id: t-2e603441) (added: 2026-09-28)
 
 ## Doing
 
+- [ ] 1.0: GitHub Pages product site on gh-pages (id: t-b9b3c8be) (added: 2026-09-28)
 
 ## Done
 
+- [x] 1.0: draft preview in reading pane + consistent list selection (id: t-658665ae) (added: 2026-09-29) (priority: high)
+- [x] 1.0: hardening pass (UI suite 5x, upgrade from 0.5.1, 1.3.4 compat) (id: t-ddb84f9e) (added: 2026-09-28)
+- [x] Run the UI suite 5x consecutively on a quiet machine (after U6b) (id: t-23673507) (added: 2026-09-27)
+- [x] 1.0: CHANGELOG 1.0.0 section (id: t-8bbea171) (added: 2026-09-28)
+- [x] 1.0: README refresh + release.sh dry-run label fix (id: t-2da3438f) (added: 2026-09-28)
+- [x] Page the conversation list beyond 100 rows (id: t-92aa90a1) (added: 2026-09-28)
+- [x] Optimistic action vs concurrent sync pass fence (id: t-8a1c0011) (added: 2026-08-15) (priority: medium)
+- [x] Live-verify sent reply appears in thread and Inbox row in the app (id: t-2e603441) (added: 2026-09-28)
 - [x] Redesign v3 follow-up: per-domain default From + locked reply From (id: t-15ccc070) (added: 2026-09-28)
 - [x] Redesign v3 follow-up: scope-aware window title + search in Drafts (id: t-aed42e21) (added: 2026-09-28)
 - [x] Redesign v3 follow-up: app fonts everywhere + analytics events (id: t-b337ca4c) (added: 2026-09-28)

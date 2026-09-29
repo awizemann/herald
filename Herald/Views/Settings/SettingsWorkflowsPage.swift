@@ -87,10 +87,7 @@ struct DomainWorkflowsSettingsPage: View {
                             WorkflowLabelRow(
                                 label: label,
                                 accountID: accountID,
-                                domainID: item.id,
-                                stored: WorkflowPreferences.labelRule(
-                                    labelID: label.id, accountID: accountID, domainID: item.id, in: defaults
-                                )
+                                domainID: item.id
                             )
                         }
                     }
@@ -226,7 +223,16 @@ private struct WorkflowLabelRow: View {
     let label: MailLabel
     let accountID: Account.ID
     let domainID: MailDomain.ID
-    let stored: WorkflowLabelRule
+
+    /// Read here, through the observed defaults, not handed down by the page:
+    /// a value passed in from the parent did not repaint the checkbox after a
+    /// write (it only showed after leaving and returning to the page), while a
+    /// read inside this body is tracked like the page's own toggle.
+    private var stored: WorkflowLabelRule {
+        WorkflowPreferences.labelRule(
+            labelID: label.id, accountID: accountID, domainID: domainID, in: environment.domainPreferencesObserved()
+        )
+    }
 
     @State private var draft: String?
 

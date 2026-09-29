@@ -39,7 +39,7 @@ nonisolated enum DomainPreferences {
     /// escaped too because it is the escape marker itself. `domainID` gets the
     /// same treatment for the same reason — this module's own `MailDomain`
     /// fallback ids already contain dots (`"domain-name:<name>"`).
-    private static func escapeKeyComponent(_ raw: String) -> String {
+    static func escapeKeyComponent(_ raw: String) -> String {
         var result = ""
         for scalar in raw.unicodeScalars {
             switch scalar {

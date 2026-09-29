@@ -20,6 +20,7 @@ nonisolated enum PreferenceHygiene {
     /// for exactly that reason.
     static func purgeAccount(_ accountID: String, from defaults: UserDefaults) {
         DomainPreferences.purgeAll(accountID: accountID, from: defaults)
+        WorkflowPreferences.purgeAll(accountID: accountID, from: defaults)
         for key in [
             NavigationPersistence.scopeKey(accountID: accountID),
             NavigationPersistence.folderKey(accountID: accountID),

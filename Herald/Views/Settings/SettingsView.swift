@@ -193,13 +193,7 @@ private struct SettingsDomainRows: View {
             page(.overview, meta: nil)
             page(.mailboxes, meta: String(item.domain.mailboxIDs.count))
             page(.signatures, meta: signatureCount.map(String.init))
-            // Not built yet: shown so the layout reads as designed, never
-            // selectable (no tag), and it says why in words, not only by being
-            // dimmed.
-            Label("Workflows", systemImage: "point.3.connected.trianglepath.dotted")
-                .badge(Text("LATER").font(MailTheme.Typography.sourceTag.font))
-                .opacity(0.5)
-                .accessibilityLabel("Workflows, coming later")
+            page(.workflows, meta: nil)
         }
     }
 
@@ -428,6 +422,8 @@ private struct SettingsDetail: View {
             DomainMailboxesSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
         case .signatures:
             DomainSignaturesSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
+        case .workflows:
+            DomainWorkflowsSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
         case .remove:
             DomainRemoveSettingsPage(item: item, accountID: accountID, breadcrumb: breadcrumb)
         }

@@ -75,7 +75,7 @@ nonisolated enum AccessibilityID {
         /// Each sidebar item is `itemPrefix + <route key>` — `general`,
         /// `notifications`, `privacy`, `aiGateway`, `account`, `signatures`,
         /// `domain.<domainID>` at the root, and `page.<page>` (`overview`,
-        /// `mailboxes`, `signatures`, `remove`) inside a domain.
+        /// `mailboxes`, `signatures`, `workflows`, `remove`) inside a domain.
         static let itemPrefix = "settings.item."
         /// "‹ Settings" at the top of a domain's level.
         static let back = "settings.back"
@@ -114,6 +114,16 @@ nonisolated enum AccessibilityID {
         static let openAdmin = "settings.domain.openAdmin"
         /// Each Hidden Domains row's Restore button: `restoreDomainPrefix + <domainID>`.
         static let restoreDomainPrefix = "settings.domain.restore."
+        /// Settings › Domain › Workflows' "Classify new mail" toggle.
+        static let workflowClassify = "settings.workflows.classify"
+        /// Its "Open AI Gateway Settings" button, shown while unconfigured.
+        static let workflowOpenAIGateway = "settings.workflows.openAIGateway"
+        /// The setup warning.
+        static let workflowWarning = "settings.workflows.warning"
+        /// Each label row's include checkbox: `workflowIncludePrefix + <labelID>`.
+        static let workflowIncludePrefix = "settings.workflows.include."
+        /// Each label row's description field: `workflowDescriptionPrefix + <labelID>`.
+        static let workflowDescriptionPrefix = "settings.workflows.description."
     }
 
     /// The conversation list (middle column).

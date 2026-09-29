@@ -118,12 +118,13 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
     ]
 }
 
-/// One page of a domain's settings. Workflows is not here: it is a disabled
-/// "LATER" row with nothing to select, so it has no route at all.
+/// One page of a domain's settings.
 nonisolated enum DomainSettingsPage: String, Hashable, Sendable, CaseIterable {
     case overview
     case mailboxes
     case signatures
+    /// Email classification rules (WF3).
+    case workflows
     /// "Remove domain" — pinned to the bottom of the domain level. Hide, not
     /// delete: nothing on it is destructive (handoff §3.2).
     case remove
@@ -133,6 +134,7 @@ nonisolated enum DomainSettingsPage: String, Hashable, Sendable, CaseIterable {
         case .overview: "Overview"
         case .mailboxes: "Mailboxes"
         case .signatures: "Signatures"
+        case .workflows: "Workflows"
         case .remove: "Remove domain"
         }
     }
@@ -142,6 +144,7 @@ nonisolated enum DomainSettingsPage: String, Hashable, Sendable, CaseIterable {
         case .overview: "info.circle"
         case .mailboxes: "at"
         case .signatures: "signature"
+        case .workflows: "point.3.connected.trianglepath.dotted"
         case .remove: "eye.slash"
         }
     }

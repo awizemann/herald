@@ -91,3 +91,67 @@ struct ClassificationContextTests {
         #expect(text.hasPrefix("Classification is paused"))
     }
 }
+
+// MARK: - Activity log (WF5)
+
+private actor ActivitySync: MailSyncing {
+    func refreshNow() {}
+    func refreshDraftsNow() {}
+    func refreshLabelsNow() {}
+    func setCadence(_ cadence: SyncCadence) {}
+    func setLabelSurfaceVisible(_ visible: Bool) {}
+}
+
+@Suite("Workflows activity log")
+struct WorkflowActivityTests {
+    private func record(_ id: String, mailbox: String?, at seconds: TimeInterval,
+                        _ outcome: ClassificationOutcome = .none) -> ClassificationRecord {
+        ClassificationRecord(
+            date: Date(timeIntervalSince1970: seconds), threadID: "t-\(id)", messageID: id,
+            mailboxID: mailbox, subject: id, model: "workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8", outcome: outcome
+        )
+    }
+
+    /// Fails if another domain's (or a mailbox-less) record leaks in, if the
+    /// order is not newest first, or if the cap keeps the OLDEST entries.
+    @Test func filtersToTheDomainNewestFirstAndCaps() {
+        var records = (0..<25).map { record("m\($0)", mailbox: "mbA", at: TimeInterval($0)) }
+        records.append(record("other", mailbox: "mbZ", at: 100))
+        records.append(record("orphan", mailbox: nil, at: 101))
+        let shown = DomainWorkflowsSettingsPage.recentActivity(records, mailboxIDs: ["mbA", "mbB"])
+        #expect(shown.count == DomainWorkflowsSettingsPage.activityLimit)
+        #expect(shown.first?.messageID == "m24")
+        #expect(shown.last?.messageID == "m5")
+        #expect(!shown.contains { $0.messageID == "other" || $0.messageID == "orphan" })
+    }
+
+    @Test func outcomesReadAsPlainEnglish() {
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.none) == "No tag")
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.labelled(labelID: "l", labelName: "Billing")) == "Tagged Billing")
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.skipped(.threadLabelled)).contains("already has a tag"))
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.failed(reason: "http503")) == "Failed — the gateway answered 503")
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.failed(reason: "threadCheck")).contains("server"))
+        #expect(DomainWorkflowsSettingsPage.outcomeText(.failed(reason: "zzz")) == "Failed — an unexpected error")
+        // No camelCase code leaks through as-is (a one-word code like `paused`
+        // is also ordinary English).
+        for reason in ClassificationSkipReason.allCases where reason.rawValue != reason.rawValue.lowercased() {
+            #expect(!DomainWorkflowsSettingsPage.outcomeText(.skipped(reason)).contains(reason.rawValue))
+        }
+        #expect(DomainWorkflowsSettingsPage.modelName("workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8") == "llama-3.1-8b-instruct-fp8")
+    }
+
+    /// Fails if a snapshot that lost the race to the main actor overwrites a newer one.
+    @Test @MainActor func staleSnapshotIsIgnored() throws {
+        let store = try MailStore.inMemory()
+        let api = FakeMailAPIClient()
+        let (stream, _) = AsyncStream<SyncEvent>.makeStream()
+        let model = MailViewModel(
+            accountID: "acct", accountLabel: "Test", api: api, store: store,
+            actions: MailActionService(api: api, store: store), sync: ActivitySync(), events: stream
+        )
+        let newer = [record("a", mailbox: "mbA", at: 1), record("b", mailbox: "mbA", at: 2)]
+        model.classificationActivityChanged(ClassificationActivitySnapshot(version: 2, records: newer))
+        model.classificationActivityChanged(ClassificationActivitySnapshot(version: 1, records: [newer[0]]))
+        #expect(model.classificationActivity.map(\.messageID) == ["a", "b"])
+    }
+}

@@ -181,6 +181,16 @@ extension AppEnvironment {
         return defaults
     }
 
+    /// A saved or replaced AI Gateway token is the user's fix for a
+    /// gateway-level pause (the gateway is shared by every account), so every
+    /// account's paused classifier resumes. A no-op for one that is not paused.
+    func resumeClassification() {
+        for graph in graphs.values {
+            guard let engine = graph.mail.classification else { continue }
+            Task { await engine.resume() }
+        }
+    }
+
     // MARK: - Sign out (Settings › Account)
 
     /// "Sign Out…": asks first. Nothing is signed out until

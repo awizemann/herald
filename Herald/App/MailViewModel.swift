@@ -133,6 +133,18 @@ final class MailViewModel {
     /// token, no credits, model not enabled, bot block) — the Workflows page
     /// shows it. Raised once per pause, never per message.
     var classificationPause: AIGatewayError?
+    /// The engine's recent decisions (oldest first, bounded by the engine) —
+    /// value records, for the Workflows page's activity log.
+    private(set) var classificationActivity: [ClassificationRecord] = []
+    @ObservationIgnored private var classificationActivityVersion = -1
+
+    /// Keeps only a snapshot newer than the one shown: two deliveries can race
+    /// on the hop to the main actor.
+    func classificationActivityChanged(_ snapshot: ClassificationActivitySnapshot) {
+        guard snapshot.version > classificationActivityVersion else { return }
+        classificationActivityVersion = snapshot.version
+        classificationActivity = snapshot.records
+    }
     /// Called with ``badgeInboxUnread`` whenever the counts are recomputed — the
     /// Dock badge's only input. A closure rather than an observation loop
     /// so the badge updates exactly when the count does. Observation-ignored: no

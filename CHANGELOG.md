@@ -10,6 +10,20 @@ first, then cut the release.
 
 ## [Unreleased]
 
+### Added
+- **Classify new mail (opt-in).** A domain's new Workflows page can have an AI model tag each
+  new conversation with one of your existing HQBase tags, using descriptions you write for each
+  tag. Requests go to your own Cloudflare AI Gateway (Settings › AI Gateway: account, gateway,
+  model and a token kept in the Keychain) and only Cloudflare-hosted models are offered. Only
+  the first incoming message of a conversation with no tag yet is classified, never mail that
+  arrived before you turned it on, and the conversation is re-checked on the server first so a
+  tagged or older conversation never costs a model call. At most 60 requests an hour.
+- **Recent activity** on the Workflows page lists what was classified for that domain — the tag
+  applied, "No tag", or why a message was skipped or failed — and which model answered.
+- A gateway problem (rejected token, no credits, model not enabled) pauses classification once
+  and says so on the Workflows page; saving a new token or changing the gateway settings
+  resumes it.
+
 ## [1.0.0] - 2026-09-28
 
 Herald 1.0. The app is redesigned around domains — the way HQBase actually groups mailboxes —

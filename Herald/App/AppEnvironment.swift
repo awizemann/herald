@@ -751,6 +751,7 @@ final class AppEnvironment {
             store: store,
             bodies: CachedOrFetchedBodySource(store: store, api: api),
             labeler: actions,
+            serverThreads: APIThreadSource(api: api),
             makeClassifier: { EmailClassifier(client: AIGatewayClient(configuration: $0, secrets: secrets)) },
             attemptLog: WorkflowAttemptLog(accountID: account.id, defaults: defaults)
         )
@@ -775,13 +776,16 @@ final class AppEnvironment {
         // Not awaited: an install must not gain a suspension before the graph is
         // published. The first label write is a model round trip away, and the
         // engine replays a pause that beat the wiring.
-        Task {
+        Task { [weak viewModel] in
             await classification.setObservers(
                 onApplied: { [weak viewModel] threadID in
                     await viewModel?.classificationApplied(threadID: threadID)
                 },
                 onPauseChanged: { [weak viewModel] reason in
                     await MainActor.run { viewModel?.classificationPause = reason }
+                },
+                onActivityChanged: { [weak viewModel] snapshot in
+                    await viewModel?.classificationActivityChanged(snapshot)
                 }
             )
         }

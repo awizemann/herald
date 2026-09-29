@@ -60,6 +60,28 @@ public nonisolated struct CachedOrFetchedBodySource: ClassificationBodySource {
     }
 }
 
+/// The SERVER's view of a thread, read just before a model call. The cache can
+/// lack older messages (it only holds what was synced) and can lag label
+/// membership, so the "unlabelled" and "first inbound" checks are repeated
+/// against this before any money is spent.
+public nonisolated protocol ClassificationThreadSource: Sendable {
+    /// Every message of the thread `messageID` belongs to. `labels` on each is
+    /// `nil` when the server did not say (see ``MessageSummary/labels``).
+    func serverThread(messageID: String) async throws -> [MessageSummary]
+}
+
+/// `GET /api/v1/messages/{id}/thread`. The app's client sends
+/// `includeLabels=true`, so each message carries its label membership.
+public nonisolated struct APIThreadSource: ClassificationThreadSource {
+    private let api: any MailAPIClient
+
+    public init(api: any MailAPIClient) { self.api = api }
+
+    public func serverThread(messageID: String) async throws -> [MessageSummary] {
+        try await api.thread(messageID: messageID).map(\.summary)
+    }
+}
+
 /// Thread ids already sent to the model, persisted so a relaunch does not
 /// re-classify a thread that got "none". The app backs it with UserDefaults.
 public nonisolated protocol ClassificationAttemptPersisting: Sendable {
@@ -129,28 +151,43 @@ public nonisolated enum ClassificationOutcome: Sendable, Hashable {
     case failed(reason: String)
 }
 
-/// One decision, for WF5's activity log.
+/// One decision, for the Workflows page's activity log.
 public nonisolated struct ClassificationRecord: Sendable, Hashable, Identifiable {
     public let id: UUID
     public let date: Date
     public let threadID: String
     public let messageID: String
+    /// Which mailbox the message arrived in — the page filters by domain on it.
+    public let mailboxID: String?
     public let subject: String
     /// The provider-prefixed model, or `nil` when no model was involved.
     public let model: String?
     public let outcome: ClassificationOutcome
 
     public init(
-        id: UUID = UUID(), date: Date, threadID: String, messageID: String,
+        id: UUID = UUID(), date: Date, threadID: String, messageID: String, mailboxID: String? = nil,
         subject: String, model: String?, outcome: ClassificationOutcome
     ) {
         self.id = id
         self.date = date
         self.threadID = threadID
         self.messageID = messageID
+        self.mailboxID = mailboxID
         self.subject = subject
         self.model = model
         self.outcome = outcome
+    }
+}
+
+/// The activity log at one moment. `version` only grows, so an observer that
+/// receives two snapshots out of order keeps the newer.
+public nonisolated struct ClassificationActivitySnapshot: Sendable, Hashable {
+    public let version: Int
+    public let records: [ClassificationRecord]
+
+    public init(version: Int, records: [ClassificationRecord]) {
+        self.version = version
+        self.records = records
     }
 }
 
@@ -185,6 +222,7 @@ public actor ClassificationEngine {
     private let store: any ClassificationStore
     private let bodies: any ClassificationBodySource
     private let labeler: any ClassificationLabelApplying
+    private let serverThreads: (any ClassificationThreadSource)?
     private let makeClassifier: @Sendable (AIGatewayConfiguration) -> any EmailClassifying
     private let attemptLog: (any ClassificationAttemptPersisting)?
     private let hourlyLimit: Int
@@ -210,11 +248,16 @@ public actor ClassificationEngine {
 
     private var onApplied: (@Sendable (String) async -> Void)?
     private var onPauseChanged: (@Sendable (AIGatewayError?) async -> Void)?
+    private var onActivityChanged: (@Sendable (ClassificationActivitySnapshot) async -> Void)?
+    /// Bumped on every record, so an observer can drop a snapshot that lost a
+    /// race to a newer one.
+    private var activityVersion = 0
 
     public init(
         store: any ClassificationStore,
         bodies: any ClassificationBodySource,
         labeler: any ClassificationLabelApplying,
+        serverThreads: (any ClassificationThreadSource)? = nil,
         makeClassifier: @escaping @Sendable (AIGatewayConfiguration) -> any EmailClassifying,
         attemptLog: (any ClassificationAttemptPersisting)? = nil,
         hourlyLimit: Int = ClassificationEngine.defaultHourlyLimit,
@@ -223,6 +266,7 @@ public actor ClassificationEngine {
         self.store = store
         self.bodies = bodies
         self.labeler = labeler
+        self.serverThreads = serverThreads
         self.makeClassifier = makeClassifier
         self.attemptLog = attemptLog
         self.hourlyLimit = hourlyLimit
@@ -232,15 +276,19 @@ public actor ClassificationEngine {
 
     /// `onApplied` gets the thread id after a label was written (the view-model
     /// refreshes its chips); `onPauseChanged` fires on each TRANSITION into or
-    /// out of a gateway-level pause — once, not per message.
+    /// out of a gateway-level pause — once, not per message; `onActivityChanged`
+    /// gets the whole (bounded) log after every new record.
     public func setObservers(
         onApplied: (@Sendable (String) async -> Void)?,
-        onPauseChanged: (@Sendable (AIGatewayError?) async -> Void)?
+        onPauseChanged: (@Sendable (AIGatewayError?) async -> Void)?,
+        onActivityChanged: (@Sendable (ClassificationActivitySnapshot) async -> Void)? = nil
     ) async {
         self.onApplied = onApplied
         self.onPauseChanged = onPauseChanged
-        // A pause that happened before anyone was listening is still news.
+        self.onActivityChanged = onActivityChanged
+        // A pause or a record that happened before anyone was listening is still news.
         if let pauseReason { await onPauseChanged?(pauseReason) }
+        if !records.isEmpty { await onActivityChanged?(ClassificationActivitySnapshot(version: activityVersion, records: records)) }
     }
 
     /// Recent decisions, oldest first (at most ``activityLimit``).
@@ -310,6 +358,16 @@ public actor ClassificationEngine {
         }
     }
 
+    /// The server-side re-check: any label on any message of the thread, or an
+    /// earlier inbound message the cache never held. A message whose `labels`
+    /// is `nil` (the server did not say) counts as unlabelled here — the cache
+    /// check that already ran, and the one before the write, still stand.
+    public nonisolated static func serverSkipReason(for message: MessageSummary, thread: [MessageSummary]) -> ClassificationSkipReason? {
+        if thread.contains(where: { !($0.labels ?? []).isEmpty }) { return .threadLabelled }
+        guard isFirstInbound(message, in: thread) else { return .notFirstInbound }
+        return nil
+    }
+
     public nonisolated static func isGatewayLevel(_ error: AIGatewayError) -> Bool {
         switch error {
         case .unauthorized, .insufficientCredits, .modelNotAllowed, .blocked, .missingToken, .invalidConfiguration:
@@ -354,7 +412,7 @@ public actor ClassificationEngine {
                 message, rulesByMailbox: context.rulesByMailbox, alreadyAttempted: isAttempted(message.threadID)
             )
             if case .skip(let reason) = own {
-                if !reason.isSilent { record(message, model: nil, .skipped(reason)) }
+                if !reason.isSilent { await record(message, model: nil, .skipped(reason)) }
                 continue
             }
 
@@ -374,7 +432,7 @@ public actor ClassificationEngine {
             }
             switch verdict {
             case .skip(let reason):
-                if !reason.isSilent { record(message, model: nil, .skipped(reason)) }
+                if !reason.isSilent { await record(message, model: nil, .skipped(reason)) }
             case .eligible(let rules):
                 // Claimed synchronously with the check: no await between them.
                 remember(message.threadID)
@@ -404,15 +462,33 @@ public actor ClassificationEngine {
         guard let configuration else { return }
         let model = configuration.model
         guard pauseReason == nil else {
-            record(message, model: nil, .skipped(.paused))
+            await record(message, model: nil, .skipped(.paused))
             return
         }
         let current = now()
         callTimes.removeAll { current.timeIntervalSince($0) >= 3600 }
         guard callTimes.count < hourlyLimit else {
             logger.info("Classification hourly cap (\(self.hourlyLimit, privacy: .public)) reached; skipping a message")
-            record(message, model: nil, .skipped(.hourlyCap))
+            await record(message, model: nil, .skipped(.hourlyCap))
             return
+        }
+
+        // The server's thread, not the cache's, decides — BEFORE the call that
+        // costs money. Not persisted as attempted on a failed read, so a
+        // relaunch may try again.
+        if let serverThreads {
+            do {
+                let thread = try await serverThreads.serverThread(messageID: message.id)
+                if let reason = Self.serverSkipReason(for: message, thread: thread) {
+                    await record(message, model: nil, .skipped(reason))
+                    return
+                }
+            } catch {
+                logger.warning("Classification thread check failed: \(error.localizedDescription, privacy: .private)")
+                await record(message, model: nil, .failed(reason: "threadCheck"))
+                return
+            }
+            guard !Task.isCancelled else { return }
         }
 
         let body: String
@@ -435,16 +511,16 @@ public actor ClassificationEngine {
             )
         } catch let error as AIGatewayError {
             logger.warning("Classification request failed: \(Self.code(for: error), privacy: .public)")
-            record(message, model: model, .failed(reason: Self.code(for: error)))
+            await record(message, model: model, .failed(reason: Self.code(for: error)))
             if Self.isGatewayLevel(error) { await pause(error, configuration: configuration) }
             return
         } catch {
             logger.warning("Classification request failed: \(error.localizedDescription, privacy: .private)")
-            record(message, model: model, .failed(reason: "unknown"))
+            await record(message, model: model, .failed(reason: "unknown"))
             return
         }
         guard let choice else {
-            record(message, model: model, .none)
+            await record(message, model: model, .none)
             return
         }
         guard !Task.isCancelled else { return }
@@ -453,16 +529,16 @@ public actor ClassificationEngine {
         // thread while the model was answering: theirs wins.
         do {
             if try await store.threadHasLabels(threadID: message.threadID, accountID: accountID) {
-                record(message, model: model, .skipped(.labelledMeanwhile))
+                await record(message, model: model, .skipped(.labelledMeanwhile))
                 return
             }
             try await labeler.applyLabel(choice.id, toThread: message.threadID, accountID: accountID)
         } catch {
             logger.warning("Classification label write failed: \(error.localizedDescription, privacy: .private)")
-            record(message, model: model, .failed(reason: "labelWrite"))
+            await record(message, model: model, .failed(reason: "labelWrite"))
             return
         }
-        record(message, model: model, .labelled(labelID: choice.id, labelName: choice.name))
+        await record(message, model: model, .labelled(labelID: choice.id, labelName: choice.name))
         await onApplied?(message.threadID)
     }
 
@@ -499,11 +575,13 @@ public actor ClassificationEngine {
         attemptLog.save(persisted)
     }
 
-    private func record(_ message: MessageSummary, model: String?, _ outcome: ClassificationOutcome) {
+    private func record(_ message: MessageSummary, model: String?, _ outcome: ClassificationOutcome) async {
         records.append(ClassificationRecord(
-            date: now(), threadID: message.threadID, messageID: message.id,
+            date: now(), threadID: message.threadID, messageID: message.id, mailboxID: message.mailboxID,
             subject: message.subject, model: model, outcome: outcome
         ))
         if records.count > Self.activityLimit { records.removeFirst(records.count - Self.activityLimit) }
+        activityVersion += 1
+        await onActivityChanged?(ClassificationActivitySnapshot(version: activityVersion, records: records))
     }
 }

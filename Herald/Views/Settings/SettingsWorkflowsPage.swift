@@ -96,6 +96,21 @@ struct DomainWorkflowsSettingsPage: View {
                     }
                 }
             }
+            SettingsSection(title: "Recent activity") {
+                let recent = Self.recentActivity(
+                    environment.graphs[accountID]?.mail.classificationActivity ?? [],
+                    mailboxIDs: Set(item.domain.mailboxIDs)
+                )
+                SettingsCard {
+                    if recent.isEmpty {
+                        SettingsRow(title: "No activity yet", note: Self.emptyActivityText)
+                    } else {
+                        ForEach(recent) { record in
+                            WorkflowActivityRow(record: record, labels: labels)
+                        }
+                    }
+                }
+            }
         }
         .onAppear {
             isGatewayConfigured = AIGatewaySettings.isConfigured(in: environment.defaults, secrets: KeychainStore())
@@ -127,9 +142,69 @@ struct DomainWorkflowsSettingsPage: View {
     }
 
     /// Why classification stopped for this session. Changing the AI Gateway
-    /// account, gateway or model resumes it by itself on the next new mail.
+    /// account, gateway or model resumes it on the next new mail; saving a token
+    /// resumes it at once.
     nonisolated static func pauseText(_ error: AIGatewayError) -> String {
         "Classification is paused: \(AIGatewaySettings.message(for: error)) Fix it in AI Gateway settings, then resume."
+    }
+
+    nonisolated static let activityLimit = 20
+    nonisolated static let emptyActivityText = "New mail this Mac classifies for this domain appears here. "
+        + "The log is kept only while Herald is running."
+
+    /// This domain's records, newest first, at most ``activityLimit``.
+    nonisolated static func recentActivity(
+        _ records: [ClassificationRecord], mailboxIDs: Set<String>, limit: Int = activityLimit
+    ) -> [ClassificationRecord] {
+        Array(records.reversed().filter { $0.mailboxID.map(mailboxIDs.contains) ?? false }.prefix(limit))
+    }
+
+    /// The outcome in plain English, for everything but an applied tag (which
+    /// draws as its chip).
+    nonisolated static func outcomeText(_ outcome: ClassificationOutcome) -> String {
+        switch outcome {
+        case .labelled(_, let name): "Tagged \(name)"
+        case .none: "No tag"
+        case .skipped(let reason): "Skipped — \(skipText(reason))"
+        case .failed(let code): "Failed — \(failureText(code))"
+        }
+    }
+
+    nonisolated static func skipText(_ reason: ClassificationSkipReason) -> String {
+        switch reason {
+        case .threadLabelled: "the conversation already has a tag"
+        case .notFirstInbound: "not the first message of the conversation"
+        case .beforeEnabled: "arrived before classification was turned on"
+        case .hourlyCap: "the hourly limit was reached"
+        case .labelledMeanwhile: "the conversation was tagged meanwhile"
+        case .paused: "classification was paused"
+        case .notInbound, .notInbox, .domainOff, .noRules, .alreadyAttempted: "not eligible"
+        }
+    }
+
+    /// Maps the engine's short failure codes; an unknown one stays generic.
+    nonisolated static func failureText(_ code: String) -> String {
+        switch code {
+        case "threadCheck": return "couldn’t check the conversation on the server"
+        case "labelWrite": return "couldn’t apply the tag"
+        case "unauthorized": return "the AI Gateway token was rejected"
+        case "insufficientCredits": return "the Cloudflare account is out of credits"
+        case "modelNotAllowed": return "the model isn’t available on this gateway"
+        case "blocked": return "Cloudflare blocked the request"
+        case "missingToken": return "no AI Gateway token is saved"
+        case "invalidConfiguration": return "the AI Gateway settings are incomplete"
+        case "rateLimited": return "the gateway is rate limiting requests"
+        case "malformedResponse": return "the model’s answer couldn’t be read"
+        case "transport": return "couldn’t reach the gateway"
+        default:
+            if code.hasPrefix("http"), let status = Int(code.dropFirst(4)) { return "the gateway answered \(status)" }
+            return "an unexpected error"
+        }
+    }
+
+    /// `workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8` → `llama-3.1-8b-instruct-fp8`.
+    nonisolated static func modelName(_ model: String) -> String {
+        model.split(separator: "/").last.map(String.init) ?? model
     }
 
     /// Pure so the wording is assertable without a rendered page.
@@ -194,5 +269,42 @@ private struct WorkflowLabelRow: View {
                 WorkflowPreferences.setLabelRule(rule, labelID: label.id, accountID: accountID, domainID: domainID, in: defaults)
             }
         }
+    }
+}
+
+/// One activity-log entry: subject, then when and with which model; the tag
+/// chip (or the plain-English outcome) on the right.
+private struct WorkflowActivityRow: View {
+    let record: ClassificationRecord
+    let labels: [MailLabel]
+
+    var body: some View {
+        SettingsRow(title: record.subject.isEmpty ? "(No subject)" : record.subject, note: note) {
+            outcome
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var note: String {
+        let time = record.date.formatted(date: .abbreviated, time: .shortened)
+        guard let model = record.model else { return time }
+        return "\(time) · \(DomainWorkflowsSettingsPage.modelName(model))"
+    }
+
+    @ViewBuilder private var outcome: some View {
+        if case .labelled(let labelID, _) = record.outcome, let label = labels.first(where: { $0.id == labelID }) {
+            LabelChip(label: label)
+        } else {
+            Text(DomainWorkflowsSettingsPage.outcomeText(record.outcome))
+                .textStyle(MailTheme.Typography.caption)
+                .foregroundStyle(Self.isProblem(record.outcome) ? MailTheme.Color.warn : MailTheme.Color.ink3)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private static func isProblem(_ outcome: ClassificationOutcome) -> Bool {
+        if case .failed = outcome { return true }
+        return false
     }
 }

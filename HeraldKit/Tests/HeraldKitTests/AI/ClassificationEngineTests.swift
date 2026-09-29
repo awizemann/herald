@@ -95,6 +95,19 @@ private nonisolated final class FakeClassifier: EmailClassifying, Sendable {
     }
 }
 
+/// The server's thread per message id; a missing entry throws.
+private nonisolated final class FakeThreadSource: ClassificationThreadSource, Sendable {
+    private let threads: Mutex<[String: [MessageSummary]]>
+    private let calls = Mutex(0)
+    init(_ threads: [String: [MessageSummary]]) { self.threads = Mutex(threads) }
+    var callCount: Int { calls.withLock { $0 } }
+    func serverThread(messageID: String) async throws -> [MessageSummary] {
+        calls.withLock { $0 += 1 }
+        guard let thread = threads.withLock({ $0[messageID] }) else { throw MailAPIError.notFound }
+        return thread
+    }
+}
+
 private nonisolated final class MemoryAttemptLog: ClassificationAttemptPersisting, Sendable {
     private let storage: Mutex<[String: Date]>
     init(_ initial: [String: Date] = [:]) { storage = Mutex(initial) }
@@ -134,14 +147,15 @@ private nonisolated func message(
     direction: MessageDirection = .inbound,
     folder: MailFolder = .inbox,
     subject: String? = nil,
-    received: Date = Date(timeIntervalSince1970: 20_000)
+    received: Date = Date(timeIntervalSince1970: 20_000),
+    labels: [MailLabel]? = nil
 ) -> MessageSummary {
     MessageSummary(
         id: id, threadID: thread ?? "t-\(id)", mailboxID: mailbox, direction: direction, folder: folder,
         fromAddress: "Ada <ada@example.net>", to: ["help@example.com"],
         subject: subject ?? "subject \(id)", snippet: "snippet \(id)",
         receivedAt: received, sentAt: nil, readAt: nil, starredAt: nil,
-        hasAttachments: false, createdAt: received
+        hasAttachments: false, createdAt: received, labels: labels
     )
 }
 
@@ -159,7 +173,8 @@ private nonisolated struct Harness {
         classifier: FakeClassifier = FakeClassifier(),
         bodies: FakeBodies = FakeBodies(),
         log: MemoryAttemptLog = MemoryAttemptLog(),
-        hourlyLimit: Int = 60
+        hourlyLimit: Int = 60,
+        serverThreads: FakeThreadSource? = nil
     ) {
         let store = FakeStore(messages, labelled: labelled)
         self.store = store
@@ -167,7 +182,7 @@ private nonisolated struct Harness {
         self.log = log
         let clock = self.clock
         engine = ClassificationEngine(
-            store: store, bodies: bodies, labeler: labeler,
+            store: store, bodies: bodies, labeler: labeler, serverThreads: serverThreads,
             makeClassifier: { _ in classifier },
             attemptLog: log, hourlyLimit: hourlyLimit,
             now: { clock.now }
@@ -483,6 +498,132 @@ struct ClassificationEngineTests {
         await h.engine.setObservers(onApplied: { thread in applied.withLock { $0.append(thread) } }, onPauseChanged: nil)
         await h.run(["a"])
         #expect(applied.withLock { $0 } == ["t-a"])
+    }
+}
+
+// MARK: - Server re-check & activity
+
+@Suite("Classification server re-check")
+struct ClassificationServerCheckTests {
+    private let tag = MailLabel(id: "l-x", name: "X", color: .gray)
+
+    @Test func serverLabelOnAnyMessageSkips() {
+        let a = message("a")
+        let other = message("o", thread: "t-a", received: Date(timeIntervalSince1970: 25_000), labels: [tag])
+        #expect(ClassificationEngine.serverSkipReason(for: a, thread: [a, other]) == .threadLabelled)
+    }
+
+    @Test func emptyOrUnknownLabelsDoNotSkip() {
+        let a = message("a", labels: [])
+        let b = message("b", thread: "t-a", direction: .outbound, received: Date(timeIntervalSince1970: 25_000))
+        #expect(ClassificationEngine.serverSkipReason(for: a, thread: [a, b]) == nil)
+    }
+
+    @Test func earlierInboundOnlyTheServerKnowsSkips() {
+        let a = message("a")
+        let older = message("old", thread: "t-a", received: Date(timeIntervalSince1970: 1_000))
+        #expect(ClassificationEngine.serverSkipReason(for: a, thread: [older, a]) == .notFirstInbound)
+    }
+
+    @Test func serverLabelStopsTheModelCall() async {
+        let a = message("a")
+        let server = FakeThreadSource(["a": [message("a", labels: [tag])]])
+        let h = Harness([a], serverThreads: server)
+        await h.run(["a"])
+        #expect(server.callCount == 1)
+        #expect(h.classifier.inputs.isEmpty)
+        #expect(await h.appliedThreads.isEmpty)
+        #expect(await h.engine.activity.map(\.outcome) == [.skipped(.threadLabelled)])
+    }
+
+    @Test func olderInboundMissingFromTheCacheStopsTheModelCall() async {
+        let a = message("a")
+        let older = message("old", thread: "t-a", received: Date(timeIntervalSince1970: 1_000))
+        let h = Harness([a], serverThreads: FakeThreadSource(["a": [older, a]]))
+        await h.run(["a"])
+        #expect(h.classifier.inputs.isEmpty)
+        #expect(await h.engine.activity.map(\.outcome) == [.skipped(.notFirstInbound)])
+    }
+
+    @Test func cleanServerThreadIsClassified() async {
+        let a = message("a")
+        let h = Harness([a], serverThreads: FakeThreadSource(["a": [message("a", labels: [])]]))
+        await h.run(["a"])
+        #expect(await h.appliedThreads == ["t-a"])
+    }
+
+    @Test func failedServerReadSpendsNothingAndIsNotPersisted() async {
+        let h = Harness([message("a")], serverThreads: FakeThreadSource([:]))
+        await h.run(["a"])
+        #expect(h.classifier.inputs.isEmpty)
+        #expect(h.log.saved.isEmpty)
+        #expect(await h.engine.activity.map(\.outcome) == [.failed(reason: "threadCheck")])
+    }
+
+    @Test func recordsCarryTheMailboxAndObserversSeeEveryVersion() async {
+        let h = Harness([message("a", mailbox: "mbx")], classifier: FakeClassifier(fallback: .none))
+        let seen = Mutex<[ClassificationActivitySnapshot]>([])
+        await h.engine.setObservers(onApplied: nil, onPauseChanged: nil, onActivityChanged: { snap in
+            seen.withLock { $0.append(snap) }
+        })
+        await h.run(["a"])
+        let snaps = seen.withLock { $0 }
+        #expect(snaps.map(\.version) == [1])
+        #expect(snaps.last?.records.first?.mailboxID == "mbx")
+        #expect(snaps.last?.records.first?.outcome == ClassificationOutcome.none)
+    }
+
+    @Test func activityBeforeObserversIsReplayed() async {
+        let h = Harness([message("a")], classifier: FakeClassifier(fallback: .none))
+        await h.run(["a"])
+        let seen = Mutex<[Int]>([])
+        await h.engine.setObservers(onApplied: nil, onPauseChanged: nil, onActivityChanged: { snap in
+            seen.withLock { $0.append(snap.records.count) }
+        })
+        #expect(seen.withLock { $0 } == [1])
+    }
+
+    @Test func resumeClearsAPauseAndClassifyingContinues() async {
+        let h = Harness([message("a"), message("b")], classifier: FakeClassifier(["subject a": .error(.unauthorized)]))
+        await h.run(["a"])
+        #expect(await h.engine.pauseReason == .unauthorized)
+        await h.engine.resume()
+        await h.run(["b"])   // same configuration: only resume() can have unpaused it
+        #expect(await h.appliedThreads == ["t-b"])
+    }
+}
+
+/// The real seam against the fake server: fails if the thread read stops
+/// asking for labels, or the embed is dropped on the way to the summary.
+@Suite("Classification thread source on the wire")
+struct APIThreadSourceTests {
+    private static func row(_ id: String, received: String, labels: String) -> String {
+        """
+        {"id":"\(id)","threadId":"thr_01","mailboxId":"mbx","direction":"inbound",
+         "folder":"inbox","fromAddress":"ada@example.net","to":["help@example.com"],
+         "subject":"Q","snippet":"…","receivedAt":"\(received)",
+         "sentAt":null,"readAt":null,"starredAt":null,"hasAttachments":false,
+         "createdAt":"\(received)","labels":\(labels),
+         "cc":[],"bcc":[],"textBody":"Hi","htmlAvailable":false,"references":[],"attachments":[]}
+        """
+    }
+
+    @Test func serverThreadAsksForLabelsAndTheEngineSkipsOnThem() async throws {
+        let label = #"[{"id":"lbl_b","name":"Billing","color":"green","createdAt":"2026-05-07T18:08:15.379Z","updatedAt":"2026-05-07T18:08:15.379Z"}]"#
+        let server = FakeServer()
+        server.route("GET", "/api/v1/messages/msg_02/thread", .json(200, """
+        [\(Self.row("msg_01", received: "2026-09-19T09:00:00.000Z", labels: label)),
+         \(Self.row("msg_02", received: "2026-09-19T09:30:00.000Z", labels: "[]"))]
+        """))
+        let api = HQBaseAPIClient(
+            origin: FakeServer.origin, tokens: FakeTokenProvider(), session: server.makeSession(), includeLabels: true
+        )
+        let thread = try await APIThreadSource(api: api).serverThread(messageID: "msg_02")
+        let query = try #require(server.requests(path: "/api/v1/messages/msg_02/thread").first?.query)
+        #expect(query.contains("includeLabels=true"))
+        #expect(thread.map(\.labels?.count) == [1, 0])
+        let newest = try #require(thread.last)
+        #expect(ClassificationEngine.serverSkipReason(for: newest, thread: thread) == .threadLabelled)
     }
 }
 

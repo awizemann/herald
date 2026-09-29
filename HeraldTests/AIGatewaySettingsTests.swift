@@ -112,6 +112,35 @@ struct AIGatewaySettingsTests {
         #expect(try secrets.string(for: AIGatewayClient.tokenKey) == nil)
     }
 
+    /// Fails if saving a token stops resuming a paused classifier — before WF5
+    /// only a changed account/gateway/model did, so a replaced token left
+    /// classification paused until the next config edit.
+    @Test @MainActor func savingATokenResumesClassificationOnlyOnSuccess() {
+        nonisolated struct FailingSecrets: SecretStore {
+            func data(for key: String) throws -> Data? { nil }
+            func set(_ data: Data, for key: String) throws { throw CocoaError(.fileWriteNoPermission) }
+            func removeValue(for key: String) throws {}
+        }
+        var resumed = 0
+        let model = AIGatewaySettingsModel(
+            defaults: ScratchDefaults.make(), secrets: MemorySecrets(), onTokenSaved: { resumed += 1 }
+        )
+        model.tokenDraft = "   "
+        model.saveToken()
+        #expect(resumed == 0)
+        model.tokenDraft = "new-token"
+        model.saveToken()
+        #expect(resumed == 1)
+
+        let failing = AIGatewaySettingsModel(
+            defaults: ScratchDefaults.make(), secrets: FailingSecrets(), onTokenSaved: { resumed += 1 }
+        )
+        failing.tokenDraft = "new-token"
+        failing.saveToken()
+        #expect(resumed == 1)
+        #expect(failing.tokenError != nil)
+    }
+
     @Test @MainActor func customModelPersistsOnlyWhenValidAndReloads() {
         let defaults = ScratchDefaults.make()
         let model = AIGatewaySettingsModel(defaults: defaults, secrets: MemorySecrets())

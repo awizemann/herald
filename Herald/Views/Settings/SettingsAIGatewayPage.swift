@@ -7,6 +7,7 @@ import SwiftUI
 /// the Keychain and is never read back into the UI — once saved the page only
 /// says so, with Replace and Remove.
 struct AIGatewaySettingsPage: View {
+    @Environment(AppEnvironment.self) private var environment
     let breadcrumb: String
     /// Built once on appear, not as an `@State` initial value: that would be
     /// re-evaluated (reading the Keychain) on every pass of the parent's body.
@@ -19,7 +20,9 @@ struct AIGatewaySettingsPage: View {
             }
         }
         .onAppear {
-            if model == nil { model = AIGatewaySettingsModel() }
+            if model == nil {
+                model = AIGatewaySettingsModel(onTokenSaved: { [environment] in environment.resumeClassification() })
+            }
         }
     }
 }
@@ -157,6 +160,9 @@ final class AIGatewaySettingsModel {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let secrets: any SecretStore
     @ObservationIgnored private let session: URLSession
+    /// Called after a token was saved or replaced — the user's fix for a
+    /// rejected-token or no-credits pause, so a paused engine resumes.
+    @ObservationIgnored private let onTokenSaved: @MainActor () -> Void
 
     var accountID: String { didSet { AIGatewaySettings.setAccountID(accountID, in: defaults); testResult = nil } }
     var gatewayID: String { didSet { AIGatewaySettings.setGatewayID(gatewayID, in: defaults); testResult = nil } }
@@ -171,8 +177,14 @@ final class AIGatewaySettingsModel {
     private(set) var isTesting = false
     private(set) var testResult: TestResult?
 
-    init(defaults: UserDefaults = .standard, secrets: any SecretStore = KeychainStore(), session: URLSession = .shared) {
+    init(
+        defaults: UserDefaults = .standard,
+        secrets: any SecretStore = KeychainStore(),
+        session: URLSession = .shared,
+        onTokenSaved: @escaping @MainActor () -> Void = {}
+    ) {
         self.defaults = defaults
+        self.onTokenSaved = onTokenSaved
         self.secrets = secrets
         self.session = session
         accountID = AIGatewaySettings.accountID(in: defaults)
@@ -202,6 +214,7 @@ final class AIGatewaySettingsModel {
             try AIGatewaySettings.saveToken(tokenDraft, in: secrets)
             tokenError = nil
             isReplacingToken = false
+            onTokenSaved()
         } catch {
             tokenError = "Couldn't save the token to the Keychain."
         }

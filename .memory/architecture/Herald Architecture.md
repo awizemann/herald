@@ -7,7 +7,7 @@ source_paths: [Herald/App/AppEnvironment.swift, Herald/App/AccountGraph.swift, H
 source_paths_inferred: false
 source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-08-16
-updated: 2026-09-28
+updated: 2026-09-29
 reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
@@ -31,6 +31,7 @@ Layers (adapted from the ShabuBox standard §3 — strict Sendable boundary):
 - relates_to [[Herald Sync Model]]
 - relates_to [[Herald Concurrency Rules]]
 - relates_to [[HQBase Mail API v1 Contract]]
+- relates_to [[Herald AI Classification via Cloudflare AI Gateway]]
 
 ## Update (2026-08-15 — Auth layer as built)
 - [fact] Auth/: `OAuthSession` is a nonisolated struct (stateless; per-attempt state lives in an `AuthorizationRequest` value); `AccountTokenProvider` actor serializes refresh (one in-flight refresh shared by concurrent callers, 60s expiry leeway, invalid_grant → `.reauthenticationRequired` + tokens cleared, transport errors keep tokens); `WebAuthenticationPresenter` → @MainActor `WebAuthenticationRunner` owns ASWebAuthenticationSession (non-ephemeral, so consent reuses the browser's HQBase login); `AuthCoordinator` (@MainActor) = discovery→registration(reuse client_id per origin)→PKCE→present→exchange→persist #auth
@@ -106,3 +107,7 @@ Layers (adapted from the ShabuBox standard §3 — strict Sendable boundary):
 - [invariant] `MailViewModel.reloadGeneration` is captured before the first store read and checked before EVERY publish in `reloadConversations`, `reloadLabelIndex`, `reloadUnreadCounts`, `reloadDrafts`. Bumped by `navigate`, `domainPreferencesDidChange`, and `reloadMailboxes` when the resolved scope inputs moved (disabled set or domain membership; a rename does not). Rule: every bumper must START the reloads it invalidated — `navigate` reruns drafts if one was in flight (`draftReloadsInFlight`), `reloadMailboxes` reloads list+drafts when the scope stayed. Event-path reloads (`apply`) do not bump; they are ordinary guarded reloads. `countsWillPublish` is the test seam for the race #staleness
 - [decision] A scope or FOLDER change clears `allConversations` at once and sets `isLoadingConversations` until the reload for that location publishes; a same-location reload keeps its rows (no flicker). A label change keeps them (it only narrows). No view reads `isLoadingConversations` yet #staleness
 - [decision] New message with nothing to tie it to (`composeContext` `.new`, no selection or a disabled mailbox): `defaultComposeMailboxID()` = first enabled mailbox (mailbox-list order) inside the current scope's set, else any non-hidden one, never a hidden domain's; `nil` (empty From) when every domain is hidden. `sendAddress(forMailbox:)` falls back to it too #compose
+
+
+## Update (2026-09-29 — AI classification, WF1–WF5)
+- [fact] New module HeraldKit/Sources/HeraldKit/AI (`AIGatewayClient`, `EmailClassifier`, `ClassificationEngine` actor). One engine per account graph, owned by `MailViewModel.classification`, fed beside `notifyNewMail`; views read only value records (`ClassificationRecord`) and `classificationPause` from the view-model. Full design: [[Herald AI Classification via Cloudflare AI Gateway]] #ai

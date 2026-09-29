@@ -11,6 +11,7 @@ updated: 2026-09-27
 reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
+
 Current design (verified at HEAD 177f09f): how Herald detects a dead session, routes it to one re-auth transition per account, lets the user or Herald repair it, and keeps composers alive through it. Policy rules live in [[Automatic Re-auth Policy (frontmost, deferred, rate-limited)]].
 
 ## Presentation watchdog & cancel
@@ -86,6 +87,13 @@ Current design (verified at HEAD 177f09f): how Herald detects a dead session, ro
 
 ## Multi-account hazards
 - [gotcha] Rebind, heal and routing key on account id; sharing an OutboxService/API client across accounts or re-keying on re-auth would break `rebindComposeSessions` and the different-id path. Sidebar reasons (W6) and the signature flag (W12) are deferred — see [[Herald Multi-Account, Notifications, Drafts and Search Design]] #multi-account
+
+## Observations
+- [decision] WebAuthenticationRunner watchdog timer: 45s advisory + 10min hard deadline to detect wedged ASWebAuthenticationSession; Cancel is the fast path #watchdog
+- [decision] Dead-session latch in AccountTokenProvider fires only on post-refresh 401 with explicit error="invalid_token"; bare 401 still gets one refresh+retry #dead-session-latch
+- [decision] Routing to re-auth by account ID (not provider/grant); sticky `.needsReauth` state until fresh graph install; self-heal probes first before attemptAutomaticReauthentication #dead-session-routing
+- [decision] Interactive vs automatic re-auth are mutually exclusive via generation stamping and policy claims; generation bump on cancel ensures stale re-auth returns don't release newer Sign In #cancel-gen
+- [constraint] Composers stay alive through re-auth via rebindComposeSessions; dead-session failure is sticky until rebind or status change #compose-reauth
 
 ## Relations
 - relates_to [[Automatic Re-auth Policy (frontmost, deferred, rate-limited)]]

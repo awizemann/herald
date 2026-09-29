@@ -7,7 +7,7 @@ source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailStore+Labels.swift, HeraldKi
 source_paths_inferred: false
 source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-09-04
-updated: 2026-09-27
+updated: 2026-09-29
 reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
@@ -211,3 +211,10 @@ SUPERSEDES the `#ui` observation above ("`SidebarItem.label(id)`, a THIRD listin
 
 - [decision] `MailStore.labelIndex(accountID:folder:mailboxIDs:)` narrows only `threadCounts` — the SAME conversation walk with a tighter predicate (`listFolder`, `mailboxKey ∈ set`; nil = unfiltered, empty set = all zero), no extra query. `idsByThread` stays account-wide (row chips + server-search union can show threads outside the counted folder). `MailViewModel.labelCountLocation` = (current conversation folder, `mailboxIDs(for: scope)`); under Drafts it counts the INBOX (where `openLabel` from Drafts lands). Every navigation refreshes it because `reloadConversations` rebuilds the index. Badge == listing count holds per folder+scope; the listing's client-side presentation rule (`belongs(_:to:)` for optimistic moves) can still differ transiently #counts
 - [fact] Tests: `LabelSyncTests.countsNarrowToFolderAndScope` (HeraldKit), `DomainEffectsTests.labelCountsFollowFolderAndScope`; `LabelsTests.badgeCountsArePrecomputed`/`badgeFollowsAnOptimisticToggle` now assert Inbox-scoped numbers #testing
+
+
+## Consumer: AI classification (2026-09-29, WF4/WF5)
+The classifier reads label membership twice: from the cache via `MailStore.threadHasLabels(threadID:accountID:)` (any `CachedLabelAssignment` for the thread, optimistic rows included) and from the SERVER via `GET /messages/{id}/thread?includeLabels=true` right before a model call. Its writes go through `MailActionService.setLabel(onConversation:)`, so the fence and revert apply. Details: [[Herald AI Classification via Cloudflare AI Gateway]].
+
+
+- [gotcha] Loading the label index before publishing rows only covers rows drawn WITH their chips. A row that gains its first chip later (classifier tagging seconds after arrival, another device, the sweep) stayed clipped because List keeps the measured height per identity. Fix (2026-09-29): the row's `.id` is `RowIdentity(threadID, hasLabels)` in ConversationListView, so the empty ↔ non-empty transition re-measures; chips never wrap (≤3 then +n), so no other change alters height. Selection is by `.tag`, unaffected #rows

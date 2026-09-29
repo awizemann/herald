@@ -5,10 +5,10 @@ permalink: hqbase-mac/operations/standards-audit-2026-08-18
 tags: [audit, standards]
 source_paths: [Herald/Design/MailTheme.swift, Herald/Views/ConversationListView.swift, HeraldKit/Sources/HeraldKit/Sync/MailStore.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/Sync/MailStoreContainer.swift]
 source_paths_inferred: false
-source_sha: a82a8d7cce5a32c719d4a94f4f07bc68fc504033
+source_sha: 5aa2c3fcc0ee47f4becbbaabc2eac918ad72fe15
 created: 2026-08-18
-updated: 2026-08-18
-reviewed: 2026-09-20
+updated: 2026-09-29
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 
@@ -26,7 +26,13 @@ reviewed_by: audit:claude-code (background)
 - [fact] At f7ef9a5 (remediation complete): MailStore 930L + MailViewModel 954L (both <1000), all design tokens on MailTheme (Spacing/Radius/Typography/Animation), NSLock→os_unfair_lock in KeychainAccountStore, hygiene findings cleared #baseline
 - [fact] Subsequent evolution (f7ef9a5 to HEAD, 2026-08-18 → 2026-09-29): MailViewModel grew to 2666L and MailStore to 1294L with feature additions (wake socket, drafts, search, auth recovery, notifications, R1/R2 redesign). Design token architecture now exemplary and comprehensive with nonisolated Color enum + AccountTint system + label color migrations. Concurrency model and hygiene fixes remain in place; all audit findings stay resolved as intended remediation artifacts #ongoing
 
+## Update (2026-09-29 — Standard 07 no longer wholly N/A)
+Herald gained one opt-in AI feature (per-domain email classification through the user's own Cloudflare AI Gateway, Cloudflare-hosted models only), so Standard 07 (AI) now applies to that feature; 06 and 11 stay N/A. CLAUDE.md updated. Not re-audited against 07. See [[Herald AI Classification via Cloudflare AI Gateway]].
+
+
+
 ## Relations
 - relates_to [[Herald Design System and Accessibility]]
 - relates_to [[Herald Concurrency Rules]]
 - relates_to [[Herald Sync Model]]
+- relates_to [[Herald AI Classification via Cloudflare AI Gateway]]

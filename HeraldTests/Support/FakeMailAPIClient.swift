@@ -264,13 +264,16 @@ actor FakeMailAPIClient: MailAPIClient {
 
     var parkedActionCount: Int { actionWaiters.count }
 
-    /// Resolves once at least `count` actions are parked (bounded, like
-    /// ``waitForPendingSearch(count:)``).
+    private var parkedCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Resolves once at least `count` actions are parked. Event-driven, not a
+    /// yield budget: under a loaded machine the actions can take longer than
+    /// any fixed number of yields to reach the gate, and a budget that ran out
+    /// returned silently with fewer parked. A mis-wired test is bounded by its
+    /// `.timeLimit` instead.
     func waitForParkedActions(count: Int) async {
-        for _ in 0..<10_000 {
-            if actionWaiters.count >= count { return }
-            await Task.yield()
-        }
+        guard actionWaiters.count < count else { return }
+        await withCheckedContinuation { parkedCountWaiters.append((count, $0)) }
     }
 
     private func passActionGate() async {
@@ -278,7 +281,13 @@ actor FakeMailAPIClient: MailAPIClient {
         maxActionsInFlight = max(maxActionsInFlight, actionsInFlight)
         defer { actionsInFlight -= 1 }
         guard !actionGateIsOpen else { return }
-        await withCheckedContinuation { actionWaiters.append($0) }
+        await withCheckedContinuation { continuation in
+            actionWaiters.append(continuation)
+            let parked = actionWaiters.count
+            let ready = parkedCountWaiters.filter { $0.count <= parked }
+            parkedCountWaiters.removeAll { $0.count <= parked }
+            for waiter in ready { waiter.continuation.resume() }
+        }
     }
 
     // MARK: Labels

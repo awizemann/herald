@@ -364,7 +364,10 @@ PAGES_WT="$BUILD_DIR/gh-pages"
 rm -rf "$PAGES_WT"
 if git ls-remote --exit-code --heads origin "$PAGES_BRANCH" >/dev/null 2>&1; then
   git fetch origin "$PAGES_BRANCH"
-  git worktree add "$PAGES_WT" -B "$PAGES_BRANCH" "origin/$PAGES_BRANCH"
+  # Detached, never `-B $PAGES_BRANCH`: if the branch is checked out in any other worktree
+  # (e.g. someone editing the product site on gh-pages), -B refuses and the release dies
+  # AFTER the GitHub release exists but BEFORE the appcast ships (happened on v1.0.0).
+  git worktree add --detach "$PAGES_WT" "origin/$PAGES_BRANCH"
 else
   log "$PAGES_BRANCH does not exist — creating it as an orphan branch"
   git worktree add --detach "$PAGES_WT"
@@ -382,7 +385,7 @@ find "$RELEASE_DIR" -name '*.delta' -exec cp {} "$PAGES_WT/" \; 2>/dev/null || t
     log "appcast.xml unchanged — nothing to publish"
   else
     git commit -m "appcast: Herald v${VERSION}"
-    git push origin "$PAGES_BRANCH"
+    git push origin "HEAD:refs/heads/$PAGES_BRANCH"
   fi
 )
 git worktree remove --force "$PAGES_WT"

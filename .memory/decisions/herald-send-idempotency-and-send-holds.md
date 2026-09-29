@@ -7,7 +7,7 @@ source_paths: [HeraldKit/Sources/HeraldKit/Compose/ComposeDraft.swift, HeraldKit
 source_paths_inferred: false
 source_sha: 9d9a3b76352059446b894af6c1f31b27de4b6bbe
 created: 2026-09-19
-updated: 2026-09-19
+updated: 2026-09-28
 reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
@@ -40,3 +40,8 @@ disabled control's key equivalent along with the control. The view-model's
 - [decision] ⌘⇧D moved off the Send button onto a never-disabled `.opacity(0)` proxy (`ComposeWindow.sendShortcut`), so the shortcut always reaches `send()`, which refuses and re-announces. `isBusy` still disables the proxy — a send in flight is a different thing from one the server has forbidden. The button keeps the `.disabled` appearance, which is the correct affordance; only the key equivalent is elsewhere, so `.help` now spells "⌘⇧D" out #compose
 - [gotcha] Re-announcing could not ride on `status`: its `didSet` guards on a CHANGE, and the status is ALREADY that failure by the second press, so presses two onward were silent. `announcement` is now paired with `announcementCount`, bumped on every announcement including a repeat, and the window observes the COUNTER. Two bumps inside one synchronous call coalesce into one `onChange`, so the belt-and-braces re-announce cannot speak twice #a11y
 - [fact] The refusal itself is unchanged and still proven: a held send is never POSTed a second time, however it is invoked (`ComposeViewModelTests.everyBlockedSendAttemptReAnnouncesTheReason` asserts `sendCount == 1` across three ⌘⇧D presses). Making the shortcut reachable must not make the SEND reachable #outbox
+
+
+
+## Update (2026-09-28 — late autosave vs send, commit 64a71c2)
+- [gotcha] `send()` waits for uploads and the first CREATE only; an autosave PATCH already on the wire is not awaited and can answer after the send consumed the draft. `ComposeViewModel.saveNow` now ADOPTS the answer even when closed (a discard parked on a create needs the new id to delete it — `discardDuringAnInFlightCreateDeletesTheCreatedDraft` catches dropping that) but, when `isClosed`, does not publish `.saved` (it re-added the sent draft to Drafts after `.removed`) and a failure while closed or `.sending` never calls `fail()`. Pinned by `HeraldTests/ComposeSendSaveRaceTests` (uses `FakeMailAPIClient.holdNextUpdate()`, which parks ONE PATCH — OutboxService.send may PATCH itself for a signature mismatch) #compose #race

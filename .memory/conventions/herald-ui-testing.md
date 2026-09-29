@@ -7,7 +7,7 @@ source_paths: [Herald/UITestSupport, HeraldUITests, scripts/ui-tests.sh, scripts
 source_paths_inferred: false
 source_sha: db538bd984d6059832d0ed07712103e28caf1685
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-28
 reviewed: 2026-09-28
 reviewed_by: audit:claude-code (background)
 ---
@@ -112,3 +112,13 @@ Current-state knowledge of Herald's XCUITest suite (scheme `HeraldUITests`) and 
 ## Update (2026-09-27 — R4 sidebar page objects)
 
 - [fact] `SidebarPage` now drives the account card: `accountCard`, `addAccount()` (card → popover button `sidebar.accountCard.addAccount`), `switchAccount(to:)` (popover rows `sidebar.accountCard.account.<id>`), `signOut()` = the MENU BAR's "Sign Out…"-prefixed item (the sidebar has no Sign Out; Settings › Account's asks first). "Two accounts signed in" is `hasSeveralAccounts`/`waitForSeveralAccounts()` = the menu bar item titled "Sign Out of …" exists (`AppEnvironment.signOutMenuTitle`) — readable while a sheet blocks the window. Changed: `RecoveryAccessibilityTests.testRecoveryControlsHaveLabels`, `SignInFailureTests` (activation failure, sign-out failure, add-account refusal via `addAccount()`) — not yet run #uitest
+
+
+
+## Update (2026-09-28 — 1.0 hardening runs, t-ddb84f9e)
+- [fact] Suite is 13 tests. At 64a71c2 (HEAD after paging + compose fix): full runs 13/13 (345 s) and, on 7cfad7b, 12/13 where the one failure was "Timed out while synthesizing event" — the attached spindump showed Herald's main thread IDLE in the run loop, so not a Herald hang. The 5x consecutive run (t-23673507) is STILL NOT DONE: runs 2–5 died before any test ("Timed out while enabling automation mode", "test runner hung before establishing connection") while another session looped ShabuBox `xcodebuild test`, then the screen locked (ui-tests.sh exit 3) #uitest #status
+- [procedure] Triage a "Timed out while synthesizing event": `xcresulttool export attachments`, open the Spindump .txt, find `Process: Herald` and read the main thread — parked in `mach_msg2_trap` under `-[NSApplication run]` means Herald was idle and the cause is contention (another app/test run). Gate reruns on `pgrep -f "[x]codebuild.* test"` being empty for ~60 s #uitest #debugging
+- [fact] LoadMoreRow (paging) is untagged + `.selectionDisabled()` + `accessibilityHidden`; in the UI harness it shows only until the first `loadOlderConversations` returns false (no capped scopes in FakeHQBase), so no UI test covers keyboard navigation onto it — covered by reasoning, not automation #uitest #paging
+
+
+- [done] 2026-09-28: 5x consecutive `./scripts/ui-tests.sh` at 68f145c — 5/5 green, 12/12 tests each (~283 s per run), gated on no other session's `xcodebuild test`. The suite is 12 tests (an earlier "13" in this note was a miscount). Closes t-23673507 #uitest #status

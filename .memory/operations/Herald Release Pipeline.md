@@ -7,7 +7,7 @@ source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -77,3 +77,10 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [fact] After export, release.sh runs `scripts/verify-release-identity.sh "$APP"` (also runs in --dry-run; runnable by hand on any Herald.app). It fails unless `CFBundleIdentifier` == `com.wizemann.herald`, `CFBundleURLTypes` is exactly ONE entry with name and ONLY scheme `com.wizemann.herald` (the OAuth callback every shipped copy's registered client depends on), and `strings` over EVERY file in `Contents/MacOS` contains none of `HeraldUITest`, `uitest.`, `UITestHarness`, `FakeHQBase`, `com.wizemann.herald.debug`, `com.wizemann.herald.dev`. All of Contents/MacOS because a Debug build keeps its code in `Herald.debug.dylib` beside a stub #release #uitest
 - [fact] The Sparkle entitlement check now pins the exact name `>com.wizemann.herald-spks<` (a Debug-id build would carry `com.wizemann.herald.debug-spks`) #sparkle
 - [fact] Verified 2026-09-27: a local Release build passes the gate; the Debug build fails on the bundle id; a Debug binary with a forged release Info.plist fails on `HeraldUITest` #verified
+
+
+
+## Update (2026-09-28 — gh-pages also hosts the product site, t-b9b3c8be)
+- [fact] gh-pages now carries a static product site (index.html, style.css, img/, fonts/ — self-hosted OFL Geist + Source Serif 4 with their OFL texts) beside `appcast.xml` and `.nojekyll`, served at https://awizemann.github.io/herald/. Hand-written, no build step, no trackers. Screenshots are crops of the design-handoff mocks (sample data) #site
+- [rule] release.sh must keep touching ONLY `appcast.xml` (+ any `*.delta`) in the gh-pages worktree — it does today (`cp` then `git add -A` on a checkout of origin/gh-pages, so site files survive). Never switch it to an orphan/clean-slate publish or `rm -rf` of the branch contents, or the site disappears #release #site
+- [fact] Handoff mocks use sample data; the owner confirmed 2026-09-28 the ariwize.com / wizemann.studio domains are fictional and fine to publish. Site and README heroes use the cropped `window.jpg` (no person name or email address) #privacy

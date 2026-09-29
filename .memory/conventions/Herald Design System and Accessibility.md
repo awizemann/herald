@@ -4,7 +4,7 @@ type: note
 permalink: hqbase-mac/conventions/herald-design-system-and-accessibility
 tags: [design, accessibility, macos, tokens, typography]
 created: 2026-08-16
-updated: 2026-09-28
+updated: 2026-09-29
 ---
 
 ## Observations
@@ -161,3 +161,10 @@ updated: 2026-09-28
 
 
 - [decision] 2026-09-28 (commit 9574175): app fonts everywhere. No view spells a system text style any more — every `.font(.callout/.caption/.headline/.system…)` in Herald/ maps to a `MailTheme.Typography` role (callout→snippet, caption→caption, caption2→tag, headline→headline, onboarding title→display). Added `Typography.code` (Geist Mono 12/1.45, signature HTML editor). `rowChip`, `statusBar`, `statusProblem` are now Geist. Only SF Symbol glyph sizes (inlineGlyph, chevrons, hero/large/emptyGlyph) stay system, inside MailTheme.swift. Guard: `HeraldTests/AppFontGuardTests.swift` scans Herald/*.swift and fails on `.font(.<system style>)` / `Font.<style>` outside `Design/MailTheme.swift` (comment lines skipped). SwiftUI-drawn chrome (Form section headers, menus, alerts, segmented controls) is left system. #typography
+
+
+
+## Update (2026-09-29 — mail-row selection + draft preview, t-658665ae, commit db3df9d)
+- [decision] Every list of mail rows (conversation/label/search listings, thread messages, drafts) uses ONE selected look: `View.mailRowSelection(_:)` (ListColumnHeader.swift) = `MailTheme.selectionHighlight` (`select`) fill at radius md inset by `Spacing.xs`, plus the Differentiate Without Color 1px ACCENT border — identical focused and unfocused. The `List` keeps its selection binding; `NativeListHighlightSuppressor` walks up to the enclosing `NSTableView` and sets `selectionHighlightStyle = .none` (SwiftUI has no API: `.listRowBackground` draws under the native highlight). #design
+- [rule] Because mail rows no longer sit on the accent fill, NOTHING in them flips on selection any more: the old R1 "hierarchical text / swap fixed colours on isSelected" rule is retired for mail rows (`rowChipBackground(isSelected:)` removed; UnreadDot/CountPill/ThreadAvatar/RowAttributionView/NoMailboxTag/LabelChipRow lost `isSelected`; "Draft" stays `danger` when selected). The SIDEBAR keeps native selection and `DomainBadge.isSelected` still flips there. #design
+- [fact] Drafts reading pane: `DraftPreviewPane` in ReadingPaneView.swift previews `MailViewModel.selectedDraftPreview` (Sendable `DraftPreview`, built from the cached `Draft`; body via the shared document emitter, remote blocked, no consent). Edit button → `openDraft`; toolbar trash → `deleteSelectedDraft` in Drafts. The "Draft" name in the pane is `danger` (per owner brief; the 5a-3 screenshot draws it ink). Signature is not shown (the server appends it at send). #reading-pane

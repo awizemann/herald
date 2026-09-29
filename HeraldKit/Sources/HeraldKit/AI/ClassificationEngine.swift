@@ -83,7 +83,9 @@ public nonisolated struct APIThreadSource: ClassificationThreadSource {
 }
 
 /// Thread ids already sent to the model, persisted so a relaunch does not
-/// re-classify a thread that got "none". The app backs it with UserDefaults.
+/// re-classify a thread that got "none". Written just before the model call and
+/// withdrawn only when that call failed in a retryable way. The app backs it
+/// with UserDefaults.
 public nonisolated protocol ClassificationAttemptPersisting: Sendable {
     func load() -> [String: Date]
     func save(_ attempts: [String: Date])
@@ -123,6 +125,10 @@ public nonisolated enum ClassificationSkipReason: String, Sendable, Hashable, Ca
     case domainOff
     case noRules
     case beforeEnabled
+    /// Received longer ago than ``ClassificationEngine/maxMessageAge``: an old
+    /// message re-entering the cache (a delete re-delivered by the journal), not
+    /// new mail — and possibly one whose "none" the attempt log has forgotten.
+    case tooOld
     case alreadyAttempted
     case threadLabelled
     case notFirstInbound
@@ -135,7 +141,7 @@ public nonisolated enum ClassificationSkipReason: String, Sendable, Hashable, Ca
     /// activity log (every outbound message, every other domain) — not recorded.
     public var isSilent: Bool {
         switch self {
-        case .notInbound, .notInbox, .domainOff, .noRules, .alreadyAttempted: true
+        case .notInbound, .notInbox, .domainOff, .noRules, .alreadyAttempted, .tooOld: true
         default: false
         }
     }
@@ -213,10 +219,32 @@ public actor ClassificationEngine {
     static let persistedLifetime: TimeInterval = 7 * 24 * 3600
     /// Cap on store lookups per pass, like the notifier's.
     static let maxLookups = 100
+    /// Jobs waiting (queued, or held by a pause, the hourly cap or a backoff).
+    /// Past this the oldest is dropped.
+    static let pendingLimit = 100
+    /// A job that failed transiently this many times is dropped (not persisted).
+    static let maxTransientFailures = 3
+    /// Backoff after a 429 or a transient failure: doubles, reset by an answer.
+    static let initialBackoff: TimeInterval = 60
+    static let maxBackoff: TimeInterval = 15 * 60
+    /// Only mail received this recently is classified. Shorter than
+    /// ``persistedLifetime``, so any thread attempted for such a message is
+    /// still in the attempt log.
+    public static let maxMessageAge: TimeInterval = 6 * 24 * 3600
 
     private struct Job: Sendable {
         let message: MessageSummary
         let rules: ClassificationDomainRules
+        var failures = 0
+    }
+
+    /// What became of one job.
+    private enum Disposition {
+        case done
+        /// Keep it at the head of the queue; the drain stops until the gate opens.
+        case hold
+        /// Failed transiently: back off, then retry it.
+        case retry
     }
 
     private let store: any ClassificationStore
@@ -227,12 +255,20 @@ public actor ClassificationEngine {
     private let attemptLog: (any ClassificationAttemptPersisting)?
     private let hourlyLimit: Int
     private let now: @Sendable () -> Date
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
 
     private var queue: [Job] = []
     private var drainTask: Task<Void, Never>?
+    /// Re-starts the drain when the hourly window frees up or a backoff ends.
+    private var wakeTask: Task<Void, Never>?
     private var callTimes: [Date] = []
+    /// Set by ``stop()`` and never cleared: nothing may start or write after it.
+    private var stopped = false
+    private var accountID: String?
+    private var retryAfter: Date?
+    private var backoff: TimeInterval = 0
 
-    /// Threads already sent to the model (or queued for it). Bounded.
+    /// Threads queued, in flight or done this session. Bounded.
     private var attempted: Set<String> = []
     private var attemptedOrder: [String] = []
     /// The persisted half: thread id → when it was attempted.
@@ -261,7 +297,8 @@ public actor ClassificationEngine {
         makeClassifier: @escaping @Sendable (AIGatewayConfiguration) -> any EmailClassifying,
         attemptLog: (any ClassificationAttemptPersisting)? = nil,
         hourlyLimit: Int = ClassificationEngine.defaultHourlyLimit,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     ) {
         self.store = store
         self.bodies = bodies
@@ -271,6 +308,7 @@ public actor ClassificationEngine {
         self.attemptLog = attemptLog
         self.hourlyLimit = hourlyLimit
         self.now = now
+        self.sleep = sleep
         self.persisted = attemptLog?.load() ?? [:]
     }
 
@@ -294,26 +332,37 @@ public actor ClassificationEngine {
     /// Recent decisions, oldest first (at most ``activityLimit``).
     public var activity: [ClassificationRecord] { records }
 
-    /// Clears a pause by hand (e.g. after the token was replaced).
+    /// Clears a pause by hand (e.g. after the token was replaced) and works the
+    /// jobs the pause held.
     public func resume() async {
         guard pauseReason != nil else { return }
         pauseReason = nil
         pausedConfiguration = nil
         await onPauseChanged?(nil)
+        startDrainIfNeeded()
     }
 
-    /// Drops queued work and stops the drain — account teardown. Awaits the
-    /// message in flight (its request is cancelled with the task) so no label
-    /// write can land behind a sign-out purge.
+    /// Drops queued work and stops the drain for good — account teardown. Awaits
+    /// the message in flight (its request is cancelled with the task), and the
+    /// `stopped` flag stops a `handle` suspended in a store read from queueing
+    /// behind this, so no label write can land after a sign-out purge.
     public func stop() async {
+        stopped = true
         queue.removeAll()
+        wakeTask?.cancel()
+        wakeTask = nil
         drainTask?.cancel()
         await drainTask?.value
     }
 
-    /// Resolves once the queue is empty. Tests await this instead of sleeping.
+    /// Resolves once nothing is draining or scheduled to. Tests await this
+    /// instead of sleeping (their sleeper advances a fake clock).
     public func waitUntilIdle() async {
-        while let task = drainTask { await task.value }
+        while true {
+            if let task = drainTask { await task.value; continue }
+            if let task = wakeTask { await task.value; continue }
+            return
+        }
     }
 
     // MARK: Rules (pure)
@@ -322,13 +371,16 @@ public actor ClassificationEngine {
     public nonisolated static func messageEligibility(
         _ message: MessageSummary,
         rulesByMailbox: [String: ClassificationDomainRules],
-        alreadyAttempted: Bool
+        alreadyAttempted: Bool,
+        now: Date? = nil
     ) -> ClassificationEligibility {
         guard message.direction == .inbound else { return .skip(.notInbound) }
         guard message.folder == .inbox else { return .skip(.notInbox) }
         guard let mailboxID = message.mailboxID, let rules = rulesByMailbox[mailboxID] else { return .skip(.domainOff) }
         guard !rules.candidates.isEmpty else { return .skip(.noRules) }
-        guard (message.receivedAt ?? message.createdAt) >= rules.enabledAt else { return .skip(.beforeEnabled) }
+        let received = message.receivedAt ?? message.createdAt
+        guard received >= rules.enabledAt else { return .skip(.beforeEnabled) }
+        if let now, now.timeIntervalSince(received) > maxMessageAge { return .skip(.tooOld) }
         guard !alreadyAttempted else { return .skip(.alreadyAttempted) }
         return .eligible(rules)
     }
@@ -339,9 +391,10 @@ public actor ClassificationEngine {
         rulesByMailbox: [String: ClassificationDomainRules],
         alreadyAttempted: Bool,
         threadHasLabels: Bool,
-        threadMessages: [MessageSummary]
+        threadMessages: [MessageSummary],
+        now: Date? = nil
     ) -> ClassificationEligibility {
-        let own = messageEligibility(message, rulesByMailbox: rulesByMailbox, alreadyAttempted: alreadyAttempted)
+        let own = messageEligibility(message, rulesByMailbox: rulesByMailbox, alreadyAttempted: alreadyAttempted, now: now)
         guard case .eligible = own else { return own }
         guard !threadHasLabels else { return .skip(.threadLabelled) }
         guard isFirstInbound(message, in: threadMessages) else { return .skip(.notFirstInbound) }
@@ -359,13 +412,29 @@ public actor ClassificationEngine {
     }
 
     /// The server-side re-check: any label on any message of the thread, or an
-    /// earlier inbound message the cache never held. A message whose `labels`
-    /// is `nil` (the server did not say) counts as unlabelled here — the cache
-    /// check that already ran, and the one before the write, still stand.
+    /// earlier inbound message the cache never held.
     public nonisolated static func serverSkipReason(for message: MessageSummary, thread: [MessageSummary]) -> ClassificationSkipReason? {
-        if thread.contains(where: { !($0.labels ?? []).isEmpty }) { return .threadLabelled }
+        if serverThreadHasLabels(thread) { return .threadLabelled }
         guard isFirstInbound(message, in: thread) else { return .notFirstInbound }
         return nil
+    }
+
+    /// Any label on any message of the server's thread. `labels == nil` means
+    /// the server did not say (a server older than the 1.4.2 label embed; the
+    /// minimum supported server is 1.3.4, so it can happen) and deliberately
+    /// counts as UNLABELLED — otherwise such a server could never be classified.
+    /// The cache checks before the queue and before the write still stand.
+    public nonisolated static func serverThreadHasLabels(_ thread: [MessageSummary]) -> Bool {
+        thread.contains { !($0.labels ?? []).isEmpty }
+    }
+
+    /// Worth retrying after a backoff: the gateway was busy or unreachable.
+    public nonisolated static func isTransient(_ error: AIGatewayError) -> Bool {
+        switch error {
+        case .rateLimited, .transport: true
+        case .http(let status): status >= 500
+        default: false
+        }
     }
 
     public nonisolated static func isGatewayLevel(_ error: AIGatewayError) -> Bool {
@@ -391,12 +460,14 @@ public actor ClassificationEngine {
     /// Called for every `.changed` event. Decides and queues; never waits for a model.
     public func handle(_ changes: ChangeSet, accountID: String, context: ClassificationContext?) async {
         // No backfill: a bootstrap lists the whole mailbox as inserted.
-        guard let context, !changes.isBootstrap, !changes.inserted.isEmpty else { return }
+        guard !stopped, let context, !changes.isBootstrap, !changes.inserted.isEmpty else { return }
+        self.accountID = accountID
         configuration = context.configuration
-        if pauseReason != nil {
-            // A changed configuration is the user acting on the pause.
-            guard context.configuration != pausedConfiguration else { return }
+        // A changed configuration is the user acting on the pause. Otherwise new
+        // mail still queues behind the pause and is worked on resume.
+        if pauseReason != nil, context.configuration != pausedConfiguration {
             await resume()
+            guard !stopped else { return }
         }
         let ids = changes.inserted.sorted().prefix(Self.maxLookups)
         for id in ids {
@@ -407,9 +478,10 @@ public actor ClassificationEngine {
                 logger.warning("Classification lookup failed: \(error.localizedDescription, privacy: .private)")
                 continue
             }
+            guard !stopped else { return }
             guard let message else { continue }
             let own = Self.messageEligibility(
-                message, rulesByMailbox: context.rulesByMailbox, alreadyAttempted: isAttempted(message.threadID)
+                message, rulesByMailbox: context.rulesByMailbox, alreadyAttempted: isAttempted(message.threadID), now: now()
             )
             if case .skip(let reason) = own {
                 if !reason.isSilent { await record(message, model: nil, .skipped(reason)) }
@@ -419,12 +491,14 @@ public actor ClassificationEngine {
             let verdict: ClassificationEligibility
             do {
                 let hasLabels = try await store.threadHasLabels(threadID: message.threadID, accountID: accountID)
+                guard !stopped else { return }
                 let thread = try await store.messages(accountID: accountID, threadID: message.threadID)
+                guard !stopped else { return }
                 verdict = Self.eligibility(
                     of: message, rulesByMailbox: context.rulesByMailbox,
                     // Re-read AFTER the awaits: an interleaved pass may have queued it.
                     alreadyAttempted: isAttempted(message.threadID),
-                    threadHasLabels: hasLabels, threadMessages: thread
+                    threadHasLabels: hasLabels, threadMessages: thread, now: now()
                 )
             } catch {
                 logger.warning("Classification thread lookup failed: \(error.localizedDescription, privacy: .private)")
@@ -437,58 +511,108 @@ public actor ClassificationEngine {
                 // Claimed synchronously with the check: no await between them.
                 remember(message.threadID)
                 queue.append(Job(message: message, rules: rules))
+                if queue.count > Self.pendingLimit {
+                    let dropped = queue.removeFirst()
+                    forget(dropped.message.threadID)
+                    logger.warning("Classification queue full; dropping the oldest job")
+                }
             }
         }
-        startDrainIfNeeded(accountID: accountID)
+        startDrainIfNeeded()
     }
 
-    private func startDrainIfNeeded(accountID: String) {
-        guard drainTask == nil, !queue.isEmpty else { return }
+    private func startDrainIfNeeded() {
+        guard !stopped, drainTask == nil, let accountID, !queue.isEmpty else { return }
         drainTask = Task { [weak self] in
             await self?.drain(accountID: accountID)
         }
     }
 
+    /// Works the queue one job at a time until it is empty or a gate (pause,
+    /// hourly cap, backoff) closes. A closed gate leaves the jobs queued: a pause
+    /// re-drains on resume, the cap and the backoff on a scheduled wake.
     private func drain(accountID: String) async {
-        while !queue.isEmpty, !Task.isCancelled {
+        while !queue.isEmpty, !Task.isCancelled, !stopped, gateIsOpen() {
             let job = queue.removeFirst()
-            await process(job, accountID: accountID)
+            switch await process(job, accountID: accountID) {
+            case .done:
+                break
+            case .hold:
+                if !stopped { queue.insert(job, at: 0) }
+            case .retry:
+                var retried = job
+                retried.failures += 1
+                if retried.failures >= Self.maxTransientFailures {
+                    // Not persisted: a later insert for the thread may try again.
+                    forget(job.message.threadID)
+                    logger.warning("Classification gave up on a message after repeated failures")
+                } else if !stopped {
+                    queue.insert(retried, at: 0)
+                }
+                startBackoff()
+            }
         }
         drainTask = nil
     }
 
-    private func process(_ job: Job, accountID: String) async {
-        let message = job.message
-        guard let configuration else { return }
-        let model = configuration.model
-        guard pauseReason == nil else {
-            await record(message, model: nil, .skipped(.paused))
-            return
-        }
+    /// Whether the next job may run now; schedules the wake when it may not.
+    private func gateIsOpen() -> Bool {
+        guard pauseReason == nil else { return false }   // resume() re-drains
         let current = now()
-        callTimes.removeAll { current.timeIntervalSince($0) >= 3600 }
-        guard callTimes.count < hourlyLimit else {
-            logger.info("Classification hourly cap (\(self.hourlyLimit, privacy: .public)) reached; skipping a message")
-            await record(message, model: nil, .skipped(.hourlyCap))
-            return
+        if let retryAfter, retryAfter > current {
+            scheduleWake(after: retryAfter.timeIntervalSince(current))
+            return false
         }
+        callTimes.removeAll { current.timeIntervalSince($0) >= 3600 }
+        if callTimes.count >= hourlyLimit, let oldest = callTimes.first {
+            logger.info("Classification hourly cap (\(self.hourlyLimit, privacy: .public)) reached; holding \(self.queue.count, privacy: .public) job(s)")
+            scheduleWake(after: 3600 - current.timeIntervalSince(oldest))
+            return false
+        }
+        return true
+    }
+
+    private func startBackoff() {
+        backoff = backoff == 0 ? Self.initialBackoff : min(backoff * 2, Self.maxBackoff)
+        retryAfter = now().addingTimeInterval(backoff)
+    }
+
+    private func scheduleWake(after seconds: TimeInterval) {
+        guard !stopped, wakeTask == nil else { return }
+        let sleep = self.sleep
+        wakeTask = Task { [weak self] in
+            let slept = (try? await sleep(max(seconds, 0))) != nil
+            await self?.woke(slept: slept)
+        }
+    }
+
+    private func woke(slept: Bool) {
+        wakeTask = nil
+        guard slept else { return }
+        startDrainIfNeeded()
+    }
+
+    private func process(_ job: Job, accountID: String) async -> Disposition {
+        let message = job.message
+        guard let configuration else { return .done }
+        let model = configuration.model
 
         // The server's thread, not the cache's, decides — BEFORE the call that
-        // costs money. Not persisted as attempted on a failed read, so a
-        // relaunch may try again.
+        // costs money. A failed read is retried after a backoff.
         if let serverThreads {
             do {
                 let thread = try await serverThreads.serverThread(messageID: message.id)
                 if let reason = Self.serverSkipReason(for: message, thread: thread) {
+                    persistAttempt(message.threadID)
                     await record(message, model: nil, .skipped(reason))
-                    return
+                    return .done
                 }
             } catch {
                 logger.warning("Classification thread check failed: \(error.localizedDescription, privacy: .private)")
                 await record(message, model: nil, .failed(reason: "threadCheck"))
-                return
+                return .retry
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !stopped else { return .done }
         }
 
         let body: String
@@ -499,9 +623,12 @@ public actor ClassificationEngine {
             logger.info("Classification body fetch failed; using the snippet")
             body = message.snippet
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, !stopped else { return .done }
 
         callTimes.append(now())
+        // Persisted BEFORE the call, so a crash mid-call counts as attempted
+        // (fewer tags is the safe direction); withdrawn only when the call
+        // failed in a way that is retried.
         persistAttempt(message.threadID)
         let choice: ClassificationCandidate?
         do {
@@ -512,34 +639,61 @@ public actor ClassificationEngine {
         } catch let error as AIGatewayError {
             logger.warning("Classification request failed: \(Self.code(for: error), privacy: .public)")
             await record(message, model: model, .failed(reason: Self.code(for: error)))
-            if Self.isGatewayLevel(error) { await pause(error, configuration: configuration) }
-            return
+            if Self.isGatewayLevel(error) {
+                unpersistAttempt(message.threadID)
+                await pause(error, configuration: configuration)
+                return .hold
+            }
+            if Self.isTransient(error) {
+                unpersistAttempt(message.threadID)
+                return .retry
+            }
+            return .done
         } catch {
             logger.warning("Classification request failed: \(error.localizedDescription, privacy: .private)")
             await record(message, model: model, .failed(reason: "unknown"))
-            return
+            return .done
         }
+        backoff = 0
+        retryAfter = nil
         guard let choice else {
             await record(message, model: model, .none)
-            return
+            return .done
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, !stopped else { return .done }
 
         // The user (or another device, or the label sweep) may have tagged the
-        // thread while the model was answering: theirs wins.
+        // thread while the model was answering: theirs wins. The cache first,
+        // then the server, which sees another device's label before a sync does.
         do {
             if try await store.threadHasLabels(threadID: message.threadID, accountID: accountID) {
                 await record(message, model: model, .skipped(.labelledMeanwhile))
-                return
+                return .done
             }
+            if let serverThreads {
+                let thread: [MessageSummary]
+                do {
+                    thread = try await serverThreads.serverThread(messageID: message.id)
+                } catch {
+                    logger.warning("Classification pre-write thread check failed: \(error.localizedDescription, privacy: .private)")
+                    await record(message, model: model, .failed(reason: "threadCheck"))
+                    return .done
+                }
+                if Self.serverThreadHasLabels(thread) {
+                    await record(message, model: model, .skipped(.labelledMeanwhile))
+                    return .done
+                }
+            }
+            guard !Task.isCancelled, !stopped else { return .done }
             try await labeler.applyLabel(choice.id, toThread: message.threadID, accountID: accountID)
         } catch {
             logger.warning("Classification label write failed: \(error.localizedDescription, privacy: .private)")
             await record(message, model: model, .failed(reason: "labelWrite"))
-            return
+            return .done
         }
         await record(message, model: model, .labelled(labelID: choice.id, labelName: choice.name))
         await onApplied?(message.threadID)
+        return .done
     }
 
     private func pause(_ error: AIGatewayError, configuration: AIGatewayConfiguration) async {
@@ -561,6 +715,17 @@ public actor ClassificationEngine {
         attemptedOrder.append(threadID)
         guard attemptedOrder.count > Self.memoLimit else { return }
         attempted.remove(attemptedOrder.removeFirst())
+    }
+
+    /// A job dropped without an answer: a later insert for the thread may queue it again.
+    private func forget(_ threadID: String) {
+        guard attempted.remove(threadID) != nil else { return }
+        attemptedOrder.removeAll { $0 == threadID }
+    }
+
+    private func unpersistAttempt(_ threadID: String) {
+        guard let attemptLog, persisted.removeValue(forKey: threadID) != nil else { return }
+        attemptLog.save(persisted)
     }
 
     private func persistAttempt(_ threadID: String) {

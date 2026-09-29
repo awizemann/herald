@@ -178,7 +178,7 @@ struct DomainWorkflowsSettingsPage: View {
         case .hourlyCap: "the hourly limit was reached"
         case .labelledMeanwhile: "the conversation was tagged meanwhile"
         case .paused: "classification was paused"
-        case .notInbound, .notInbox, .domainOff, .noRules, .alreadyAttempted: "not eligible"
+        case .notInbound, .notInbox, .domainOff, .noRules, .alreadyAttempted, .tooOld: "not eligible"
         }
     }
 

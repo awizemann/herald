@@ -15,9 +15,24 @@ private actor FakeStore: ClassificationStore {
         labelledThreads = labelled
     }
 
-    func label(_ threadID: String) { labelledThreads.insert(threadID) }
+    /// When set, `message(id:)` suspends until ``releaseLookups()``.
+    var holdLookups = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var heldCount: Int { held.count }
 
-    func message(id: String, accountID: String) async throws -> MessageSummary? { messagesByID[id] }
+    func label(_ threadID: String) { labelledThreads.insert(threadID) }
+    func setHoldLookups(_ value: Bool) { holdLookups = value }
+    func releaseLookups() {
+        holdLookups = false
+        let waiting = held
+        held.removeAll()
+        for continuation in waiting { continuation.resume() }
+    }
+
+    func message(id: String, accountID: String) async throws -> MessageSummary? {
+        if holdLookups { await withCheckedContinuation { held.append($0) } }
+        return messagesByID[id]
+    }
 
     func messages(accountID: String, threadID: String) async throws -> [MessageSummary] {
         messagesByID.values.filter { $0.threadID == threadID }
@@ -58,6 +73,8 @@ private nonisolated final class FakeClassifier: EmailClassifying, Sendable {
         var inputs: [ClassificationInput] = []
         var inFlight = 0
         var maxInFlight = 0
+        /// Per-subject answers used (and consumed) before `answers`/`fallback`.
+        var script: [String: [Answer]] = [:]
     }
 
     private let answers: [String: Answer]
@@ -68,10 +85,12 @@ private nonisolated final class FakeClassifier: EmailClassifying, Sendable {
     private let during: (@Sendable (ClassificationInput) async -> Void)?
 
     init(_ answers: [String: Answer] = [:], fallback: Answer = .tag("Support"),
+         script: [String: [Answer]] = [:],
          during: (@Sendable (ClassificationInput) async -> Void)? = nil) {
         self.answers = answers
         self.fallback = fallback
         self.during = during
+        state.withLock { $0.script = script }
     }
 
     var inputs: [ClassificationInput] { state.withLock { $0.inputs } }
@@ -87,7 +106,13 @@ private nonisolated final class FakeClassifier: EmailClassifying, Sendable {
         await Task.yield()
         await during?(input)
         await Task.yield()
-        switch answers[input.subject] ?? fallback {
+        let scripted: Answer? = state.withLock {
+            guard var queue = $0.script[input.subject], !queue.isEmpty else { return nil }
+            let next = queue.removeFirst()
+            $0.script[input.subject] = queue
+            return next
+        }
+        switch scripted ?? answers[input.subject] ?? fallback {
         case .tag(let name): return candidates.first { $0.name == name }
         case .none: return nil
         case .error(let error): throw error
@@ -99,10 +124,22 @@ private nonisolated final class FakeClassifier: EmailClassifying, Sendable {
 private nonisolated final class FakeThreadSource: ClassificationThreadSource, Sendable {
     private let threads: Mutex<[String: [MessageSummary]]>
     private let calls = Mutex(0)
-    init(_ threads: [String: [MessageSummary]]) { self.threads = Mutex(threads) }
+    private let failures: Mutex<Int>
+    /// `failFirst` reads throw before the map is consulted.
+    init(_ threads: [String: [MessageSummary]], failFirst: Int = 0) {
+        self.threads = Mutex(threads)
+        failures = Mutex(failFirst)
+    }
     var callCount: Int { calls.withLock { $0 } }
+    func set(_ messageID: String, _ thread: [MessageSummary]) { threads.withLock { $0[messageID] = thread } }
     func serverThread(messageID: String) async throws -> [MessageSummary] {
         calls.withLock { $0 += 1 }
+        let fail = failures.withLock { remaining -> Bool in
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
+        if fail { throw MailAPIError.notFound }
         guard let thread = threads.withLock({ $0[messageID] }) else { throw MailAPIError.notFound }
         return thread
     }
@@ -121,6 +158,18 @@ private nonisolated final class TestClock: Sendable {
     init(_ start: Date) { current = Mutex(start) }
     var now: Date { current.withLock { $0 } }
     func advance(_ seconds: TimeInterval) { current.withLock { $0 += seconds } }
+}
+
+/// The engine's sleeper for tests: records the wait and jumps the clock past it.
+private nonisolated final class TestSleeper: Sendable {
+    private let clock: TestClock
+    private let log = Mutex<[TimeInterval]>([])
+    init(_ clock: TestClock) { self.clock = clock }
+    var sleeps: [TimeInterval] { log.withLock { $0 } }
+    func sleep(_ seconds: TimeInterval) async throws {
+        log.withLock { $0.append(seconds) }
+        clock.advance(seconds)
+    }
 }
 
 private nonisolated let enabledAt = Date(timeIntervalSince1970: 10_000)
@@ -164,7 +213,8 @@ private nonisolated struct Harness {
     let labeler = FakeLabeler()
     let classifier: FakeClassifier
     let log: MemoryAttemptLog
-    let clock = TestClock(Date(timeIntervalSince1970: 30_000))
+    let clock: TestClock
+    let sleeper: TestSleeper
     let engine: ClassificationEngine
 
     init(
@@ -180,12 +230,16 @@ private nonisolated struct Harness {
         self.store = store
         self.classifier = classifier
         self.log = log
-        let clock = self.clock
+        let clock = TestClock(Date(timeIntervalSince1970: 30_000))
+        let sleeper = TestSleeper(clock)
+        self.clock = clock
+        self.sleeper = sleeper
         engine = ClassificationEngine(
             store: store, bodies: bodies, labeler: labeler, serverThreads: serverThreads,
             makeClassifier: { _ in classifier },
             attemptLog: log, hourlyLimit: hourlyLimit,
-            now: { clock.now }
+            now: { clock.now },
+            sleep: { try await sleeper.sleep($0) }
         )
     }
 
@@ -383,16 +437,13 @@ struct ClassificationEngineTests {
         #expect(relaunched.classifier.inputs.isEmpty)
     }
 
-    @Test func hourlyCapSkipsTheExcessAndRecoversAfterAnHour() async {
+    @Test func hourlyCapHoldsTheExcessUntilTheWindowFrees() async {
         let h = Harness([message("a"), message("b"), message("c")], hourlyLimit: 2)
         await h.run(["a", "b", "c"])
-        #expect(h.classifier.inputs.map(\.subject) == ["subject a", "subject b"])
-        #expect(await h.engine.activity.last?.outcome == .skipped(.hourlyCap))
-
-        h.clock.advance(3_600)
-        await h.store.insert(message("d"))
-        await h.run(["d"])
-        #expect(h.classifier.inputs.map(\.subject).last == "subject d")
+        // c waited out the rolling hour (no new insert needed), then ran once.
+        #expect(h.sleeper.sleeps == [3_600])
+        #expect(h.classifier.inputs.map(\.subject) == ["subject a", "subject b", "subject c"])
+        #expect(await h.appliedThreads == ["t-a", "t-b", "t-c"])
     }
 
     @Test func processesOneAtATimeInIDOrder() async {
@@ -422,18 +473,21 @@ struct ClassificationEngineTests {
         #expect(classifier.inputs.count == 1)
         #expect(surfaced.withLock { $0 } == [.unauthorized])
         #expect(await h.engine.pauseReason == .unauthorized)
-        #expect(await h.engine.activity.map { $0.outcome } == [.failed(reason: "unauthorized"), .skipped(.paused)])
+        #expect(await h.engine.activity.map { $0.outcome } == [.failed(reason: "unauthorized")])
+        // Held, not attempted: nothing persisted.
+        #expect(h.log.saved.isEmpty)
     }
 
     @Test func changedConfigurationResumes() async {
-        let h = Harness([message("a"), message("b")], classifier: FakeClassifier(["subject a": .error(.modelNotAllowed)]))
+        let h = Harness([message("a"), message("b")], classifier: FakeClassifier(script: ["subject a": [.error(.modelNotAllowed)]]))
         let surfaced = Mutex<[AIGatewayError?]>([])
         await h.engine.setObservers(onApplied: nil, onPauseChanged: { reason in surfaced.withLock { $0.append(reason) } })
         await h.run(["a"])
         #expect(await h.engine.pauseReason == .modelNotAllowed)
         await h.run(["b"], context: context(configuration: AIGatewayConfiguration(accountID: "acct", gatewayID: "gw", model: "workers-ai/other")))
         #expect(await h.engine.pauseReason == nil)
-        #expect(await h.appliedThreads == ["t-b"])
+        // The held trigger runs first, then the new message.
+        #expect(await h.appliedThreads == ["t-a", "t-b"])
         #expect(surfaced.withLock { $0 } == [.modelNotAllowed, nil])
     }
 
@@ -451,6 +505,10 @@ struct ClassificationEngineTests {
         await h.run(["a", "b", "c"])
         #expect(await h.engine.pauseReason == nil)
         #expect(await h.appliedThreads == ["t-c"])
+        // a: tried maxTransientFailures times, then given up and NOT persisted;
+        // b: the model answered (unreadably) — final, persisted.
+        #expect(classifier.inputs.filter { $0.subject == "subject a" }.count == ClassificationEngine.maxTransientFailures)
+        #expect(h.log.saved.keys.sorted() == ["t-b", "t-c"])
     }
 
     @Test func labelWriteFailureIsRecordedAndTheQueueContinues() async {
@@ -557,7 +615,8 @@ struct ClassificationServerCheckTests {
         await h.run(["a"])
         #expect(h.classifier.inputs.isEmpty)
         #expect(h.log.saved.isEmpty)
-        #expect(await h.engine.activity.map(\.outcome) == [.failed(reason: "threadCheck")])
+        #expect(await h.engine.activity.map(\.outcome)
+            == Array(repeating: .failed(reason: "threadCheck"), count: ClassificationEngine.maxTransientFailures))
     }
 
     @Test func recordsCarryTheMailboxAndObserversSeeEveryVersion() async {
@@ -584,12 +643,125 @@ struct ClassificationServerCheckTests {
     }
 
     @Test func resumeClearsAPauseAndClassifyingContinues() async {
-        let h = Harness([message("a"), message("b")], classifier: FakeClassifier(["subject a": .error(.unauthorized)]))
+        let h = Harness([message("a"), message("b")], classifier: FakeClassifier(script: ["subject a": [.error(.unauthorized)]]))
         await h.run(["a"])
         #expect(await h.engine.pauseReason == .unauthorized)
         await h.engine.resume()
         await h.run(["b"])   // same configuration: only resume() can have unpaused it
-        #expect(await h.appliedThreads == ["t-b"])
+        #expect(await h.appliedThreads == ["t-a", "t-b"])
+    }
+}
+
+// MARK: - Stop, retry & backoff
+
+@Suite("Classification stop, retry and backoff")
+struct ClassificationRetryTests {
+    @Test func stopWhileHandleIsSuspendedInALookupQueuesNothing() async {
+        let h = Harness([message("a")])
+        await h.store.setHoldLookups(true)
+        let handling = Task { await h.engine.handle(ChangeSet(inserted: ["a"]), accountID: "acc", context: context()) }
+        while await h.store.heldCount == 0 { await Task.yield() }
+        await h.engine.stop()
+        await h.store.releaseLookups()
+        await handling.value
+        await h.engine.waitUntilIdle()
+        #expect(h.classifier.inputs.isEmpty)
+        #expect(await h.labeler.applied.isEmpty)
+    }
+
+    @Test func pauseThenResumeClassifiesTheHeldJobsIncludingTheTrigger() async {
+        let classifier = FakeClassifier(script: ["subject a": [.error(.unauthorized)]])
+        let h = Harness([message("a"), message("b"), message("c")], classifier: classifier)
+        await h.run(["a", "b"])
+        await h.run(["c"])   // new mail during the pause still queues
+        #expect(await h.engine.pauseReason == .unauthorized)
+        #expect(await h.appliedThreads.isEmpty)
+        // b gains a label while held: it must not be re-tagged.
+        await h.store.label("t-b")
+        await h.engine.resume()
+        await h.engine.waitUntilIdle()
+        #expect(await h.appliedThreads == ["t-a", "t-c"])
+        #expect(classifier.inputs.filter { $0.subject == "subject a" }.count == 2)
+    }
+
+    @Test func rateLimitBacksOffDoublingAndRetries() async {
+        let classifier = FakeClassifier(script: ["subject a": [.error(.rateLimited), .error(.http(status: 503))]])
+        let h = Harness([message("a"), message("b")], classifier: classifier)
+        await h.run(["a", "b"])
+        #expect(h.sleeper.sleeps == [ClassificationEngine.initialBackoff, ClassificationEngine.initialBackoff * 2])
+        #expect(await h.appliedThreads == ["t-a", "t-b"])
+        #expect(await h.engine.pauseReason == nil)
+    }
+
+    @Test func backoffResetsAfterAnAnswer() async {
+        let classifier = FakeClassifier(script: [
+            "subject a": [.error(.rateLimited), .error(.rateLimited)],
+            "subject b": [.error(.rateLimited)],
+        ])
+        let h = Harness([message("a"), message("b")], classifier: classifier)
+        await h.run(["a", "b"])
+        let step = ClassificationEngine.initialBackoff
+        #expect(h.sleeper.sleeps == [step, step * 2, step])
+        #expect(await h.appliedThreads == ["t-a", "t-b"])
+    }
+
+    @Test func transientServerCheckFailureIsRetried() async {
+        let server = FakeThreadSource(["a": [message("a", labels: [])]], failFirst: 1)
+        let h = Harness([message("a")], serverThreads: server)
+        await h.run(["a"])
+        #expect(h.sleeper.sleeps == [ClassificationEngine.initialBackoff])
+        #expect(await h.appliedThreads == ["t-a"])
+        #expect(await h.engine.activity.map(\.outcome)
+            == [.failed(reason: "threadCheck"), .labelled(labelID: "l-support", labelName: "Support")])
+    }
+
+    @Test func pendingJobsAreBounded() async {
+        let ids = (0..<ClassificationEngine.pendingLimit).map { String(format: "m%03d", $0) }
+        let classifier = FakeClassifier(script: ["subject a": [.error(.unauthorized)]])
+        let h = Harness([message("a")] + ids.map { message($0) }, classifier: classifier, hourlyLimit: 10_000)
+        await h.run(["a"])
+        await h.run(Set(ids))   // 101 pending: a, the oldest, is dropped
+        await h.engine.resume()
+        await h.engine.waitUntilIdle()
+        #expect(classifier.inputs.count == 1 + ClassificationEngine.pendingLimit)
+        #expect(classifier.inputs.filter { $0.subject == "subject a" }.count == 1)
+    }
+
+    @Test func serverLabelAppearingBeforeTheWriteIsLeftAlone() async {
+        let server = FakeThreadSource(["a": [message("a", labels: [])]])
+        let classifier = FakeClassifier(during: { _ in
+            server.set("a", [message("a", labels: [MailLabel(id: "l-x", name: "X", color: .gray)])])
+        })
+        let h = Harness([message("a")], classifier: classifier, serverThreads: server)
+        await h.run(["a"])
+        #expect(classifier.inputs.count == 1)
+        #expect(await h.labeler.applied.isEmpty)
+        #expect(server.callCount == 2)
+        #expect(await h.engine.activity.map(\.outcome) == [.skipped(.labelledMeanwhile)])
+    }
+
+    @Test func oldMessageReinsertedAfterTheAttemptLogForgotItIsNotClassified() async {
+        // Received after enabledAt and first inbound on an unlabelled thread —
+        // so the enabledAt and server checks alone would pass — but its "none"
+        // aged out of the 7-day log. A journal re-delivery reports it as inserted.
+        let old = message("a", received: Date(timeIntervalSince1970: 20_000))
+        let h = Harness([old], serverThreads: FakeThreadSource(["a": [old]]))
+        h.clock.advance(ClassificationEngine.maxMessageAge + 1 - 10_000)
+        await h.run(["a"])
+        #expect(h.classifier.inputs.isEmpty)
+    }
+
+    @Test func maxMessageAgeBoundary() {
+        let rules = context().rulesByMailbox
+        let m = message("a")
+        let received = m.receivedAt!
+        func verdict(_ age: TimeInterval) -> ClassificationEligibility {
+            ClassificationEngine.messageEligibility(m, rulesByMailbox: rules, alreadyAttempted: false,
+                                                    now: received.addingTimeInterval(age))
+        }
+        #expect(verdict(ClassificationEngine.maxMessageAge + 1) == .skip(.tooOld))
+        guard case .eligible = verdict(ClassificationEngine.maxMessageAge) else { Issue.record("boundary"); return }
+        #expect(ClassificationEngine.maxMessageAge < ClassificationEngine.persistedLifetime)
     }
 }
 

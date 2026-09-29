@@ -136,9 +136,11 @@ public nonisolated struct AIGatewayClient: Sendable {
         return content
     }
 
-    /// Cheapest round trip that proves URL, token and model all work.
+    /// Cheap round trip that proves URL, token and model all work. Not a 5-token
+    /// budget: a reasoning model (the default Qwen3) spends that thinking and
+    /// returns `content: null`, which read as "not a form Herald understands".
     public func testConnection() async throws {
-        _ = try await complete(system: "Reply with OK.", user: "ping", maxTokens: 5)
+        _ = try await complete(system: "Reply with OK. /no_think", user: "ping", maxTokens: 64)
     }
 
     /// Maps a non-2xx response. Cloudflare's JSON error bodies carry a numeric `code`

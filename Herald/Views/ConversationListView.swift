@@ -72,6 +72,7 @@ struct ConversationListView: View {
         let rowHeight = metrics.conversationRowHeight(.current)
         List(selection: $model.selectedThreadID) {
             ForEach(model.presentedConversations) { row in
+                let rowLabels = model.labels(forThread: row.id)
                 ConversationRow(
                     row: row,
                     // The COMMITTED query, not the field's text: the rows on screen
@@ -84,7 +85,7 @@ struct ConversationListView: View {
                     metrics: metrics,
                     minHeight: rowHeight,
                     isSelected: model.selectedThreadID == row.id,
-                    labels: model.labels(forThread: row.id),
+                    labels: rowLabels,
                     toggleStar: { Task { await model.toggleStar(row) } },
                     archive: model.offersArchiveAction
                         ? { Task { await model.perform(.archive, onThread: row.id) } }
@@ -101,6 +102,12 @@ struct ConversationListView: View {
                     openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
                 )
                 .tag(row.id)
+                // macOS List caches a measured height per row identity, so a row
+                // that gains its first chip (a tag applied after the row was drawn —
+                // the classifier, another device, a sweep) would stay clipped. The
+                // chip line only appears/disappears on empty ↔ non-empty, so that is
+                // the only change that re-identifies the row; selection is by tag.
+                .id(RowIdentity(threadID: row.id, hasLabels: !rowLabels.isEmpty))
                 // The row draws its own padding (14/7 × 12, handoff §3.1).
                 .listRowInsets(EdgeInsets())
                 // Selection itself drills into a multi-message thread (see
@@ -660,4 +667,11 @@ extension View {
     func listSearchField(model: MailViewModel, text: Binding<String>) -> some View {
         modifier(ListSearchField(model: model, text: text))
     }
+}
+
+/// A conversation row's view identity: the thread plus whether its chip line is
+/// drawn, so gaining or losing that line makes List measure the row afresh.
+private nonisolated struct RowIdentity: Hashable {
+    let threadID: String
+    let hasLabels: Bool
 }

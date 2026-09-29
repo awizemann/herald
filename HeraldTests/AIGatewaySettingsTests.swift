@@ -158,7 +158,7 @@ struct AIGatewaySettingsTests {
 
     @Test func privacyPageDisclosesWhatClassificationSends() {
         let text = PrivacySettingsPane.classificationDisclosure
-        for phrase in ["sender", "subject", "message text", "Cloudflare AI Gateway", "Nothing is sent"] {
+        for phrase in ["sender", "subject", "message text", "Cloudflare AI Gateway", "Nothing is sent", "logging", "does not train"] {
             #expect(text.contains(phrase))
         }
     }

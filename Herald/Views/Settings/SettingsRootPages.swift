@@ -557,7 +557,9 @@ struct PrivacySettingsPane: View {
         When classification is turned on for a domain, the sender, subject and message text of \
         new mail in that domain are sent to the Cloudflare AI Gateway configured in Settings › AI \
         Gateway, using your own Cloudflare account. Nothing is sent for domains where it is off, \
-        or while no gateway is set up.
+        or while no gateway is set up. The gateway is yours: you can turn off its request logging \
+        and caching in the Cloudflare dashboard. Herald only uses Cloudflare-hosted models, which \
+        Cloudflare does not train on the data you send.
         """
 
     static let unavailableExplanation = "Usage analytics aren’t included in this build."

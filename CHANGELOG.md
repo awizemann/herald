@@ -10,13 +10,61 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-28
+
+Herald 1.0. The app is redesigned around domains — the way HQBase actually groups mailboxes —
+with a new sidebar, a rebuilt compose window, and a Settings experience to match. Everything
+else in this release is stability work: session recovery no longer traps you, sync races that
+could undo your own actions are closed, and long mailboxes load smoothly as you scroll. Herald
+now considers itself stable at 1.0.
+
+### Added
+- **Domains sidebar.** The sidebar now drills down by domain — an account card up top, then each
+  domain's mailboxes underneath — instead of one flat mailbox list. Hidden and server-disabled
+  domains stay out of the way, with a Settings page to restore or remove them.
+- **Split-view Settings.** A new Settings shell with per-domain Overview, Mailboxes and
+  Signatures pages, reachable from the domain's own row, plus a page for hiding, restoring and
+  removing domains.
+- **Per-domain badge colour.** Each domain can carry its own badge colour override, shown on
+  every message from that domain in the list and reading pane.
+- **A dedicated Compose window** with a From picker: any address you can send from is one click
+  away, each domain remembers its own default From, and a reply is locked to the exact address
+  the original was sent to so a reply can't drift to a different domain by accident. Recipients
+  are entered as tokens (To/Cc/Bcc), and the footer validates addresses before Send is enabled.
+- **Attachment cards** in both the reading pane and compose, with a Download All button; Herald
+  now accepts attachments of any content type rather than rejecting ones the server left
+  untyped or unusual.
+- **Long mailboxes load as you scroll.** Conversation lists page in additional rows past the
+  first 100 automatically, instead of stopping there, with a VoiceOver announcement while a page
+  loads.
+- **New fonts and design tokens** throughout the app — the last system text styles now come from
+  Herald's own typography scale, and window titles follow whatever you're looking at (a domain,
+  a mailbox, a label).
+
+### Changed
+- **Analytics:** `mailbox_color_changed` is gone along with per-mailbox colours; a new
+  `scope_changed` event records moving between all-domains, a single domain, and a single
+  mailbox.
+- Attachments can be saved straight to Downloads, and a Quick Look preview that outlives its
+  window is now released back to the right account instead of leaking.
+
 ### Fixed
-- **A Keychain write failure right after a token refresh no longer signs the account out.** If
-  saving the refreshed tokens failed, Herald treated it like a network error and refreshed again
-  with the token it had just used up, which HQBase answers by ending the whole session. The
-  refreshed token is now used for that request and the refresh is never repeated. Herald also
-  keeps the refreshed token in memory and saves it on the next request, so a brief Keychain
-  hiccup no longer costs a sign-in later either.
+- **Session recovery no longer traps you in a consent loop**, and a dead session now heals
+  itself with a re-auth banner rather than getting stuck. A refresh token is never re-spent: if
+  saving a freshly refreshed token to the Keychain fails, Herald keeps using the token it already
+  has instead of replaying the refresh and ending the session. A brief Keychain read/write hiccup
+  no longer costs you a sign-in later.
+- **A concurrent sync pass can no longer undo an action you just took.** Archiving, trashing,
+  starring or marking read is now fenced against an in-flight sync, so a page landing mid-action
+  can't roll your change back.
+- **A draft autosave that lands after you hit Send no longer resurrects the message.** A stray
+  autosave answer arriving late is now ignored once the send has gone out.
+- The load-more row at the bottom of a long list only re-arms after a load that actually made
+  progress, instead of retriggering on every scroll.
+
+### Removed
+- **Per-mailbox colours.** Colour is now set per domain instead (see Added, above); the
+  `mailbox_color_changed` analytics event goes with it.
 
 ## [0.5.1] - 2026-09-20
 
@@ -309,7 +357,8 @@ with OAuth 2.1 PKCE bearer tokens.
 - Local cache for instant launch, background polling sync (15 s while active).
 - Sparkle auto-updates; Developer ID signed and notarized; sandboxed.
 
-[Unreleased]: https://github.com/awizemann/herald/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/awizemann/herald/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/awizemann/herald/compare/v0.5.1...v1.0.0
 [0.2.0]: https://github.com/awizemann/herald/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/awizemann/herald/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/awizemann/herald/compare/v0.1.1...v0.1.2

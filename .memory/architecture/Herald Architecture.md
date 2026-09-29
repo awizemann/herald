@@ -5,10 +5,10 @@ permalink: hqbase-mac/architecture/herald-architecture
 tags: [architecture, swift6]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/App/AccountGraph.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Sync/MailStore.swift, HeraldKit/Sources/HeraldKit/API/MailAPIClient.swift]
 source_paths_inferred: false
-source_sha: 3e800d803cb0ccfe73452910958f0b166b296c0b
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-08-16
 updated: 2026-09-28
-reviewed: 2026-09-27
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 

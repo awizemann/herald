@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/herald-signature-handling
 tags: [herald, compose, signatures, settings, upstream-134, upstream-142]
 source_paths: [HeraldKit/Sources/HeraldKit/Model/Signature.swift, HeraldKit/Sources/HeraldKit/Compose/SignatureManagementService.swift, Herald/App/SignatureSettingsModel.swift, Herald/Views/SignatureSettingsView.swift, HeraldKit/Sources/HeraldKit/Compose/ComposeDraft.swift, HeraldKit/Sources/HeraldKit/Compose/OutboxService.swift, Herald/Compose/ComposeViewModel.swift, Herald/Compose/ComposeWindow.swift, HeraldKit/Sources/HeraldAPI/openapi.json]
 source_paths_inferred: false
-source_sha: 3e800d803cb0ccfe73452910958f0b166b296c0b
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-09-04
 updated: 2026-09-28
-reviewed: 2026-09-27
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 

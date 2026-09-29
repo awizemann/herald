@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/automatic-re-auth-policy-frontmost-deferred-rate
 tags: [auth, ux, oauth]
 source_paths: [Herald/App/AutoReauthPolicy.swift, Herald/App/AppEnvironment.swift, Herald/App/AppEnvironment+SignIn.swift, Herald/App/AppEnvironment+Compose.swift, Herald/App/MailViewModel.swift, Herald/Views/RootView.swift, HeraldKit/Sources/HeraldKit/Auth/AuthorizationPresenter.swift, HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift]
 source_paths_inferred: false
-source_sha: db538bd984d6059832d0ed07712103e28caf1685
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-09-04
 updated: 2026-09-26
-reviewed: 2026-09-28
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 Current policy for Herald re-running consent by itself (verified at HEAD 177f09f against Herald/App/AutoReauthPolicy.swift and AppEnvironment+SignIn.swift). Mechanics of detection, Cancel and heal: [[Sign-In Recoverability and the Presentation Watchdog]].

@@ -3,12 +3,12 @@ title: Herald Label Caching and UI Architecture
 type: note
 permalink: hqbase-mac/decisions/herald-label-caching-and-ui-architecture
 tags: [labels, sync, swiftdata, ui]
-source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailStore+Labels.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, HeraldKit/Sources/HeraldKit/Sync/CachedModels.swift, HeraldKit/Sources/HeraldKit/Sync/MailActionService.swift, HeraldKit/Sources/HeraldKit/Model/MailLabel.swift, Herald/App/MailViewModel+Labels.swift, Herald/Design/LabelChip.swift, Herald/Views/SidebarView.swift]
+source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailStore+Labels.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine+Labels.swift, HeraldKit/Sources/HeraldKit/Sync/MailActionService.swift, Herald/App/MailViewModel+Labels.swift]
 source_paths_inferred: false
-source_sha: 3e800d803cb0ccfe73452910958f0b166b296c0b
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-09-04
 updated: 2026-09-27
-reviewed: 2026-09-27
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 

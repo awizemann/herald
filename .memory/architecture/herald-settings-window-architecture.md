@@ -8,6 +8,8 @@ source_paths_inferred: true
 source_sha: 8f315ecb297bd54db7ebec7cdb14ebf150868626
 created: 2026-09-27
 updated: 2026-09-28
+reviewed: 2026-09-29
+reviewed_by: audit:claude-code (background)
 ---
 
 Redesign phase R7 (task t-e07965ec, commit eac3897). Settings is a two-column window (handoff §3.2): a drill-down source list beside a detail pane. Root pages General/Notifications/Privacy/Account/Signatures are built; R8 (below) built the domain pages Overview/Mailboxes/Signatures. Remove domain stays a placeholder for R9.

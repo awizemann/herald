@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/herald-wake-socket-architecture
 tags: [decision, sync, websocket, upstream-1.3.4]
 source_paths: [HeraldKit/Sources/HeraldKit/Sync/MailEventSocket.swift, HeraldKit/Sources/HeraldKit/Sync/URLSessionMailEventChannel.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, Herald/App/MailViewModel.swift, Herald/App/AppEnvironment.swift]
 source_paths_inferred: false
-source_sha: 6a0f05d4a79cadf3a4ad461a06e9b3cb26b0b727
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 created: 2026-09-04
 updated: 2026-09-04
-reviewed: 2026-09-28
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 

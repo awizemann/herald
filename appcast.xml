@@ -3,23 +3,41 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>0.5.1</title>
-            <pubDate>Sun, 20 Sep 2026 08:52:19 -0400</pubDate>
-            <sparkle:version>11</sparkle:version>
-            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <title>1.0.0</title>
+            <pubDate>Tue, 29 Sep 2026 08:19:56 -0400</pubDate>
+            <sparkle:version>12</sparkle:version>
+            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<h3>Fixed</h3>
-<ul>
-<li><strong>⌘N now opens a new message.</strong> It used to open a second main window on the Inbox, because the system&#x27;s built-in New Window command also owns ⌘N and won the tie. New Window is gone: Herald has one mailbox view, so a second window was only ever a mirror of the first. Herald #10.</li>
-<li><strong>A Compose button in the toolbar.</strong> New Message was reachable only from the File menu; it now leads the window toolbar, where Mail puts it. Herald #10.</li>
-</ul>
+            <description><![CDATA[<p>Herald 1.0. The app is redesigned around domains — the way HQBase actually groups mailboxes — with a new sidebar, a rebuilt compose window, and a Settings experience to match. Everything else in this release is stability work: session recovery no longer traps you, sync races that could undo your own actions are closed, and long mailboxes load as you scroll.</p>
 <h3>Added</h3>
 <ul>
-<li><strong>Reply, Reply All and Forward in the row context menu</strong>, ahead of the triage actions and in the same order as the Message menu. They act on the row you right-clicked, not the selection, and are dimmed for multiple selections. Herald #11.</li>
+<li><strong>Domains sidebar.</strong> The sidebar now drills down by domain — an account card up top, then each domain&#x27;s mailboxes underneath — instead of one flat mailbox list. Hidden and server-disabled domains stay out of the way, with a Settings page to restore or remove them.</li>
+<li><strong>Split-view Settings.</strong> A new Settings shell with per-domain Overview, Mailboxes and Signatures pages, reachable from the domain&#x27;s own row, plus a page for hiding, restoring and removing domains.</li>
+<li><strong>Per-domain badge colour.</strong> Each domain can carry its own badge colour override, shown on that domain&#x27;s mail in the list and reading pane.</li>
+<li><strong>A dedicated Compose window</strong> with a From picker: any address you can send from is one click away, each domain remembers its own default From, and a reply is locked to the exact address the original was sent to so a reply can&#x27;t drift to a different domain by accident. Recipients are entered as tokens (To/Cc/Bcc), and the footer validates addresses before Send is enabled.</li>
+<li><strong>Attachment cards</strong> in both the reading pane and compose, with a Download All button; Herald now accepts attachments of any content type rather than rejecting ones the server left untyped or unusual.</li>
+<li><strong>Long mailboxes load as you scroll.</strong> Conversation lists page in additional rows past the first 100 automatically, instead of stopping there, with a VoiceOver announcement while a page loads.</li>
+<li><strong>New fonts and design tokens</strong> throughout the app — the last system text styles now come from Herald&#x27;s own typography scale, and window titles follow whatever you&#x27;re looking at (a domain, a mailbox, a label).</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Analytics:</strong> <code>mailbox_color_changed</code> is gone along with per-mailbox colours; a new <code>scope_changed</code> event records moving between all-domains, a single domain, and a single mailbox.</li>
+<li><strong>Save dialogs for attachments open in Downloads.</strong></li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Session recovery no longer traps you in a consent loop</strong>, and a dead session now heals itself with a re-auth banner rather than getting stuck. A refresh token is never re-spent: if saving a freshly refreshed token to the Keychain fails, Herald uses the new token for that request instead of replaying the refresh, which HQBase answers by ending the session. A brief Keychain read/write hiccup no longer costs you a sign-in later.</li>
+<li><strong>A concurrent sync pass can no longer undo an action you just took.</strong> Archiving, trashing, starring or marking read is now fenced against an in-flight sync, so a page landing mid-action can&#x27;t roll your change back.</li>
+<li><strong>A draft autosave that lands after you hit Send no longer resurrects the message.</strong> A stray autosave answer arriving late is now ignored once the send has gone out.</li>
+<li><strong>Quick Look previews of attachments no longer break</strong> when the cached file was cleared from under them; attachments are now cached in Application Support.</li>
+</ul>
+<h3>Removed</h3>
+<ul>
+<li><strong>Per-mailbox colours.</strong> Colour is now set per domain instead (see Added, above); the <code>mailbox_color_changed</code> analytics event goes with it.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v0.5.1/Herald-0.5.1.zip" length="3748984" type="application/octet-stream" sparkle:edSignature="YX/jWhsMlPk1CWcqHYLPKj7IuurxZ7URVjfhgD5nIK07DRpkuF3AfxOSENUWHHOkdCkhmwfEu/7oZaPklJkMCw=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v1.0.0/Herald-1.0.0.zip" length="5149901" type="application/octet-stream" sparkle:edSignature="uBJflxrRrjfJuRCZuc4jwVbVfE5wRHFYiT6JgLFDLCWoCx4o7rbAyWM5fmApelkFyoIFuqKzCd1HL+rOK+T8AQ=="/>
         </item>
     </channel>
 </rss>

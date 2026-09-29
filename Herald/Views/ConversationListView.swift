@@ -258,8 +258,11 @@ struct LabelMenu: View {
 }
 
 /// The list's last row while more conversations can be paged in: a small
-/// spinner while a page loads (blank otherwise), not selectable, silent to
-/// VoiceOver (the rows arriving are the news).
+/// spinner while a page loads (blank otherwise), not selectable.
+///
+/// The row stays hidden from VoiceOver — an idle, blank element would be a
+/// focus stop with nothing on it — so the load is conveyed by an announcement
+/// when it starts instead.
 struct LoadMoreRow: View {
     let isLoading: Bool
 
@@ -275,7 +278,13 @@ struct LoadMoreRow: View {
         .listRowInsets(EdgeInsets())
         .selectionDisabled()
         .accessibilityHidden(true)
+        .onChange(of: isLoading) { _, loading in
+            guard loading else { return }
+            AccessibilityNotification.Announcement(Self.loadingAnnouncement).post()
+        }
     }
+
+    static let loadingAnnouncement = String(localized: "Loading more conversations")
 }
 
 /// What the SERVER half of a two-tier search is doing, under the list.

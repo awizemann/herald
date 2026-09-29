@@ -215,3 +215,10 @@ struct ConversationPagingTests {
         #expect(model.loadMoreTrigger == trigger, "nothing visible was added: no automatic refetch")
     }
 }
+
+/// Fails if the spinner row loses the text VoiceOver announces while a page loads.
+@Test("The load-more row announces what it is doing")
+@MainActor
+func loadMoreRowAnnouncement() {
+    #expect(LoadMoreRow.loadingAnnouncement == "Loading more conversations")
+}

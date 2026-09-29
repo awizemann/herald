@@ -10,6 +10,9 @@ private actor PagingSync: MailSyncing {
     var older: [MessageSummary]
     let pageSize: Int
     var failNext = false
+    /// The server answers pages whose rows land in a listing the view is not
+    /// showing (here: the archive), so the visible list never grows.
+    var storesElsewhere = false
     private(set) var loadCalls = 0
 
     init(store: MailStore, older: [MessageSummary], pageSize: Int) {
@@ -24,6 +27,7 @@ private actor PagingSync: MailSyncing {
     func setCadence(_ cadence: SyncCadence) {}
     func setLabelSurfaceVisible(_ visible: Bool) {}
     func setFailNext() { failNext = true }
+    func setStoresElsewhere() { storesElsewhere = true }
 
     func loadOlderConversations(mailboxIDs: Set<String>?, folder: ConversationFolder) async throws -> Bool {
         loadCalls += 1
@@ -35,14 +39,15 @@ private actor PagingSync: MailSyncing {
         older.removeFirst(page.count)
         try await store.upsertMessages(page, accountID: "acct")
         try await store.upsertConversations(
-            page.map { MailFixtures.conversation($0) }, accountID: "acct", mailboxID: "mbA", folder: .inbox
+            page.map { MailFixtures.conversation($0) }, accountID: "acct", mailboxID: "mbA",
+            folder: storesElsewhere ? .archived : .inbox
         )
         return !older.isEmpty
     }
 }
 
 @MainActor
-@Suite("Conversation list paging")
+@Suite("Conversation list paging", .timeLimit(.minutes(1)))
 struct ConversationPagingTests {
     /// Thread `t<i>` is newer the smaller `i` is, so `t0…t99` is the first page.
     private static func message(_ index: Int) -> MessageSummary {
@@ -163,5 +168,50 @@ struct ConversationPagingTests {
         model.showListing(mailboxID: "mbA", folder: .inbox)
         #expect(model.conversationListLimit == MailViewModel.conversationPageSize)
         #expect(model.serverMayHaveMoreConversations)
+    }
+
+    /// Fails if a load that only grew the limit under a search filter re-arms
+    /// the end row: a filtered list keeps that row on screen, so re-arming it
+    /// walks the whole cache without the user scrolling.
+    @Test("Under a search, a cache page with no new matches does not re-arm the end row")
+    func searchFilterDoesNotChainCachePages() async throws {
+        let (_, sync, model) = try await make(cached: 400)
+        model.searchQuery = "Thread 42"
+        #expect(model.presentedConversations.map(\.id) == ["t42"])
+        let trigger = model.loadMoreTrigger
+
+        await model.loadMoreConversations()
+        #expect(model.allConversations.count == 200, "the explicit load itself still reads the next page")
+        #expect(model.loadMoreTrigger == trigger, "no new visible row: the row must not fire again on its own")
+
+        model.searchQuery = "Thread 2"
+        let before = model.loadMoreTrigger
+        await model.loadMoreConversations()
+        #expect(model.loadMoreTrigger == before &+ 1, "new matches arrived: the row re-arms")
+        #expect(await sync.loadCalls == 0)
+    }
+
+    /// Fails if a server page that adds nothing to the visible listing re-arms
+    /// the end row (chaining fetches with no scroll), or if a page that does
+    /// add rows, or the cache running out, fails to re-arm it.
+    @Test("A server page re-arms the end row only when it adds visible rows")
+    func emptyServerPageDoesNotChain() async throws {
+        let (_, sync, model) = try await make(cached: 100, older: 200)
+        var trigger = model.loadMoreTrigger
+        await model.loadMoreConversations()   // cache read: exhausted, server is next
+        #expect(model.loadMoreTrigger == trigger &+ 1)
+
+        trigger = model.loadMoreTrigger
+        await model.loadMoreConversations()   // server page of visible rows
+        #expect(model.allConversations.count == 150)
+        #expect(model.loadMoreTrigger == trigger &+ 1)
+
+        await sync.setStoresElsewhere()
+        trigger = model.loadMoreTrigger
+        await model.loadMoreConversations()   // server page this listing does not show
+        #expect(await sync.loadCalls == 2)
+        #expect(model.allConversations.count == 150)
+        #expect(model.canLoadMoreConversations, "the server still has more; a later scroll may fetch it")
+        #expect(model.loadMoreTrigger == trigger, "nothing visible was added: no automatic refetch")
     }
 }

@@ -108,13 +108,14 @@ struct ConversationListView: View {
                 // a simultaneous TapGesture on the row content raced the List's own
                 // selection, so clicks on text often failed to select at all.
             }
-            // Scrolling to the end pages in more. Keyed on the limit so the row
-            // is a NEW view after each page: one still on screen (a filtered
-            // list, a short page) fires again instead of stalling, while a
-            // failed load waits for the next scroll back to the end.
+            // Scrolling to the end pages in more. Keyed on `loadMoreTrigger` so
+            // the row is a NEW view only after a load that made progress: one
+            // still on screen (a short page) fires again, while a load that
+            // added nothing visible (a filtered list, a server page of other
+            // rows) or failed waits for the next scroll back to the end.
             if model.canLoadMoreConversations {
                 LoadMoreRow(isLoading: model.isLoadingMoreConversations)
-                    .id(model.conversationListLimit)
+                    .id(model.loadMoreTrigger)
                     .onAppear { Task { await model.loadMoreConversations() } }
             }
         }

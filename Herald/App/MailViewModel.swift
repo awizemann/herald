@@ -723,6 +723,14 @@ final class MailViewModel {
     /// listing; reset by every navigation.
     private(set) var serverMayHaveMoreConversations = true
     private(set) var isLoadingMoreConversations = false
+    /// The load-more row's identity. Bumped only by a load that made progress —
+    /// it added visible rows, or it found the cache exhausted so the next load
+    /// asks the server — so a row still on screen fires again only then. A load
+    /// that added nothing visible (a local search filtering every new row out, a
+    /// server page of rows this listing does not show) leaves the row as it is:
+    /// the next load waits for the user to scroll it away and back, instead of
+    /// chaining cache reads or server fetches on its own.
+    private(set) var loadMoreTrigger = 0
     /// Whether the list should end in a "load more" row.
     var canLoadMoreConversations: Bool {
         guard location.folder.conversationFolder != nil else { return false }
@@ -2078,6 +2086,8 @@ final class MailViewModel {
         let generation = reloadGeneration
         isLoadingMoreConversations = true
         defer { isLoadingMoreConversations = false }
+        let visibleBefore = presentedConversations.count
+        let cacheHadMore = cacheMayHaveMoreConversations
         if !cacheMayHaveMoreConversations {
             // A search that filtered the list down leaves this row on screen,
             // and it would keep pulling server pages on its own; server search
@@ -2101,6 +2111,10 @@ final class MailViewModel {
         }
         conversationListLimit += Self.conversationPageSize
         await reloadConversations()
+        guard isCurrentReload(location, generation) else { return }
+        let addedRows = presentedConversations.count > visibleBefore
+        let serverIsNext = cacheHadMore && !cacheMayHaveMoreConversations && searchQuery.isEmpty
+        if addedRows || serverIsNext { loadMoreTrigger &+= 1 }
     }
 
     /// The unread badges — only the counts something draws.

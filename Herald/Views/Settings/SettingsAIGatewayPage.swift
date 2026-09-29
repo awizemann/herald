@@ -17,6 +17,10 @@ struct AIGatewaySettingsPage: View {
         Group {
             if let model {
                 AIGatewaySettingsForm(model: model, breadcrumb: breadcrumb)
+            } else {
+                // A real view, not nothing: an empty Group never appears, so its
+                // onAppear would never build the model and the page stays blank.
+                Color.clear
             }
         }
         .onAppear {

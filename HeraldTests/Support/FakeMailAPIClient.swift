@@ -405,6 +405,9 @@ actor FakeMailAPIClient: MailAPIClient {
     private var parkedUpdates: [CheckedContinuation<Void, Never>] = []
     var parkedUpdateCount: Int { parkedUpdates.count }
     func holdUpdates() { holdsUpdates = true }
+    /// Parks only the NEXT `updateDraft`; later ones answer at once.
+    private var holdsOneUpdate = false
+    func holdNextUpdate() { holdsUpdates = true; holdsOneUpdate = true }
     func releaseUpdates() {
         holdsUpdates = false
         for parked in parkedUpdates { parked.resume() }
@@ -413,7 +416,10 @@ actor FakeMailAPIClient: MailAPIClient {
 
     func updateDraft(id: String, with input: DraftInput) async throws -> Draft {
         try composeGate()
-        if holdsUpdates { await withCheckedContinuation { parkedUpdates.append($0) } }
+        if holdsUpdates {
+            if holdsOneUpdate { holdsUpdates = false; holdsOneUpdate = false }
+            await withCheckedContinuation { parkedUpdates.append($0) }
+        }
         updatedDrafts.append(input)
         return Draft(
             id: id, version: (input.version ?? 1) + 1, updatedAt: MailFixtures.epoch,

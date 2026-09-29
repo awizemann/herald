@@ -990,7 +990,13 @@ final class ComposeViewModel {
         do {
             let saved = try await outbox.saveDraft(sent)
             savesInFlight -= 1
+            // Adopted even when closed: a discard parked on this CREATE needs
+            // the new server id to delete what it made.
             draft.adoptServerState(from: saved, sent: sent)
+            // A send (or discard) that finished while this save was on the
+            // wire consumed the draft: publishing the answer would put it back
+            // in the Drafts folder after the send reported it removed.
+            guard !isClosed else { return }
             // The cache learns about the draft the moment the server does, so the
             // Drafts folder shows what is being typed without waiting for a poll.
             publishDraftState()
@@ -1000,6 +1006,10 @@ final class ComposeViewModel {
         } catch {
             savesInFlight -= 1
             logger.warning("Draft autosave failed: \(error.logCode, privacy: .public)")
+            // Same race: a PATCH that 404s because the send consumed the draft
+            // is not this composer's failure, and one failing DURING the send
+            // must not overwrite the send's own status.
+            guard !isClosed, status != .sending else { return }
             fail(error, binding: binding)
         }
     }

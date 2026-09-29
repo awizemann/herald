@@ -15,8 +15,7 @@ first, then cut the release.
 Herald 1.0. The app is redesigned around domains — the way HQBase actually groups mailboxes —
 with a new sidebar, a rebuilt compose window, and a Settings experience to match. Everything
 else in this release is stability work: session recovery no longer traps you, sync races that
-could undo your own actions are closed, and long mailboxes load smoothly as you scroll. Herald
-now considers itself stable at 1.0.
+could undo your own actions are closed, and long mailboxes load as you scroll.
 
 ### Added
 - **Domains sidebar.** The sidebar now drills down by domain — an account card up top, then each
@@ -26,7 +25,7 @@ now considers itself stable at 1.0.
   Signatures pages, reachable from the domain's own row, plus a page for hiding, restoring and
   removing domains.
 - **Per-domain badge colour.** Each domain can carry its own badge colour override, shown on
-  every message from that domain in the list and reading pane.
+  that domain's mail in the list and reading pane.
 - **A dedicated Compose window** with a From picker: any address you can send from is one click
   away, each domain remembers its own default From, and a reply is locked to the exact address
   the original was sent to so a reply can't drift to a different domain by accident. Recipients
@@ -45,22 +44,21 @@ now considers itself stable at 1.0.
 - **Analytics:** `mailbox_color_changed` is gone along with per-mailbox colours; a new
   `scope_changed` event records moving between all-domains, a single domain, and a single
   mailbox.
-- Attachments can be saved straight to Downloads, and a Quick Look preview that outlives its
-  window is now released back to the right account instead of leaking.
+- **Save dialogs for attachments open in Downloads.**
 
 ### Fixed
 - **Session recovery no longer traps you in a consent loop**, and a dead session now heals
   itself with a re-auth banner rather than getting stuck. A refresh token is never re-spent: if
-  saving a freshly refreshed token to the Keychain fails, Herald keeps using the token it already
-  has instead of replaying the refresh and ending the session. A brief Keychain read/write hiccup
+  saving a freshly refreshed token to the Keychain fails, Herald uses the new token for that request
+  instead of replaying the refresh, which HQBase answers by ending the session. A brief Keychain read/write hiccup
   no longer costs you a sign-in later.
 - **A concurrent sync pass can no longer undo an action you just took.** Archiving, trashing,
   starring or marking read is now fenced against an in-flight sync, so a page landing mid-action
   can't roll your change back.
 - **A draft autosave that lands after you hit Send no longer resurrects the message.** A stray
   autosave answer arriving late is now ignored once the send has gone out.
-- The load-more row at the bottom of a long list only re-arms after a load that actually made
-  progress, instead of retriggering on every scroll.
+- **Quick Look previews of attachments no longer break** when the cached file was cleared from
+  under them; attachments are now cached in Application Support.
 
 ### Removed
 - **Per-mailbox colours.** Colour is now set per domain instead (see Added, above); the

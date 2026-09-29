@@ -396,6 +396,22 @@ extension MailStore {
     /// id plus a couple for the account, so 500 stays clear of it with room.
     static let labelPredicateChunkSize = 500
 
+    /// Whether ANY message of the thread carries ANY label — classification's
+    /// "never re-tag" check. Counts optimistic rows too, so a label the user is
+    /// applying right now already counts.
+    public func threadHasLabels(threadID: String, accountID: String) throws -> Bool {
+        var descriptor = FetchDescriptor<CachedLabelAssignment>(
+            predicate: #Predicate { $0.accountID == accountID && $0.threadID == threadID }
+        )
+        descriptor.fetchLimit = 1
+        do {
+            return try modelContext.fetchCount(descriptor) > 0
+        } catch {
+            logger.error("Thread label check failed: \(error.localizedDescription, privacy: .private)")
+            throw error
+        }
+    }
+
     /// The label ids on one MESSAGE (not its thread) — what the reading pane draws.
     public func labelIDs(messageID: String, accountID: String) throws -> [String] {
         do {

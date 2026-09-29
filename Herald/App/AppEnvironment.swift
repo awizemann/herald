@@ -745,12 +745,21 @@ final class AppEnvironment {
         self.store = store
         let engine = SyncEngine(api: api, store: store)
         let notifier = NewMailNotifier(center: notificationPoster, lookup: store)
+        let actions = MailActionService(api: api, store: store)
+        let secrets = KeychainStore()
+        let classification = ClassificationEngine(
+            store: store,
+            bodies: CachedOrFetchedBodySource(store: store, api: api),
+            labeler: actions,
+            makeClassifier: { EmailClassifier(client: AIGatewayClient(configuration: $0, secrets: secrets)) },
+            attemptLog: WorkflowAttemptLog(accountID: account.id, defaults: defaults)
+        )
         let viewModel = MailViewModel(
             accountID: account.id,
             accountLabel: account.label,
             api: api,
             store: store,
-            actions: MailActionService(api: api, store: store),
+            actions: actions,
             sync: engine,
             events: engine.events,
             defaults: defaults,
@@ -759,8 +768,23 @@ final class AppEnvironment {
             // here too, with its own throwaway suite).
             persistsNavigation: true,
             notifier: notifier,
+            classification: classification,
+            classificationSecrets: secrets,
             record: recordUsage
         )
+        // Not awaited: an install must not gain a suspension before the graph is
+        // published. The first label write is a model round trip away, and the
+        // engine replays a pause that beat the wiring.
+        Task {
+            await classification.setObservers(
+                onApplied: { [weak viewModel] threadID in
+                    await viewModel?.classificationApplied(threadID: threadID)
+                },
+                onPauseChanged: { [weak viewModel] reason in
+                    await MainActor.run { viewModel?.classificationPause = reason }
+                }
+            )
+        }
         // The badge is the SUM across accounts, so any account's count changing
         // re-reads all of them rather than trusting the number it was handed.
         viewModel.unreadCountDidChange = { [weak self] _ in

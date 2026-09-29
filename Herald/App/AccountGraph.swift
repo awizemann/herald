@@ -61,6 +61,8 @@ final class AccountGraph {
     /// purge.
     func stop() async {
         mail.stop()
+        // Queued classifications must not write labels behind a sign-out purge.
+        await mail.classification?.stop()
         // Before the engine: a socket still up would keep asking a stopping
         // engine for passes, and a superseded graph's socket left running is a
         // second connection against the server's three-per-user limit — the

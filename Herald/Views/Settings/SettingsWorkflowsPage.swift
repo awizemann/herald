@@ -52,6 +52,18 @@ struct DomainWorkflowsSettingsPage: View {
                         }
                     }
                 }
+                if let mail = environment.graphs[accountID]?.mail, let pause = mail.classificationPause {
+                    HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.sm) {
+                        Label(Self.pauseText(pause), systemImage: MailTheme.Symbol.warning)
+                            .textStyle(MailTheme.Typography.caption)
+                            .foregroundStyle(MailTheme.Color.warn)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Resume") {
+                            Task { await mail.classification?.resume() }
+                        }
+                        .buttonStyle(SettingsOutlineButtonStyle())
+                    }
+                }
                 if let warning = WorkflowPreferences.setupWarning(
                     accountID: accountID, domainID: item.id, labels: labels, in: defaults
                 ) {
@@ -112,6 +124,12 @@ struct DomainWorkflowsSettingsPage: View {
                 }
             }
         )
+    }
+
+    /// Why classification stopped for this session. Changing the AI Gateway
+    /// account, gateway or model resumes it by itself on the next new mail.
+    nonisolated static func pauseText(_ error: AIGatewayError) -> String {
+        "Classification is paused: \(AIGatewaySettings.message(for: error)) Fix it in AI Gateway settings, then resume."
     }
 
     /// Pure so the wording is assertable without a rendered page.

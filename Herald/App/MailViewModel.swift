@@ -124,6 +124,15 @@ final class MailViewModel {
     /// Posts new-mail banners for this account. `nil` in tests that are not about
     /// notifications, and in any build where the user turned them off.
     private let notifier: NewMailNotifier?
+    /// Classifies new mail (Workflows). `nil` in tests that are not about it.
+    /// Internal so the account graph can stop it on teardown.
+    let classification: ClassificationEngine?
+    /// Where the AI Gateway token is checked for, per pass that has rules on.
+    private let classificationSecrets: any SecretStore
+    /// Set when classification paused on a gateway-level failure (rejected
+    /// token, no credits, model not enabled, bot block) — the Workflows page
+    /// shows it. Raised once per pause, never per message.
+    var classificationPause: AIGatewayError?
     /// Called with ``badgeInboxUnread`` whenever the counts are recomputed — the
     /// Dock badge's only input. A closure rather than an observation loop
     /// so the badge updates exactly when the count does. Observation-ignored: no
@@ -962,12 +971,16 @@ final class MailViewModel {
         defaults: UserDefaults = .standard,
         persistsNavigation: Bool = false,
         notifier: NewMailNotifier? = nil,
+        classification: ClassificationEngine? = nil,
+        classificationSecrets: any SecretStore = KeychainStore(),
         record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in }
     ) {
         self.record = record
         self.defaults = defaults
         self.persistsNavigation = persistsNavigation
         self.notifier = notifier
+        self.classification = classification
+        self.classificationSecrets = classificationSecrets
         self.accountID = accountID
         self.accountLabel = accountLabel
         self.api = api
@@ -1699,6 +1712,8 @@ final class MailViewModel {
                 // Before the reloads: the banner is about what ARRIVED, and the
                 // reload path can take several store round trips.
                 await notifyNewMail(changes)
+                // Only decides and queues; the model calls run off this loop.
+                await classifyNewMail(changes)
                 await apply(changes)
             case .draftsChanged(let changes):
                 if !changes.isEmpty { passChangedAnything = true }
@@ -1770,6 +1785,24 @@ final class MailViewModel {
             accountLabel: accountLabel,
             silencedMailboxIDs: notificationSilencedMailboxIDs()
         )
+    }
+
+    /// Hands the pass to the classifier. The rules are resolved HERE, per pass,
+    /// like the notification switches: a Workflows toggle or a gateway change
+    /// applies to the very next poll.
+    private func classifyNewMail(_ changes: ChangeSet) async {
+        guard let classification, !changes.isBootstrap, !changes.inserted.isEmpty else { return }
+        let context = ClassificationContextBuilder.context(
+            accountID: accountID, domains: domains, labels: labels,
+            defaults: defaults, secrets: classificationSecrets
+        )
+        await classification.handle(changes, accountID: accountID, context: context)
+    }
+
+    /// The engine labelled a thread behind the user's back: redraw its chips.
+    func classificationApplied(threadID: String) async {
+        await reloadIndexAfterLabelChange()
+        await reloadSelectedMessageLabels()
     }
 
     /// Shows the conversation a clicked notification names.

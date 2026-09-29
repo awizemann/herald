@@ -256,7 +256,7 @@ extension MailViewModel {
     /// moved, so only the index is reloaded.
     ///
     /// The same either/or `applyLabelsChanged` makes, for the same reason.
-    private func reloadIndexAfterLabelChange() async {
+    func reloadIndexAfterLabelChange() async {
         if selectedLabelID != nil {
             await reloadConversations()
         } else {

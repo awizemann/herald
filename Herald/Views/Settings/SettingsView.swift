@@ -386,6 +386,8 @@ private struct SettingsDetail: View {
                 usage: environment.usage,
                 breadcrumb: route.breadcrumb(accountLabel: accountLabel, domainName: nil)
             )
+        case .aiGateway:
+            AIGatewaySettingsPage(breadcrumb: route.breadcrumb(accountLabel: accountLabel, domainName: nil))
         case .account:
             if let graph = environment.selectedGraph {
                 AccountSettingsPage(

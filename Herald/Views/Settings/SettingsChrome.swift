@@ -30,6 +30,9 @@ enum SettingsLayout {
     /// A domain badge inside a list row (the density previews).
     static let rowBadgeHeight: CGFloat = 16
     static let rowHeight: CGFloat = 30
+    /// AI Gateway page: the ID / custom-model fields and the token field.
+    static let idFieldWidth: CGFloat = 280
+    static let tokenFieldWidth: CGFloat = 200
 }
 
 /// One page of the detail pane: breadcrumb caption, serif title, then the

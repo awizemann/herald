@@ -23,6 +23,8 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
     case general
     case notifications
     case privacy
+    /// Where email classification requests go (Cloudflare AI Gateway).
+    case aiGateway
     case account
     case signatures
     case domain(MailDomain.ID, DomainSettingsPage)
@@ -37,7 +39,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
     /// The page this route draws, once resolved.
     func resolved(hasAccount: Bool, visibleDomainIDs: Set<MailDomain.ID>) -> SettingsRoute {
         switch self {
-        case .general, .notifications, .privacy:
+        case .general, .notifications, .privacy, .aiGateway:
             return self
         case .account, .signatures:
             return hasAccount ? self : .general
@@ -55,6 +57,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
         case .general: "General"
         case .notifications: "Notifications"
         case .privacy: "Privacy"
+        case .aiGateway: "AI Gateway"
         case .account: "Account"
         case .signatures: "Signatures"
         case .domain(_, let page): page.title
@@ -67,6 +70,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
         case .general: "slider.horizontal.3"
         case .notifications: "bell"
         case .privacy: "hand.raised"
+        case .aiGateway: "sparkles"
         case .account: "person.crop.circle"
         case .signatures: "signature"
         case .domain(_, let page): page.symbol
@@ -81,6 +85,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
         case .general: "general"
         case .notifications: "notifications"
         case .privacy: "privacy"
+        case .aiGateway: "aiGateway"
         case .account: "account"
         case .signatures: "signatures"
         case .domain(_, let page): "page.\(page.rawValue)"
@@ -94,7 +99,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
     func breadcrumb(accountLabel: String?, domainName: String?) -> String {
         var parts = ["Settings"]
         switch self {
-        case .general, .notifications, .privacy:
+        case .general, .notifications, .privacy, .aiGateway:
             parts.append("Herald")
         case .account, .signatures:
             if let accountLabel { parts.append(accountLabel) }
@@ -108,7 +113,7 @@ nonisolated enum SettingsRoute: Hashable, Sendable {
     /// The root level's groups, in sidebar order. Domains follow as their own
     /// section, built from the account's visible domains.
     static let rootGroups: [(title: String, routes: [SettingsRoute])] = [
-        ("Herald", [.general, .notifications, .privacy]),
+        ("Herald", [.general, .notifications, .privacy, .aiGateway]),
         ("Account", [.account, .signatures]),
     ]
 }

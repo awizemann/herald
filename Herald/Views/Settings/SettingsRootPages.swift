@@ -511,6 +511,13 @@ struct PrivacySettingsPane: View {
                         .padding(.horizontal, MailTheme.Spacing.lg)
                 }
             }
+            SettingsSection(title: "Email classification") {
+                SettingsCard {
+                    SettingsRow(title: "What is sent", note: Self.classificationDisclosure)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier(AccessibilityID.Settings.privacyClassification)
+                }
+            }
         }
         .task {
             // Built here, not in the parent's body, and kept across passes.
@@ -544,6 +551,14 @@ struct PrivacySettingsPane: View {
             and nothing further is sent, including anything queued.
             """
     }
+
+    /// Classification is opt-in per domain; this is the whole of what leaves the Mac for it.
+    static let classificationDisclosure = """
+        When classification is turned on for a domain, the sender, subject and message text of \
+        new mail in that domain are sent to the Cloudflare AI Gateway configured in Settings › AI \
+        Gateway, using your own Cloudflare account. Nothing is sent for domains where it is off, \
+        or while no gateway is set up.
+        """
 
     static let unavailableExplanation = "Usage analytics aren’t included in this build."
 }

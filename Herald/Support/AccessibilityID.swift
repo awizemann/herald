@@ -73,7 +73,7 @@ nonisolated enum AccessibilityID {
         /// The account card's switcher menu.
         static let accountCard = "settings.accountCard"
         /// Each sidebar item is `itemPrefix + <route key>` — `general`,
-        /// `notifications`, `privacy`, `account`, `signatures`,
+        /// `notifications`, `privacy`, `aiGateway`, `account`, `signatures`,
         /// `domain.<domainID>` at the root, and `page.<page>` (`overview`,
         /// `mailboxes`, `signatures`, `remove`) inside a domain.
         static let itemPrefix = "settings.item."
@@ -81,6 +81,14 @@ nonisolated enum AccessibilityID {
         static let back = "settings.back"
         /// The detail pane's serif title.
         static let pageTitle = "settings.pageTitle"
+        static let aiGatewayAccountID = "settings.aiGateway.accountID"
+        static let aiGatewayGatewayID = "settings.aiGateway.gatewayID"
+        static let aiGatewayToken = "settings.aiGateway.token"
+        static let aiGatewayRemoveToken = "settings.aiGateway.removeToken"
+        static let aiGatewayModel = "settings.aiGateway.model"
+        static let aiGatewayCustomModel = "settings.aiGateway.customModel"
+        static let aiGatewayTest = "settings.aiGateway.test"
+        static let privacyClassification = "settings.privacy.classification"
         static let density = "settings.general.density"
         static let syncNow = "settings.account.syncNow"
         /// Each colour swatch is `tintSwatchPrefix + <token name>`.

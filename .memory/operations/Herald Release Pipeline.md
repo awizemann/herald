@@ -7,7 +7,7 @@ source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: true
 source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
 created: 2026-08-16
-updated: 2026-09-28
+updated: 2026-09-29
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -84,3 +84,10 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 - [fact] gh-pages now carries a static product site (index.html, style.css, img/, fonts/ — self-hosted OFL Geist + Source Serif 4 with their OFL texts) beside `appcast.xml` and `.nojekyll`, served at https://awizemann.github.io/herald/. Hand-written, no build step, no trackers. Screenshots are crops of the design-handoff mocks (sample data) #site
 - [rule] release.sh must keep touching ONLY `appcast.xml` (+ any `*.delta`) in the gh-pages worktree — it does today (`cp` then `git add -A` on a checkout of origin/gh-pages, so site files survive). Never switch it to an orphan/clean-slate publish or `rm -rf` of the branch contents, or the site disappears #release #site
 - [fact] Handoff mocks use sample data; the owner confirmed 2026-09-28 the ariwize.com / wizemann.studio domains are fictional and fine to publish. Site and README heroes use the cropped `window.jpg` (no person name or email address) #privacy
+
+
+
+## Update (2026-09-29 — v1.0.0 shipped)
+- [done] v1.0.0 released (build 12): redesign around domains, compose V6 (From picker, per-domain default From, reply From lock), attachment cards + Quick Look cache fix, lazy list paging, optimistic-action fence for conversation rows/tombstoning, late-autosave-after-send fix, draft preview in the reading pane, one design-system row selection in every mail list, product site on gh-pages. Notarized + stapled, `spctl` accepted, uploaded zip byte-identical to the signed appcast enclosure (length 5149901). README + CHANGELOG rewritten for 1.0 #release
+- [gotcha] The v1.0.0 run died AFTER `gh release create` and BEFORE the appcast push: gh-pages was checked out in another worktree (the site's), so `git worktree add -B gh-pages` refused. The appcast was published by hand from that worktree. Fixed in a1e3e26 — release.sh now adds a DETACHED worktree at origin/gh-pages and pushes `HEAD:refs/heads/gh-pages`. Recovery if it recurs: copy `releases/v<ver>/appcast.xml` into a gh-pages checkout, commit, push #release
+- [gotcha] The session's auto-mode classifier blocks an agent from running `release.sh` (public publish) even with the owner's go; the owner runs it from their terminal #release

@@ -29,6 +29,11 @@
 
 ## Done
 
+- [x] WF5: Activity log, live end-to-end verify, docs (id: t-16c493b9) (added: 2026-09-29)
+- [x] WF4: Classification engine on new mail (id: t-fce74b97) (added: 2026-09-29) (priority: high)
+- [x] WF3: Domain Workflows page — classification rules (id: t-a60f690b) (added: 2026-09-29) (priority: high)
+- [x] WF2: AI Gateway settings page + privacy disclosure (id: t-b1db8fc6) (added: 2026-09-29) (priority: high)
+- [x] WF1: AI Gateway client + classifier core (HeraldKit) (id: t-9b101640) (added: 2026-09-29) (priority: high)
 - [x] 1.0: GitHub Pages product site on gh-pages (id: t-b9b3c8be) (added: 2026-09-28)
 - [x] 1.0: draft preview in reading pane + consistent list selection (id: t-658665ae) (added: 2026-09-29) (priority: high)
 - [x] 1.0: hardening pass (UI suite 5x, upgrade from 0.5.1, 1.3.4 compat) (id: t-ddb84f9e) (added: 2026-09-28)

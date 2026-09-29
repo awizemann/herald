@@ -313,4 +313,108 @@ struct DraftsFolderTests {
         #expect(MailViewModel.recipientsLabel(for: empty) == "No recipients")
         #expect(MailViewModel.subjectLabel(for: empty) == "(No subject)")
     }
+
+    // MARK: - Reading-pane preview (t-658665ae)
+
+    /// Fails if selecting a draft leaves the pane on "Nothing selected" — the
+    /// preview must carry the draft's own subject, recipients, attachments and
+    /// a body rendered by the shared, remote-blocking document emitter.
+    @Test("Selecting a draft resolves its preview from the cache")
+    func selectingDraftResolvesPreview() async throws {
+        let harness = try await DraftHarness.make()
+        let draft = Draft(
+            id: "dft_p",
+            version: 2,
+            updatedAt: Date(timeIntervalSince1970: 5_000),
+            attachments: [DraftAttachment(id: "att_1", filename: "plan.pdf", contentType: "application/pdf", sizeBytes: 42)],
+            content: DraftInput(
+                mailboxID: "mbA", from: "sales@acme.co", to: ["erik@halvorsen.no"], cc: ["dana@acme.co"],
+                subject: "Proposal", text: "plain fallback", html: "<p>Hi Erik, three phases</p>"
+            )
+        )
+        try await harness.seed([draft, DraftHarness.draft(id: "dft_other", subject: "Other", text: "OTHER BODY")])
+        harness.model.selectFolder(.drafts)
+        try await wait("listed", until: { harness.model.drafts.count == 2 })
+
+        harness.model.selectedDraftID = "dft_p"
+        try await wait("preview resolved", until: { harness.model.selectedDraftPreview?.id == "dft_p" })
+
+        let preview = try #require(harness.model.selectedDraftPreview)
+        #expect(preview.subjectLabel == "Proposal")
+        #expect(preview.mailboxID == "mbA")
+        #expect(preview.recipientLines == ["To erik@halvorsen.no", "Cc dana@acme.co"])
+        #expect(preview.attachments.map(\.filename) == ["plan.pdf"])
+        #expect(preview.body.html.contains("Hi Erik, three phases"))
+        #expect(!preview.body.html.contains("plain fallback"), "HTML wins when the draft has it")
+        #expect(preview.body.blocksRemote && !preview.body.offersRemoteConsent)
+
+        // Moving to another draft swaps the preview — never the old one under the new row.
+        harness.model.selectedDraftID = "dft_other"
+        #expect(harness.model.selectedDraftPreview == nil)
+        try await wait("swapped", until: { harness.model.selectedDraftPreview?.id == "dft_other" })
+        let other = try #require(harness.model.selectedDraftPreview)
+        #expect(other.body.html.contains("OTHER BODY"), "text-only draft renders its plain text")
+        #expect(other.recipientLines == ["To ada@example.net"])
+    }
+
+    @Test("An empty draft previews as (No subject) with no recipient lines")
+    func emptyDraftPreview() {
+        let preview = DraftPreview(Draft(
+            id: "e", version: 1, updatedAt: .now, attachments: [], content: DraftInput()
+        ))
+        #expect(preview.subjectLabel == "(No subject)")
+        #expect(preview.recipientLines.isEmpty)
+        #expect(preview.mailboxID == nil)
+    }
+
+    @Test("Deselecting a draft clears the preview")
+    func deselectClearsPreview() async throws {
+        let harness = try await DraftHarness.make()
+        try await harness.seed([DraftHarness.draft(id: "dft_1")])
+        harness.model.selectFolder(.drafts)
+        try await wait("listed", until: { harness.model.drafts.count == 1 })
+        harness.model.selectedDraftID = "dft_1"
+        try await wait("preview", until: { harness.model.selectedDraftPreview != nil })
+
+        harness.model.selectedDraftID = nil
+
+        #expect(harness.model.selectedDraftPreview == nil)
+    }
+
+    @Test("A scope that no longer lists the draft clears the preview")
+    func scopeChangeClearsPreview() async throws {
+        let harness = try await DraftHarness.make()
+        try await harness.seed([DraftHarness.draft(id: "dft_1")]) // mailbox mbA
+        harness.model.selectFolder(.drafts)
+        try await wait("listed", until: { harness.model.drafts.count == 1 })
+        harness.model.selectedDraftID = "dft_1"
+        try await wait("preview", until: { harness.model.selectedDraftPreview != nil })
+
+        harness.model.navigate(to: .init(scope: .mailbox("mbB"), folder: .drafts, labelID: nil))
+        try await wait("preview cleared", until: { harness.model.selectedDraftPreview == nil })
+
+        #expect(harness.model.selectedDraftID == nil)
+    }
+
+    @Test("A draft deleted elsewhere clears the preview; an autosave refreshes it")
+    func externalChangesReachThePreview() async throws {
+        let harness = try await DraftHarness.make()
+        try await harness.seed([DraftHarness.draft(id: "dft_1", subject: "Before")])
+        harness.model.selectFolder(.drafts)
+        try await wait("listed", until: { harness.model.drafts.count == 1 })
+        harness.model.selectedDraftID = "dft_1"
+        try await wait("preview", until: { harness.model.selectedDraftPreview?.subject == "Before" })
+
+        await harness.model.applyDraftCacheEvent(.saved(DraftHarness.draft(id: "dft_1", version: 2, subject: "After")))
+        #expect(harness.model.selectedDraftPreview?.subject == "After", "an autosave shows at once")
+
+        // Sent or deleted from another device: the poll reconciles it away.
+        try await harness.store.reconcileDrafts([], accountID: DraftHarness.account)
+        await harness.store.releaseOpenDraft(id: "dft_1", accountID: DraftHarness.account)
+        try await harness.store.reconcileDrafts([], accountID: DraftHarness.account)
+        await harness.model.reloadDrafts()
+
+        #expect(harness.model.selectedDraftID == nil)
+        #expect(harness.model.selectedDraftPreview == nil)
+    }
 }

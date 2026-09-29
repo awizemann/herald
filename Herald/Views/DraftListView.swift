@@ -92,14 +92,13 @@ struct DraftRow: View {
             VStack(alignment: .leading, spacing: ListColumn.Layout.lineGap) {
                 HStack(spacing: ListColumn.Layout.attributionGap) {
                     if !attribution.isEmpty {
-                        RowAttributionView(attribution: attribution, tint: accountTint, isSelected: isSelected)
+                        RowAttributionView(attribution: attribution, tint: accountTint)
                     }
-                    // `danger` names what the row IS; on a selected row it
-                    // yields to the selection's own text colour, since a fixed
-                    // red on the accent fill would not read.
+                    // `danger` names what the row IS — selected or not (the
+                    // `select` fill keeps it legible; handoff 5a-3).
                     Text(Self.senderTitle)
                         .textStyle(MailTheme.Typography.bodyMedium)
-                        .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.Color.danger))
+                        .foregroundStyle(MailTheme.Color.danger)
                         .lineLimit(1)
                     if metrics.subjectInline {
                         Text(MailViewModel.subjectLabel(for: draft))
@@ -150,7 +149,7 @@ struct DraftRow: View {
         .padding(.horizontal, ListColumn.Layout.rowHorizontalPadding)
         .frame(minHeight: minHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .selectionOutline(isSelected)
+        .mailRowSelection(isSelected)
         // A count-2 tap, not the count-1 gesture that raced List's own selection
         // in issue #4: a double click still lets the first click through to the
         // list, so the row selects and then opens.

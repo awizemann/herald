@@ -29,6 +29,9 @@ nonisolated struct UITestLaunchConfiguration: Sendable, Equatable {
         case oneAccount
         /// Two accounts on two DIFFERENT origins (identity is origin-keyed).
         case twoAccounts
+        /// ``oneAccount`` plus a few server drafts (one with no mailbox), for
+        /// the Drafts folder and its reading-pane preview.
+        case oneAccountWithDrafts
     }
 
     var scenario: Scenario

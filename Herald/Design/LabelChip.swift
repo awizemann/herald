@@ -38,9 +38,6 @@ struct LabelChip: View {
 struct LabelChipRow: View {
     let labels: [MailLabel]
     var limit: Int = MailTheme.maxRowLabelChips
-    /// The row it sits on is selected: the "+n" chip's neutral fill turns
-    /// hierarchical so its `.secondary` count stays readable on the selection.
-    var isSelected = false
 
     var body: some View {
         if !labels.isEmpty {
@@ -55,7 +52,7 @@ struct LabelChipRow: View {
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, MailTheme.Spacing.xs)
                         .padding(.vertical, MailTheme.Spacing.xxs)
-                        .background(MailTheme.rowChipBackground(isSelected: isSelected), in: Capsule())
+                        .background(MailTheme.chipBackground, in: Capsule())
                         .accessibilityHidden(true)
                 }
                 Spacer(minLength: 0)

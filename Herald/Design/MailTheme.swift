@@ -157,42 +157,24 @@ enum MailTheme {
 
     /// Background of a neutral chip (attachment, message count) — the design's
     /// neutral chip fill. One token, so every chip in the app moves together.
-    /// Fixed and opaque, so NOT for a chip on a selected `List` row — see
-    /// ``rowChipBackground(isSelected:)``.
     static let chipBackground: AnyShapeStyle = AnyShapeStyle(Color.lineSoft)
 
-    /// The neutral chip fill for a chip drawn INSIDE a `List` row (the count
-    /// pill, the "+n" label overflow). Unselected it is ``chipBackground``; on
-    /// a selected row it turns hierarchical (`.quaternary`), which flips with
-    /// the selection like the chip's `.secondary` text does — the opaque
-    /// `lineSoft` stayed near-white under white text on the accent fill.
-    static func rowChipBackground(isSelected: Bool) -> AnyShapeStyle {
-        isSelected ? AnyShapeStyle(.quaternary) : chipBackground
-    }
-
-    /// Fill behind a selected row in a list that is not a `List`.
+    /// Fill behind a selected mail row — every list of mail rows, `List` or
+    /// not (`View.mailRowSelection`), focused or not (handoff §3.1 "Selected =
+    /// `select` fill").
     static let selectionHighlight = Color.select
 
     /// Border width for that selection when the user asked for shape as well as
     /// colour (Differentiate Without Color).
     static let selectionBorderWidth: CGFloat = 1
 
-    // Text drawn INSIDE `List` rows (conversation, draft, thread-message and
-    // sidebar rows) uses the HIERARCHICAL styles — `.primary` / `.secondary` /
-    // `.tertiary` for the ink / ink2 / ink3 roles — never the fixed ink tokens:
-    // only the system styles flip to the emphasised (white) variant on a
-    // selected row, and a fixed ink would stay dark on the blue selection.
-    // Surfaces outside a `List` (the list header band, empty states, the
-    // thread header) read `Color.ink*` directly.
-    //
-    // Anything else FIXED in a row must swap on `isSelected` too: the unread
-    // dot and the thread avatar's dot (accent → `.primary`, the avatar's
-    // background ring dropped), a draft's red "Draft", the domain badge's
-    // letters (`ink` → `.primary`, ``DomainBadge/isSelected``), the "No
-    // mailbox" tag's `line` outline, and neutral chip fills
-    // (``rowChipBackground(isSelected:)``). The one exception is a run that
-    // brings its OWN opaque fill — a search match — which keeps a fixed ink on
-    // it (see ``searchMatchForeground``).
+    // Mail rows (conversation, draft, thread-message) no longer sit on the
+    // system accent selection: `View.mailRowSelection` switches the native
+    // highlight off and draws `selectionHighlight`, a light fill on which
+    // every row colour — hierarchical styles, the accent unread dot, the red
+    // "Draft", badges and chip fills — reads as-is, so nothing swaps on
+    // selection any more. The SIDEBAR keeps the native sidebar selection, and
+    // its badges still flip (``DomainBadge/isSelected``).
 
     // MARK: Search
 

@@ -126,10 +126,11 @@ final class UITestHarness {
         accountStore = store
         let seeded: ArraySlice<FakeHQBase> = switch configuration.scenario {
         case .signedOut: servers.prefix(0)
-        case .oneAccount: servers.prefix(1)
+        case .oneAccount, .oneAccountWithDrafts: servers.prefix(1)
         case .twoAccounts: servers.prefix(2)
         }
         for server in seeded { Self.seedSignedInAccount(on: server, into: store) }
+        if configuration.scenario == .oneAccountWithDrafts { servers.first?.seedDrafts() }
         for server in servers {
             server.setState(configuration.serverState)
             server.setObserver { relay.fire() }

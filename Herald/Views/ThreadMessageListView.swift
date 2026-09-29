@@ -174,8 +174,7 @@ struct ThreadMessageRow: View {
             ThreadAvatar(
                 initials: ListColumn.initials(message.fromAddress),
                 tint: isOwn ? accountTint : nil,
-                isUnread: message.isUnread,
-                isSelected: isSelected
+                isUnread: message.isUnread
             )
 
             VStack(alignment: .leading, spacing: ListColumn.Layout.messageLineGap) {
@@ -215,7 +214,7 @@ struct ThreadMessageRow: View {
         .padding(.horizontal, ListColumn.Layout.rowHorizontalPadding)
         .frame(minHeight: minHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .selectionOutline(isSelected)
+        .mailRowSelection(isSelected)
         .accessibilityAction(named: message.isStarred ? "Unstar" : "Star", toggleStar)
     }
 
@@ -238,16 +237,11 @@ struct ThreadMessageRow: View {
 /// messages. The unread dot sits on its top-left edge, ringed in the list
 /// background so it reads against either fill. Decorative — the row summary
 /// speaks sender and unread state.
-///
-/// On a SELECTED row the dot turns `.primary` (white on the focused accent
-/// selection, like ``UnreadDot``) and loses its ring: a `bg`-coloured ring
-/// would cut a pale hole out of the selection fill around it.
 struct ThreadAvatar: View {
     let initials: String
     /// Non-nil for the user's own message.
     let tint: MailTheme.AccountTint?
     let isUnread: Bool
-    var isSelected = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -261,11 +255,11 @@ struct ThreadAvatar: View {
                 .frame(width: ListColumn.Layout.avatarDiameter, height: ListColumn.Layout.avatarDiameter)
             if isUnread {
                 Circle()
-                    .fill(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.unreadIndicator))
+                    .fill(MailTheme.unreadIndicator)
                     .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
                     .background(
                         Circle()
-                            .fill(isSelected ? AnyShapeStyle(.clear) : AnyShapeStyle(MailTheme.Color.bg))
+                            .fill(MailTheme.Color.bg)
                             .padding(-ListColumn.Layout.dotRingWidth)
                     )
                     // The design's top −2 / left −4.

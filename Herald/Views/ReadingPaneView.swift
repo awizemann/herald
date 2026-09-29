@@ -21,7 +21,15 @@ struct ReadingPaneView: View {
 
     var body: some View {
         Group {
-            if model.selectedThreadID == nil {
+            if model.isShowingDrafts {
+                // Drafts are not conversations: the pane previews the selected
+                // draft from the cache (handoff 5a-3) instead.
+                if let preview = model.selectedDraftPreview {
+                    DraftPreviewPane(model: model, preview: preview)
+                } else {
+                    ReadingPaneEmptyState()
+                }
+            } else if model.selectedThreadID == nil {
                 ReadingPaneEmptyState()
             } else {
                 content
@@ -182,11 +190,27 @@ nonisolated enum ReadingPaneMailboxAddress {
         tintName: String? = nil,
         in defaults: UserDefaults
     ) -> Info {
-        let word = word(for: message.folder)
         // `mailboxID` is nil only for a catch-all message sync hasn't assigned
         // to a mailbox yet (see `MessageSummary.mailboxID`'s doc comment) — rare,
         // but it must still read as something rather than crash the lookup.
-        guard let mailboxID = message.mailboxID,
+        resolve(
+            mailboxID: message.mailboxID, folder: message.folder, mailboxes: mailboxes,
+            accountID: accountID, tintName: tintName, in: defaults
+        )
+    }
+
+    /// The same chip for anything that names its mailbox by id — a draft
+    /// (folder `.drafts`, so "From"; `nil` mailbox → the "No mailbox" tag).
+    static func resolve(
+        mailboxID: String?,
+        folder: MailFolder,
+        mailboxes: [Mailbox],
+        accountID: String,
+        tintName: String? = nil,
+        in defaults: UserDefaults
+    ) -> Info {
+        let word = word(for: folder)
+        guard let mailboxID,
               let mailbox = mailboxes.first(where: { $0.id == mailboxID })
         else {
             return Info(word: word, address: "No mailbox", badge: nil)
@@ -670,5 +694,118 @@ private struct AttachmentBar: View {
         guard let pinned = pinnedPreview else { return }
         pinnedPreview = nil
         Task { await AttachmentFile.shared.unpin(pinned.id, accountID: pinned.accountID) }
+    }
+}
+
+/// The selected draft, previewed (handoff screenshot 5a-3; README §3.1 "Drafts
+/// and Sent say From in place of To"). Built from the same pieces as a message:
+/// the serif subject, the sender block with the domain-badged address chip,
+/// the shared web document for the body and the attachment cards — display-only
+/// here, since a draft's files live on the server draft, not a message.
+private struct DraftPreviewPane: View {
+    @Bindable var model: MailViewModel
+    let preview: DraftPreview
+
+    var body: some View {
+        VStack(spacing: 0) {
+            DraftPreviewHeader(
+                preview: preview,
+                mailboxAddress: ReadingPaneMailboxAddress.resolve(
+                    mailboxID: preview.mailboxID, folder: .drafts, mailboxes: model.monogramMailboxes,
+                    accountID: model.accountID, tintName: model.accountTint?.name, in: model.observedDefaults
+                ),
+                edit: { model.openDraft(preview.id) }
+            )
+            Rectangle()
+                .fill(MailTheme.Color.lineSoft)
+                .frame(height: 1)
+                .padding(.horizontal, ReadingPaneView.horizontalPadding)
+                .padding(.top, MailTheme.Spacing.xl)
+            MessageWebView(body: preview.body)
+                .padding(.horizontal, ReadingPaneEdgeAlignment.webViewInset)
+            if !preview.attachments.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: MailTheme.Spacing.sm) {
+                    HStack(spacing: MailTheme.Spacing.sm) {
+                        Image(systemName: MailTheme.Symbol.attachment)
+                            .accessibilityHidden(true)
+                        Text(ReadingPaneAttachments.summary(count: preview.attachments.count))
+                            .textStyle(MailTheme.Typography.caption)
+                    }
+                    .foregroundStyle(MailTheme.Color.ink3)
+                    AttachmentFlowLayout(spacing: MailTheme.Spacing.sm, maxItemWidth: AttachmentCard.maxWidth) {
+                        ForEach(preview.attachments) { attachment in
+                            AttachmentCard(
+                                filename: attachment.filename,
+                                contentType: attachment.contentType,
+                                sizeBytes: attachment.sizeBytes
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, MailTheme.Spacing.lg)
+                .padding(.vertical, MailTheme.Spacing.md)
+            }
+        }
+    }
+}
+
+private struct DraftPreviewHeader: View {
+    let preview: DraftPreview
+    let mailboxAddress: ReadingPaneMailboxAddress.Info
+    let edit: () -> Void
+
+    private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MailTheme.Spacing.xl) {
+            HStack(alignment: .firstTextBaseline, spacing: MailTheme.Spacing.md) {
+                Text(preview.subjectLabel)
+                    .textStyle(MailTheme.Typography.title)
+                    .foregroundStyle(MailTheme.Color.ink)
+                    .lineLimit(2)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: MailTheme.Spacing.sm)
+                Button("Edit", action: edit)
+                    .help("Open this draft in the composer")
+                    .accessibilityHint("Opens the draft for editing")
+            }
+            HStack(alignment: .center, spacing: MailTheme.Spacing.md) {
+                ZStack {
+                    Circle().fill(MailTheme.Color.lineSoft)
+                    Text(String(DraftRow.senderTitle.prefix(1)))
+                        .textStyle(MailTheme.Typography.headline)
+                        .foregroundStyle(MailTheme.Color.ink2)
+                }
+                .frame(width: SelectedMessageHeader.avatarDiameter, height: SelectedMessageHeader.avatarDiameter)
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: MailTheme.Spacing.xxs) {
+                    Text(DraftRow.senderTitle)
+                        .textStyle(MailTheme.Typography.headline)
+                        .foregroundStyle(MailTheme.Color.danger)
+                        .lineLimit(1)
+                    AddressChip(info: mailboxAddress)
+                    ForEach(preview.recipientLines, id: \.self) { line in
+                        Text(line)
+                            .textStyle(MailTheme.Typography.snippet)
+                            .foregroundStyle(MailTheme.Color.ink2)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer()
+                Text(preview.updatedAt, format: Self.dateFormat)
+                    .textStyle(MailTheme.Typography.meta)
+                    .foregroundStyle(MailTheme.Color.ink3)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(DraftRow.senderTitle)
+            .accessibilityValue(
+                (["\(mailboxAddress.word) \(mailboxAddress.address)"] + preview.recipientLines
+                    + [RowDateFormatter.full(preview.updatedAt)]).joined(separator: ", ")
+            )
+        }
+        .padding(.horizontal, ReadingPaneView.horizontalPadding)
+        .padding(.top, MailTheme.Spacing.xxxl)
     }
 }

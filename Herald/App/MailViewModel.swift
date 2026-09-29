@@ -657,7 +657,16 @@ final class MailViewModel {
     /// The Drafts badge for the current scope. Counted in the store
     /// (`fetchCount`), never by loading rows.
     var draftCount = 0
-    var selectedDraftID: String?
+    var selectedDraftID: String? {
+        didSet { if oldValue != selectedDraftID { loadSelectedDraftPreview() } }
+    }
+    /// What the reading pane shows for the selected draft (see
+    /// `MailViewModel+Drafts.swift`). A Sendable value resolved from the cache —
+    /// `nil` while nothing is selected or the draft is gone.
+    var selectedDraftPreview: DraftPreview?
+    /// The in-flight preview resolution, owned so a newer selection (and
+    /// ``stop()``) can cancel it.
+    @ObservationIgnored var draftPreviewTask: Task<Void, Never>?
 
     /// Instrumentation, same contract as the conversation counter: it exists so
     /// "the drafts list reloaded exactly once" is assertable.
@@ -974,6 +983,7 @@ final class MailViewModel {
     func stop() {
         eventTask?.cancel()
         reloadTask?.cancel()
+        draftPreviewTask?.cancel()
         threadTask?.cancel()
         detailTask?.cancel()
         markReadTask?.cancel()

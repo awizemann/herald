@@ -1,3 +1,4 @@
+import AppKit
 import HeraldKit
 import SwiftUI
 
@@ -190,24 +191,20 @@ struct ListEmptyStateView: View {
 /// "No mailbox" tag. Hidden from VoiceOver — the row's combined summary
 /// speaks the attribution itself (`ListColumn.Attribution.spoken`).
 ///
-/// Drawn inside `List` rows, so its text uses the HIERARCHICAL styles, which
-/// flip with the system selection (the R1 List-row rule); the badge and the
-/// "No mailbox" tag, which carry fixed colours, swap on `isSelected`.
 struct RowAttributionView: View {
     let attribution: ListColumn.Attribution
     let tint: MailTheme.AccountTint?
-    var isSelected = false
 
     var body: some View {
         HStack(spacing: ListColumn.Layout.attributionGap) {
             if attribution.isUnassigned {
-                NoMailboxTag(isSelected: isSelected)
+                NoMailboxTag()
             } else {
                 if let monogram = attribution.monogram, let tint {
                     DomainBadge(
                         monogram: monogram,
                         tint: DomainBadgeResolver.tint(domainOverride: attribution.tintOverride, accountTint: tint),
-                        size: .row, isSelected: isSelected
+                        size: .row
                     )
                 }
                 if let mailbox = attribution.mailbox {
@@ -229,12 +226,7 @@ struct RowAttributionView: View {
 /// "No mailbox" — a draft (or an unassigned message) that no mailbox owns,
 /// where a badge and a mailbox would otherwise sit. Outlined, never filled:
 /// it names an absence, not an account.
-///
-/// The outline is the fixed `line` token, which vanishes on the focused accent
-/// selection; a selected row draws it `.tertiary` instead, which flips with
-/// the selection like the tag's own text.
 struct NoMailboxTag: View {
-    var isSelected = false
 
     var body: some View {
         Text(ListColumn.noMailboxTitle)
@@ -243,15 +235,14 @@ struct NoMailboxTag: View {
             .padding(.horizontal, MailTheme.Spacing.xs)
             .overlay {
                 RoundedRectangle(cornerRadius: MailTheme.Radius.badgeSmall)
-                    .strokeBorder(isSelected ? AnyShapeStyle(.tertiary) : AnyShapeStyle(MailTheme.Color.line))
+                    .strokeBorder(MailTheme.Color.line)
             }
     }
 }
 
 /// The 1px border a selected row adds under Differentiate Without Color, so
-/// the selection is a shape and not only a fill. `.primary` rather than the
-/// accent: inside a focused `List` the system selection fill IS the accent,
-/// and an accent border on it would vanish exactly where it is needed.
+/// the selection is a shape and not only a fill — the handoff's 1px accent
+/// border, drawn on the same inset rounded rect as the `select` fill.
 struct SelectionOutline: ViewModifier {
     let isSelected: Bool
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
@@ -260,7 +251,8 @@ struct SelectionOutline: ViewModifier {
         content.overlay {
             if isSelected, differentiateWithoutColor {
                 RoundedRectangle(cornerRadius: MailTheme.Radius.md)
-                    .strokeBorder(.primary, lineWidth: MailTheme.selectionBorderWidth)
+                    .strokeBorder(MailTheme.Color.accent, lineWidth: MailTheme.selectionBorderWidth)
+                    .padding(.horizontal, MailTheme.Spacing.xs)
                     .accessibilityHidden(true)
             }
         }
@@ -270,5 +262,62 @@ struct SelectionOutline: ViewModifier {
 extension View {
     func selectionOutline(_ isSelected: Bool) -> some View {
         modifier(SelectionOutline(isSelected: isSelected))
+    }
+
+    /// THE selected-row look for every list of mail rows (conversations, label
+    /// and search listings, a thread's messages, drafts): the handoff's
+    /// `select` fill at radius md (+ the Differentiate Without Color outline),
+    /// the same focused or not — instead of AppKit's accent selection, which
+    /// painted the row dark blue with white text in a focused list.
+    ///
+    /// The `List` keeps its selection binding (keyboard navigation, VoiceOver
+    /// selection, type-select all still come from it); only the native
+    /// highlight is switched off, by ``NativeListHighlightSuppressor``.
+    func mailRowSelection(_ isSelected: Bool) -> some View {
+        modifier(MailRowSelection(isSelected: isSelected))
+    }
+}
+
+struct MailRowSelection: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: MailTheme.Radius.md)
+                    .fill(isSelected ? MailTheme.selectionHighlight : .clear)
+                    .padding(.horizontal, MailTheme.Spacing.xs)
+                    .accessibilityHidden(true)
+            }
+            .background(NativeListHighlightSuppressor().accessibilityHidden(true))
+            .selectionOutline(isSelected)
+    }
+}
+
+/// Turns off the enclosing `NSTableView`'s own selection highlight, so a
+/// SwiftUI `List` of mail rows draws only ``MailRowSelection``'s fill.
+///
+/// SwiftUI has no API for this on macOS: `.listRowBackground` draws UNDER the
+/// native highlight, and `.selectionDisabled` drops the selection itself. The
+/// table view is the row's ancestor, reached once the row is in a window.
+/// Rows with the suppressor also never get the emphasized background style,
+/// so their hierarchical text keeps its ink colours instead of turning white.
+struct NativeListHighlightSuppressor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { SuppressingView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class SuppressingView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            var ancestor = superview
+            while let view = ancestor, !(view is NSTableView) { ancestor = view.superview }
+            if let table = ancestor as? NSTableView, table.selectionHighlightStyle != .none {
+                table.selectionHighlightStyle = .none
+            }
+        }
+
+        // Purely a probe: never takes a click or appears to VoiceOver.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
     }
 }

@@ -196,6 +196,27 @@ nonisolated final class FakeHQBase: @unchecked Sendable {
     }
 
     /// A few Inbox messages from different senders, newest first; the first two unread.
+    /// Three drafts in the shape of handoff screenshot 5a-3: one tied to the
+    /// mailbox with an HTML body and recipients, two tied to no mailbox.
+    func seedDrafts(now: Date = Date()) {
+        state.withLock { state in
+            var proposal = DraftRecord(id: "drf_seed_1", version: 1, updatedAt: now.addingTimeInterval(-600))
+            proposal.mailboxId = mailboxID
+            proposal.from = mailboxAddress
+            proposal.to = ["erik@halvorsen.no"]
+            proposal.cc = ["dana@example.net"]
+            proposal.subject = "Proposal \u{2014} Halvorsen rebrand"
+            proposal.text = "Hi Erik, following Dana's intro, here's how we'd approach the rebrand in three phases..."
+            proposal.html = "<p>Hi Erik, following Dana\u{2019}s intro, here\u{2019}s how we\u{2019}d approach the rebrand in three phases\u{2026}</p><p>Let me know if you have questions \u{2014} happy to jump on a call this week.</p>"
+            var quarterly = DraftRecord(id: "drf_seed_2", version: 1, updatedAt: now.addingTimeInterval(-86_400))
+            quarterly.subject = "Quarterly note to clients"
+            quarterly.text = "A short look back at Q3 and what we're planning for the rest of the year."
+            var untitled = DraftRecord(id: "drf_seed_3", version: 1, updatedAt: now.addingTimeInterval(-86_400 * 10))
+            untitled.text = "Ideas for issue 15: the night-market piece, the letterpress studio, a reader survey."
+            for draft in [proposal, quarterly, untitled] { state.drafts[draft.id] = draft }
+        }
+    }
+
     func seedInbox(now: Date = Date()) {
         let senders: [(String, String, String, String)] = [
             ("ada@example.net", "Ada Lovelace", "Quarterly numbers", "Here are the numbers for the quarter."),

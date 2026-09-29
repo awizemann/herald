@@ -64,6 +64,9 @@ extension MailViewModel {
         // A draft that vanished under the cursor (sent elsewhere, deleted) must
         // not leave a selection pointing at nothing.
         clearHiddenDraftSelection()
+        // The selected draft may itself have changed (an autosave from its open
+        // composer, a poll): re-resolve so the preview never shows a stale body.
+        if let selectedDraftID { await refreshDraftPreview(selectedDraftID) }
     }
 
     /// Drops the draft selection when the row is no longer listed — gone from
@@ -80,6 +83,47 @@ extension MailViewModel {
     func applyDraftChanges(_ changes: ChangeSet) async {
         guard !changes.isEmpty else { return }
         await reloadDrafts()
+    }
+
+    // MARK: - Preview
+
+    /// Re-resolves the reading pane's draft preview for the current selection.
+    /// Clears it at once when the selection moves to nothing or to another
+    /// draft, so the pane never shows the previous draft under the new row.
+    func loadSelectedDraftPreview() {
+        draftPreviewTask?.cancel()
+        guard let id = selectedDraftID else {
+            selectedDraftPreview = nil
+            return
+        }
+        if selectedDraftPreview?.id != id { selectedDraftPreview = nil }
+        draftPreviewTask = Task { await refreshDraftPreview(id) }
+    }
+
+    /// Resolves draft `id` from the CACHE (the whole draft lives there — no
+    /// round trip, works offline) and publishes it if it is still selected.
+    func refreshDraftPreview(_ id: String) async {
+        let draft: Draft?
+        do {
+            draft = try await store.draft(id: id, accountID: accountID)
+        } catch {
+            logger.error("Draft preview load failed: \(error.localizedDescription, privacy: .private)")
+            return
+        }
+        guard !Task.isCancelled, selectedDraftID == id else { return }
+        guard let draft else {
+            // Gone from the cache (sent or deleted elsewhere).
+            selectedDraftPreview = nil
+            return
+        }
+        // Wrapping a large body is string work; never on the main actor.
+        let preview = await Task.detached(priority: .userInitiated) { @Sendable in
+            DraftPreview(draft)
+        }.value
+        guard !Task.isCancelled, selectedDraftID == id else { return }
+        // Equal values are not re-published: the web view reloads only when its
+        // body actually changes.
+        if selectedDraftPreview != preview { selectedDraftPreview = preview }
     }
 
     // MARK: - Opening
@@ -188,5 +232,57 @@ extension MailViewModel {
         if draft.hasAttachments { parts.append("has attachments") }
         if !draft.snippet.isEmpty { parts.append(draft.snippet) }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// The reading pane's view of one draft (handoff screenshot 5a-3): everything
+/// the preview draws, as a Sendable value built from the cached ``Draft``.
+///
+/// The body is rendered by the SAME document emitter the reading pane uses for
+/// messages, with remote content blocked and no consent offered: a draft is the
+/// user's own unsent text, and previewing it must never load anything remote.
+nonisolated struct DraftPreview: Sendable, Equatable, Identifiable {
+    let id: String
+    let mailboxID: String?
+    let subject: String
+    let to: [String]
+    let cc: [String]
+    let updatedAt: Date
+    let attachments: [DraftAttachment]
+    let body: RenderedBody
+
+    init(_ draft: Draft) {
+        id = draft.id
+        mailboxID = draft.content.mailboxID
+        subject = draft.content.subject
+        to = draft.content.to
+        cc = draft.content.cc
+        updatedAt = draft.updatedAt
+        attachments = draft.attachments
+        body = Self.renderedBody(for: draft)
+    }
+
+    /// The HTML body when the draft has one, its plain text otherwise.
+    static func renderedBody(for draft: Draft) -> RenderedBody {
+        let content = draft.content
+        let title = content.subject
+        let html: String
+        if content.html.contains(where: { !$0.isWhitespace }) {
+            html = MailViewModel.document(wrapping: MailViewModel.composeBody(html: content.html), title: title)
+        } else {
+            html = MailViewModel.document(wrappingPlainText: content.text, title: title)
+        }
+        // `messageID` only keys the web view's reload; namespaced so it can
+        // never collide with a real message id.
+        return RenderedBody(messageID: "draft:" + draft.id, html: html, blocksRemote: true, offersRemoteConsent: false)
+    }
+
+    var subjectLabel: String { subject.isEmpty ? "(No subject)" : subject }
+
+    /// "To a, b" / "Cc c" lines, only for the fields that have recipients.
+    var recipientLines: [String] {
+        [("To", to), ("Cc", cc)].compactMap { word, list in
+            list.isEmpty ? nil : word + " " + list.joined(separator: ", ")
+        }
     }
 }

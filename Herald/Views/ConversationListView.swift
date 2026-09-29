@@ -370,16 +370,12 @@ struct RowDateLabel: View {
 
 /// The unread dot at the head of a row: 8pt accent, or nothing. Never the only
 /// cue — the sender and subject go semibold too.
-///
-/// On a SELECTED row the dot turns `.primary` (white on the focused system
-/// selection): an accent dot on an accent fill would disappear.
 struct UnreadDot: View {
     let isUnread: Bool
-    var isSelected = false
 
     var body: some View {
         Circle()
-            .fill(isUnread ? (isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(MailTheme.unreadIndicator)) : AnyShapeStyle(.clear))
+            .fill(isUnread ? AnyShapeStyle(MailTheme.unreadIndicator) : AnyShapeStyle(.clear))
             .frame(width: MailTheme.unreadDotDiameter, height: MailTheme.unreadDotDiameter)
             .accessibilityHidden(true)
     }
@@ -444,7 +440,7 @@ struct ConversationRow: View {
                 }
                 // Last line, under the snippet: labels are metadata about the
                 // thread, not part of what it says.
-                LabelChipRow(labels: labels, isSelected: isSelected)
+                LabelChipRow(labels: labels)
             }
             // COMBINE, not `contain`: as a container VoiceOver stopped on each
             // Text separately and the row's own label — the only place
@@ -464,7 +460,7 @@ struct ConversationRow: View {
         // The dot hangs in the leading padding rather than owning a column, so
         // the text starts at the same 12pt edge the trailing column ends at.
         .overlay(alignment: .topLeading) {
-            UnreadDot(isUnread: row.isUnread, isSelected: isSelected)
+            UnreadDot(isUnread: row.isUnread)
                 .frame(width: ListColumn.Layout.rowHorizontalPadding)
                 .padding(.top, metrics.verticalPadding + (firstLineHeight - MailTheme.unreadDotDiameter) / 2)
         }
@@ -472,7 +468,7 @@ struct ConversationRow: View {
         // `defaultMinListRowHeight`, which is the same number.
         .frame(minHeight: minHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
-        .selectionOutline(isSelected)
+        .mailRowSelection(isSelected)
         // The triage verbs, reachable from the VoiceOver rotor rather than only
         // from the menu bar or a right-click.
         .accessibilityAction(named: row.isStarred ? "Unstar" : "Star", toggleStar)
@@ -493,7 +489,7 @@ struct ConversationRow: View {
     private var firstLine: some View {
         HStack(spacing: ListColumn.Layout.attributionGap) {
             if !attribution.isEmpty {
-                RowAttributionView(attribution: attribution, tint: accountTint, isSelected: isSelected)
+                RowAttributionView(attribution: attribution, tint: accountTint)
             }
             Text(Self.displayParticipants(for: row))
                 .textStyle(row.isUnread ? MailTheme.Typography.headline : MailTheme.Typography.bodyMedium)
@@ -521,7 +517,7 @@ struct ConversationRow: View {
             RowDateLabel(date: row.latest.displayDate)
             HStack(spacing: 0) {
                 if row.messageCount > 1 {
-                    CountPill(count: row.messageCount, isSelected: isSelected)
+                    CountPill(count: row.messageCount)
                 }
                 // Its own element on purpose: it is a control, and folding it
                 // into the row would cost the only way to star without the mouse.
@@ -595,11 +591,9 @@ struct ConversationRow: View {
 }
 
 /// A thread's message count on its row (mono 10 on the neutral chip fill).
-/// Spoken in the row summary, so hidden here. On a selected row the fill turns
-/// hierarchical with the text (``MailTheme/rowChipBackground(isSelected:)``).
+/// Spoken in the row summary, so hidden here.
 struct CountPill: View {
     let count: Int
-    var isSelected = false
 
     var body: some View {
         Text("\(count)")
@@ -607,7 +601,7 @@ struct CountPill: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, MailTheme.Spacing.xs + MailTheme.Spacing.xxs)
             .padding(.vertical, MailTheme.Spacing.xxs / 2)
-            .background(MailTheme.rowChipBackground(isSelected: isSelected), in: Capsule())
+            .background(MailTheme.chipBackground, in: Capsule())
             .accessibilityHidden(true)
     }
 }

@@ -35,7 +35,15 @@ struct TriageButtons: View {
             .disabled(model.selectedThreadID == nil)
         }
 
-        if model.offersTrashAction {
+        if model.isShowingDrafts {
+            // Drafts have no conversation to trash: the toolbar's trash does
+            // what ⌫ in the drafts list does — deletes the selected draft.
+            Button { Task { await model.deleteSelectedDraft() } } label: {
+                Image(systemName: MailTheme.Symbol.trash)
+                    .iconButtonStyle("Delete Draft")
+            }
+            .disabled(model.selectedDraftID == nil)
+        } else if model.offersTrashAction {
             Button { Task { await model.performOnSelection(.trash) } } label: {
                 Image(systemName: MailTheme.Symbol.trash)
                     .iconButtonStyle("Move to Trash")

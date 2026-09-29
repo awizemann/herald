@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-08-19
-source_sha: 35ba57be0606d427a5aa36e1500b7f685b444351
+updated: 2026-09-29
+source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
 source_paths: HeraldTests, HeraldKit/Tests/HeraldKitTests
 source_paths_inferred: false
 ---
@@ -46,6 +46,8 @@ xcodebuild test -project Herald.xcodeproj -scheme Herald -destination 'platform=
 
 The Herald scheme runs both `HeraldTests` and `HeraldKitTests` (roughly 370 tests today). Analytics tests run inside the sandboxed host, so they use throwaway app ids and temp queue directories — never the production `UserDefaults` suite.
 
+**UI Tests** — The `herald-ui-tests` scheme exercises the full app with keyboard and mouse automation. Do NOT run UI tests automatically or in CI; they take over the screen and keyboard. Run `scripts/ui-tests.sh` only with explicit approval from the project owner, as it locks the machine for the duration of the test.
+
 ## Discriminating tests
 
 Tests are "discriminating" — they exercise a real feature end-to-end using fakes at the boundary, not mocks scattered throughout. For example:
@@ -57,4 +59,4 @@ Tests are "discriminating" — they exercise a real feature end-to-end using fak
 This style catches integration bugs that mocks would hide.
 
 ---
-_Last updated: 2026-08-19 — testing and quality runbook; fact-checked against the code for v0.3.0_
+_Last updated: 2026-09-29 — testing and quality runbook; added UI test warning and runbook reference_

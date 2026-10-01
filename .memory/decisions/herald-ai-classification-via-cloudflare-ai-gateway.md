@@ -3,13 +3,13 @@ title: Herald AI Classification via Cloudflare AI Gateway
 type: note
 permalink: hqbase-mac/decisions/herald-ai-classification-via-cloudflare-ai-gateway
 tags: [ai, workflows, classification]
-source_paths: [HeraldKit/Sources/HeraldKit/AI/AIGatewayClient.swift, HeraldKit/Sources/HeraldKit/AI/EmailClassifier.swift, HeraldKit/Sources/HeraldKit/AI/ClassificationEngine.swift, Herald/Support/AIGatewaySettings.swift, Herald/Support/WorkflowPreferences.swift, Herald/Support/ClassificationSupport.swift, Herald/Views/Settings/SettingsWorkflowsPage.swift, Herald/Views/Settings/SettingsAIGatewayPage.swift]
+source_paths: [HeraldKit/Sources/HeraldKit/AI/AIGatewayClient.swift, HeraldKit/Sources/HeraldKit/AI/EmailClassifier.swift, HeraldKit/Sources/HeraldKit/AI/ClassificationEngine.swift, Herald/Support/AIGatewaySettings.swift, Herald/Support/WorkflowPreferences.swift, Herald/Support/ClassificationSupport.swift, Herald/Views/Settings/SettingsWorkflowsPage.swift, Herald/Views/Settings/SettingsAIGatewayPage.swift, Herald/Views/Settings/SettingsRootPages.swift, Herald/App/MailViewModel.swift, Herald/App/SettingsRoute.swift]
 source_paths_inferred: false
-source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
+source_sha: 2d441e9a9ad57500bef916f829b4ad0b9934e258
 created: 2026-09-29
 updated: 2026-09-29
 reviewed: 2026-09-29
-reviewed_by: claude-opus-5-5
+reviewed_by: audit:claude-code (background)
 ---
 Herald's one AI feature: opt-in, per-domain classification of new mail into existing HQBase labels, through the user's own Cloudflare AI Gateway. Built in phases WF1–WF5 on branch `feature/workflows-classification` (e28dead, 5aa2c3f, 5de4c46, b9c8650, 32feecb, WF5). Current state as of 2026-09-29.
 

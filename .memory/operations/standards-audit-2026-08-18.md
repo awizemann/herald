@@ -5,7 +5,7 @@ permalink: hqbase-mac/operations/standards-audit-2026-08-18
 tags: [audit, standards]
 source_paths: [Herald/Design/MailTheme.swift, Herald/Views/ConversationListView.swift, HeraldKit/Sources/HeraldKit/Sync/MailStore.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/Sync/MailStoreContainer.swift]
 source_paths_inferred: false
-source_sha: 5aa2c3fcc0ee47f4becbbaabc2eac918ad72fe15
+source_sha: 2d441e9a9ad57500bef916f829b4ad0b9934e258
 created: 2026-08-18
 updated: 2026-09-29
 reviewed: 2026-09-29

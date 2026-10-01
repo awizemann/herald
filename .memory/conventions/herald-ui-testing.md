@@ -5,10 +5,10 @@ permalink: hqbase-mac/conventions/herald-ui-testing
 tags: [testing, uitest, xcuitest]
 source_paths: [Herald/UITestSupport, HeraldUITests, scripts/ui-tests.sh, scripts/verify-release-identity.sh, Herald/Support/AccessibilityID.swift, project.yml, HeraldTests/UITestHarnessTests.swift, HeraldTests/DebugIdentityTests.swift]
 source_paths_inferred: false
-source_sha: db538bd984d6059832d0ed07712103e28caf1685
+source_sha: 2d441e9a9ad57500bef916f829b4ad0b9934e258
 created: 2026-09-27
 updated: 2026-09-28
-reviewed: 2026-09-28
+reviewed: 2026-09-29
 reviewed_by: audit:claude-code (background)
 ---
 

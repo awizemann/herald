@@ -5,7 +5,7 @@ permalink: hqbase-mac/decisions/automatic-re-auth-policy-frontmost-deferred-rate
 tags: [auth, ux, oauth]
 source_paths: [Herald/App/AutoReauthPolicy.swift, Herald/App/AppEnvironment.swift, Herald/App/AppEnvironment+SignIn.swift, Herald/App/AppEnvironment+Compose.swift, Herald/App/MailViewModel.swift, Herald/Views/RootView.swift, HeraldKit/Sources/HeraldKit/Auth/AuthorizationPresenter.swift, HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift]
 source_paths_inferred: false
-source_sha: 2bfa6bee79e5baf669c80ee8cf23b74d74feaead
+source_sha: 2d441e9a9ad57500bef916f829b4ad0b9934e258
 created: 2026-09-04
 updated: 2026-09-26
 reviewed: 2026-09-29

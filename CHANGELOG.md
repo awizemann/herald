@@ -10,6 +10,11 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-01
+
+Herald 1.1 adds one opt-in feature: AI tagging of new mail, run through your own Cloudflare AI
+Gateway. It is off until you set it up, and nothing leaves your Mac for it until you do.
+
 ### Added
 - **Classify new mail (opt-in).** A domain's new Workflows page can have an AI model tag each
   new conversation with one of your existing HQBase tags, using descriptions you write for each

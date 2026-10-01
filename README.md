@@ -19,7 +19,8 @@ Herald is a fast, keyboard-friendly way to triage mail across the domains and sh
 of a self-hosted HQBase instance. It's built for a single developer-owner who also uses it daily,
 so it favors the workflows that owner actually has over general-purpose email-client features.
 It is not a replacement for Mail.app, doesn't support IMAP/POP/Exchange, and doesn't do AI
-summarization, rules engines, or anything beyond what HQBase's Mail API exposes.
+summarization or rules engines. Its one AI feature — tagging new mail — is opt-in and runs
+through your own Cloudflare account.
 
 ## Features
 
@@ -42,6 +43,9 @@ summarization, rules engines, or anything beyond what HQBase's Mail API exposes.
   HQBase web session is still alive, with a banner and Cancel if it can't.
 - **Paging** for long mailbox listings, so a large Inbox doesn't have to load all at once.
 - **Labels** sync into the sidebar with colored chips matching the web app.
+- **Classify new mail (opt-in)** — per domain, an AI model can tag each new conversation with one
+  of your existing HQBase tags, based on descriptions you write. It runs through your own
+  Cloudflare AI Gateway with Cloudflare-hosted models only, and is off until you set it up.
 - **Local cache** (SwiftData) for instant launch and offline reads; the server is always the
   source of truth — the cache is deleted and rebuilt on trouble, never migrated or backed up.
 
@@ -68,8 +72,10 @@ EdDSA key and verified against the key baked into the app, on top of Apple notar
 
 ## Privacy and analytics
 
-Herald talks to your HQBase server and nothing else, with one exception: anonymous, **opt-out**
-usage analytics. When it's on, Herald reports which features are used (e.g. "archived a
+Herald talks to your HQBase server and nothing else, with two exceptions. The first is the
+opt-in mail classifier: when you turn it on for a domain, the first incoming message of each new
+conversation in that domain is sent to *your own* Cloudflare AI Gateway (Settings → AI Gateway),
+and nowhere else. The second is anonymous, **opt-out** usage analytics. When it's on, Herald reports which features are used (e.g. "archived a
 message") plus the app and OS version, tagged with a random per-install identifier so active
 installs can be counted. It never sends your mail, subjects, addresses, search text, mailbox
 names, account details, file names, or anything you type.

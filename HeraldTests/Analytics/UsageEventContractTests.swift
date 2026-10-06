@@ -28,7 +28,6 @@ import Testing
         "read", "unread", "star", "unstar", "archive", "unarchive", "trash", "restore",
     ]
     static let actionScopes: Set<String> = ["message", "conversation", "selection"]
-    static let searchScopes: Set<String> = ["local", "server"]
     static let composeKinds: Set<String> = ["new", "reply", "reply_all", "forward", "draft"]
     static let accountOutcomes: Set<String> = ["success", "cancelled", "failed"]
     static let launchFailureKinds: Set<String> = ["cache", "restore", "other"]
@@ -61,7 +60,7 @@ import Testing
             "action": messageActions, "scope": actionScopes, "count": buckets,
         ],
         "action_failed": ["action": messageActions, "kind": mailErrorKinds],
-        "search_run": ["scope": searchScopes, "results": buckets],
+        "search_run": ["local_results": buckets, "server_results": buckets],
         "search_failed": ["kind": mailErrorKinds],
         "compose_opened": ["kind": composeKinds],
         "draft_saved": [:],
@@ -160,7 +159,6 @@ import Testing
         #expect(Set(UsageSyncTrigger.allCases.map(\.rawValue)) == Self.syncTriggers)
         #expect(Set(UsageMessageAction.allCases.map(\.rawValue)) == Self.messageActions)
         #expect(Set(UsageActionScope.allCases.map(\.rawValue)) == Self.actionScopes)
-        #expect(Set(UsageSearchScope.allCases.map(\.rawValue)) == Self.searchScopes)
         #expect(Set(UsageComposeKind.allCases.map(\.rawValue)) == Self.composeKinds)
         #expect(Set(UsageAccountOutcome.allCases.map(\.rawValue)) == Self.accountOutcomes)
         #expect(Set(UsageLaunchFailureKind.allCases.map(\.rawValue)) == Self.launchFailureKinds)

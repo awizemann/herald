@@ -23,7 +23,8 @@ struct HeraldApp: App {
             usage: UsageAnalytics.makeTracker(
                 environment: ProcessInfo.processInfo.environment,
                 arguments: ProcessInfo.processInfo.arguments,
-                writeKey: UsageAnalytics.writeKey(from: .main)
+                writeKey: UsageAnalytics.writeKey(from: .main),
+                debugOptIn: UserDefaults.standard.bool(forKey: UsageAnalytics.debugOptInKey)
             )
         )
     }

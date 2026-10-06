@@ -450,10 +450,7 @@ func wait(
     /// poll fails identically while the session is dead, and `AppEnvironment`
     /// would be asked for a new authorization window on every cadence tick.
     @Test func anExpiredSessionAsksForReauthenticationExactlyOncePerExpiry() async throws {
-        let failures = FailureCount()
-        let harness = try await Harness.make(record: { event in
-            if case .syncFailed = event { failures.value += 1 }
-        })
+        let harness = try await Harness.make()
         var requests: [String] = []
         harness.model.reauthenticationRequired = { requests.append($0) }
         await harness.model.start()
@@ -469,9 +466,9 @@ func wait(
         // Nor does a NON-auth failure (a blip) replace it: `.needsReauth` is
         // sticky until a sign-in installs a fresh graph (session-recovery P3).
         harness.events.yield(.failed(MailAPIError.server(code: "boom", message: "boom")))
-        // The stream is ordered and every failure is recorded: the fourth one
-        // landing proves the events above were consumed, without a clock.
-        try await wait("every queued pass to be consumed") { failures.value == 4 }
+        // The stream is ordered: the sixth event consumed proves the ones above
+        // were all handled, without a clock.
+        try await wait("every queued pass to be consumed") { harness.model.syncEventsConsumed == 6 }
 
         #expect(requests == ["acct"], "one expired session is one re-auth request")
         #expect(harness.model.status == .needsReauth, "a blip replaced the sign-in banner")
@@ -1214,10 +1211,4 @@ func wait(
             "the .newItem group must be REPLACED, or SwiftUI's New Window keeps ⌘N"
         )
     }
-}
-
-/// A main-actor counter a `@Sendable` record hook can bump.
-@MainActor
-private final class FailureCount {
-    var value = 0
 }

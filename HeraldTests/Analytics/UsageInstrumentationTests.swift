@@ -124,13 +124,13 @@ private struct UsageHarness {
         // Interleaved with awaits, i.e. with real scheduling opportunities
         // between the calls, which is where an unordered implementation loses.
         for index in 0..<50 {
-            environment.record(.searchRun(scope: .local, results: UsageBucket(count: index)))
+            environment.record(.searchRun(localResults: UsageBucket(count: index), serverResults: nil))
             if index % 7 == 0 { await Task.yield() }
         }
         await environment.drainPendingUsage()
 
         let expected = (0..<50).map { UsageBucket(count: $0).rawValue }
-        let received = await tracker.events.map { $0.props["results"] }
+        let received = await tracker.events.map { $0.props["local_results"] }
         #expect(received == expected.map { UsageValue.string($0) })
     }
 
@@ -441,7 +441,7 @@ private struct UsageHarness {
         harness.model.submitSearch()
         harness.model.record(.remoteMediaLoaded)  // sentinel
         runs = await harness.recorded().filter { $0.name == "search_run" }
-        #expect(runs == [.searchRun(scope: .local, results: .zero)])
+        #expect(runs == [.searchRun(localResults: .zero, serverResults: nil)])
 
         // Clearing the field is not a search either.
         harness.model.searchQuery = ""
@@ -481,26 +481,35 @@ private struct UsageHarness {
 
     /// The trigger is derived, because ``SyncEvent`` carries none: the first pass
     /// is the launch, an explicit refresh claims the next completion, and
-    /// everything after that is the cadence. Fails if a post-action refresh, or
-    /// the poll, is ever reported as something the user asked for.
-    @Test func syncCompletionsAreAttributedToLaunchThenManualThenAuto() async throws {
+    /// everything after that is the cadence — which is NOT reported. Fails if a
+    /// post-action refresh is ever reported as something the user asked for, or
+    /// if a cadence success reaches the tracker (at 15s a pass, that kept a
+    /// session open for as long as Herald sat in front of an idle Mac).
+    @Test func launchAndManualPassesAreReportedAndCadenceSuccessesAreNot() async throws {
         let harness = try await UsageHarness.make()
         await harness.model.start()
 
         // One pass at a time, each awaited before the next is provoked: the
-        // events are consumed on a task of their own, so firing all three at
+        // events are consumed on a task of their own, so firing all of them at
         // once would be asserting on the interleaving rather than on the rule.
         harness.events.yield(.began)
         harness.events.yield(.finished)
         await harness.tracker.drain(until: 2)  // launch view + first completion
 
+        // Two cadence successes, then a cadence FAILURE — reported, because sync
+        // just broke — as the barrier: the successes must be consumed before the
+        // Refresh claims a trigger, or one of them would take it.
+        for _ in 0..<2 {
+            harness.events.yield(.began)
+            harness.events.yield(.finished)
+        }
+        harness.events.yield(.began)
+        harness.events.yield(.failed(MailAPIError.decoding))
+        await harness.tracker.drain(until: 3)
+
         await harness.model.refresh()
         harness.events.yield(.began)
         harness.events.yield(.changed(ChangeSet(updated: ["m1"])))
-        harness.events.yield(.finished)
-        await harness.tracker.drain(until: 3)
-
-        harness.events.yield(.began)
         harness.events.yield(.finished)
         await harness.tracker.drain(until: 4)
         await harness.settle()
@@ -508,7 +517,34 @@ private struct UsageHarness {
         #expect(syncs == [
             .syncCompleted(trigger: .launch, changed: false),
             .syncCompleted(trigger: .manual, changed: true),
-            .syncCompleted(trigger: .auto, changed: false),
+        ])
+    }
+
+    /// The moment sync BREAKS is worth one event; every poll that fails after it
+    /// is the same news. Fails if a run of cadence failures reports more than
+    /// once, or if a recovery followed by a new failure is not reported again.
+    @Test func cadenceFailuresAreReportedOnlyWhenSyncBreaks() async throws {
+        let harness = try await UsageHarness.make()
+        await harness.model.start()
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        await harness.tracker.drain(until: 2)  // launch view + launch completion
+
+        for _ in 0..<3 {  // broken: one report
+            harness.events.yield(.began)
+            harness.events.yield(.failed(MailAPIError.cursorExpired))
+        }
+        harness.events.yield(.began)  // recovered: not reported (cadence success)
+        harness.events.yield(.finished)
+        harness.events.yield(.began)  // broken again: reported
+        harness.events.yield(.failed(MailAPIError.decoding))
+        await harness.tracker.drain(until: 4)
+        await harness.settle()
+
+        let failures = await harness.tracker.events.filter { $0.name == "sync_failed" }
+        #expect(failures == [
+            .syncFailed(kind: .cursorExpired, trigger: .auto),
+            .syncFailed(kind: .decoding, trigger: .auto),
         ])
     }
 
@@ -553,9 +589,10 @@ private struct UsageHarness {
             return false
         }
 
-        // The barrier: the next event recorded is the first pass after
-        // reactivation, so anything the inactive passes leaked lands before it.
+        // The barrier: the next event recorded is a Refresh after reactivation,
+        // so anything the inactive passes leaked lands before it.
         await harness.model.setActive(true)
+        await harness.model.refresh()
         harness.events.yield(.began)
         harness.events.yield(.finished)
         await harness.tracker.drain(until: 3)
@@ -564,7 +601,7 @@ private struct UsageHarness {
         let syncs = await harness.tracker.events.filter { $0.name.hasPrefix("sync_") }
         #expect(syncs == [
             .syncCompleted(trigger: .launch, changed: false),
-            .syncCompleted(trigger: .auto, changed: false),
+            .syncCompleted(trigger: .manual, changed: false),
         ])
     }
 }

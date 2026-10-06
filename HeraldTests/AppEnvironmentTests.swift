@@ -476,6 +476,41 @@ import Testing
         )
     }
 
+    /// A launch is reported ONCE per process, for the account the window comes
+    /// up on — not once per account graph. Fails if every restored account (or
+    /// a later added account) reports its own `view_shown(via: launch)`, or if a
+    /// launch with nobody looking (Herald behind another app) reports one at all.
+    @Test(arguments: [true, false])
+    func theLaunchViewIsReportedOncePerProcessAndOnlyWhenActive(active: Bool) async throws {
+        let first = Self.unreachableAccount()
+        let b = Account(origin: URL(string: "https://127.0.0.1:11")!, clientID: "cid", scopes: [])
+        let c = Account(origin: URL(string: "https://127.0.0.1:12")!, clientID: "cid", scopes: [])
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first, b, c])),
+            defaults: Self.scratchDefaults(),
+            usage: tracker,
+            isApplicationActive: { active }
+        )
+        let store = try MailStore.inMemory()
+        environment.store = store
+
+        await environment.restoreAccounts()
+        await environment.drainPendingRestore()
+        #expect(environment.graphs.count == 3, "otherwise this passes vacuously")
+        // An account added after the launch is an arrival, not a launch.
+        let added = Account(origin: URL(string: "https://127.0.0.1:13")!, clientID: "cid", scopes: [])
+        await environment.install(account: added, api: FakeMailAPIClient(), store: store)
+        await environment.drainPendingUsage()
+
+        let launches = await tracker.events.filter {
+            if case .viewShown(_, .launch) = $0 { return true }
+            return false
+        }
+        #expect(launches.count == (active ? 1 : 0))
+        for graph in environment.graphs.values { await graph.stop() }
+    }
+
     /// The other half of C10: cancelling the restore must be surgical. Fails if
     /// signing one account out stops the loop for the accounts still behind it,
     /// which would strand them on the launch placeholder until relaunch.

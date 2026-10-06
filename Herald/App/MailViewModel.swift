@@ -849,6 +849,10 @@ final class MailViewModel {
     /// Instrumentation: how many server searches were actually dispatched, so
     /// "a keystroke did NOT hit the network" is assertable.
     @ObservationIgnored private(set) var serverSearchCount = 0
+    /// Instrumentation: how many ``SyncEvent``s the consumer has finished
+    /// handling — the ordering barrier for tests, now that most passes are
+    /// (deliberately) not reported to analytics and so cannot serve as one.
+    @ObservationIgnored private(set) var syncEventsConsumed = 0
 
     /// Instrumentation: how many times the presented list has actually been
     /// recomputed. Observation-ignored — it exists so "an unrelated change did
@@ -1025,12 +1029,18 @@ final class MailViewModel {
     /// the `didSet` of each of the three inputs the filter depends on.
     /// Internal, not private: the labels extension recomputes it after a label
     /// write moves the index a server row is filtered by.
+    /// How many presented rows the LOCAL tier matched — the presented list also
+    /// holds server-only rows once a server pass (even the auto one) has landed,
+    /// so its count is not the local answer. Only the search report reads it.
+    @ObservationIgnored private(set) var localMatchCount = 0
+
     func refilter() {
         filterCount += 1
         // Drafts are not conversations: that list is `drafts`, and nothing here
         // is on screen while it is.
         guard let folder = location.folder.conversationFolder else {
             presentedConversations = []
+            localMatchCount = 0
             return
         }
         // A label listing is a FOLDER listing narrowed by the label, so the same
@@ -1043,9 +1053,11 @@ final class MailViewModel {
         let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else {
             presentedConversations = inScope
+            localMatchCount = inScope.count
             return
         }
         var rows = inScope.filter { matchesLocally($0, needle) }
+        localMatchCount = rows.count
         // Union with whatever the server matched that the cache does not hold.
         // Local rows win on identity: they carry any optimistic action the user
         // just took, where the server's copy predates it.
@@ -1206,15 +1218,30 @@ final class MailViewModel {
     /// re-running on every debounced keystroke since the first letter; the moment
     /// the user pressed Return is the one moment they asked a question, and only
     /// the RESULT COUNT is reported, bucketed — the needle itself never leaves.
+    ///
+    /// ONE event per Return, carrying both tiers: the local count now, the
+    /// server count when that pass lands (``pendingSearchReport``). A search the
+    /// server tier does not run for (too short, drafts) is reported at once,
+    /// local only. The sparse-results auto search reports nothing — nobody asked.
     func submitSearch() {
-        if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            record(.searchRun(
-                scope: .local,
-                results: UsageBucket(count: isShowingDrafts ? presentedDrafts.count : presentedConversations.count)
-            ))
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            runServerSearch()
+            return
         }
-        runServerSearch()
+        let local = UsageBucket(count: isShowingDrafts ? presentedDrafts.count : localMatchCount)
+        if runServerSearch() {
+            pendingSearchReport = local
+        } else {
+            pendingSearchReport = nil
+            record(.searchRun(localResults: local, serverResults: nil))
+        }
     }
+
+    /// The local result of the search the user COMMITTED, waiting for its server
+    /// tier. `nil` while no committed search is in flight — so the auto search
+    /// (sparse results) completes and fails without reporting anything. Cleared
+    /// by ``cancelServerSearch()``: a needle that changed abandons the question.
+    @ObservationIgnored private var pendingSearchReport: UsageBucket?
 
     private func autoRunServerSearchIfSparse() {
         guard presentedConversations.count < Self.serverSearchAutoThreshold else { return }
@@ -1231,11 +1258,13 @@ final class MailViewModel {
     /// next pass's "these rows are all that is in the inbox" claim fight with a
     /// row set that was never a listing. Presenting from DTOs keeps the union
     /// exactly as long as the query lives and costs nothing to undo.
-    func runServerSearch() {
+    /// - Returns: whether a server pass was started.
+    @discardableResult
+    func runServerSearch() -> Bool {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard query.count >= Self.minimumServerSearchLength else { return }
+        guard query.count >= Self.minimumServerSearchLength else { return false }
         // Drafts have no server search route; that list only filters locally.
-        guard location.folder.conversationFolder != nil else { return }
+        guard location.folder.conversationFolder != nil else { return false }
         let scope = location
         serverSearchTask?.cancel()
         serverSearchCount += 1
@@ -1243,6 +1272,7 @@ final class MailViewModel {
         serverSearchTask = Task { [weak self] in
             await self?.performServerSearch(query, scope: scope)
         }
+        return true
     }
 
     /// Forgets one server-search row.
@@ -1265,6 +1295,7 @@ final class MailViewModel {
     func cancelServerSearch() {
         serverSearchTask?.cancel()
         serverSearchTask = nil
+        pendingSearchReport = nil
         guard !serverResults.isEmpty || serverSearchState != .idle else { return }
         serverResults = []
         serverSearchState = .idle
@@ -1302,7 +1333,10 @@ final class MailViewModel {
                 logger.warning("Server search failed: \(error.localizedDescription, privacy: .private)")
                 // Anything that is not a `MailAPIError` counts as `other`: the
                 // search failed either way, and nothing of the error survives.
-                record(.searchFailed(kind: UsageMailErrorKind(anyError: error)))
+                if pendingSearchReport != nil {
+                    pendingSearchReport = nil
+                    record(.searchFailed(kind: UsageMailErrorKind(anyError: error)))
+                }
                 serverResults = collected
                 serverSearchState = .failed(Self.serverSearchMessage(for: error))
                 refilter()
@@ -1320,7 +1354,10 @@ final class MailViewModel {
         }
 
         guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
-        record(.searchRun(scope: .server, results: UsageBucket(count: collected.count)))
+        if let local = pendingSearchReport {
+            pendingSearchReport = nil
+            record(.searchRun(localResults: local, serverResults: UsageBucket(count: collected.count)))
+        }
         serverResults = collected
         serverSearchState = .completed(collected.count)
         refilter()
@@ -1532,14 +1569,24 @@ final class MailViewModel {
         // The launch view has to be said out loud: the restore above assigns
         // `location` directly, not through `navigate`, so nothing else reports
         // the folder the window comes up on. Once per view-model — a
-        // re-`start()` (there is none today) must not double-count a launch.
-        guard !didRecordLaunchView else { return }
+        // re-`start()` (there is none today) must not double-count a launch —
+        // and only on the graph that owns this process's launch, while someone
+        // is looking (see ``reportsLaunch``).
+        guard reportsLaunch, isAppActive, !didRecordLaunchView else { return }
         didRecordLaunchView = true
         pendingNavigationSource = nil
         recordViewShown(currentViewKind, via: .launch)
     }
 
     @ObservationIgnored private var didRecordLaunchView = false
+
+    /// Whether this view-model reports the LAUNCH — the launch `view_shown` and
+    /// the `launch` sync trigger. `true` by default (a bare view-model is a
+    /// launch); ``AppEnvironment/install(account:api:store:select:wake:tokenProvider:)``
+    /// sets it for every graph, granting it to exactly one per process: the
+    /// account the launch restore brings up first. Otherwise every account,
+    /// added account, re-auth and session heal reported a launch of its own.
+    @ObservationIgnored var reportsLaunch = true
 
     /// Puts back the location this account was last showing, once, at launch.
     ///
@@ -1590,21 +1637,38 @@ final class MailViewModel {
     /// Whether anything actually changed during the pass now in flight.
     @ObservationIgnored private var passChangedAnything = false
 
-    /// Reports a finished or failed pass — but only while Herald is the active
-    /// app. Passes run on a cadence whether or not anyone is at the Mac, and
-    /// swift-stats opens a session on ANY tracked event, so a backgrounded
-    /// Herald reporting its 60s idle poll would make an unattended Mac look in
-    /// use all night (swift-stats setup guide §4, "Unattended work"). The
-    /// trigger is still consumed by the caller, so launch → manual → auto
-    /// attribution is unchanged for the passes that are reported — and a
-    /// dropped pass still uses its trigger up: a launch behind another app (a
-    /// login item, `open -g`) reports no `launch` pass at all, and a Refresh
-    /// whose pass finishes after the person switched away is not reported.
-    /// Both are unattended by then, which is the point.
-    private func recordSyncPass(_ event: UsageEvent) {
+    /// Reports a finished or failed pass, by one rule: report what a PERSON
+    /// caused or could see, never the cadence.
+    ///
+    /// - `manual` and `launch` passes are reported, success or failure.
+    /// - `auto` passes are NOT reported — except the first failure after a pass
+    ///   that worked (the moment sync broke). The cadence is 15s per account
+    ///   while Herald is frontmost, and swift-stats measures its 30-minute session
+    ///   gap from the last event of ANY kind: reporting every pass kept a session
+    ///   open for as long as Herald sat in front of a locked or idle Mac, and was
+    ///   most of the traffic (swift-stats setup guide §4, "Unattended work").
+    /// - Nothing is reported while Herald is not the active app.
+    ///
+    /// The trigger is consumed by the caller either way, so attribution of the
+    /// passes that ARE reported is unchanged; a dropped pass still uses its
+    /// trigger up (a launch behind another app reports no `launch` pass, and a
+    /// Refresh whose pass finishes after the person switched away is silent).
+    /// ``lastPassFailed`` tracks every pass, reported or not, so a failure that
+    /// began in the background is not announced later as a fresh break.
+    private func recordSyncPass(_ event: UsageEvent, trigger: UsageSyncTrigger, failed: Bool) {
+        let wasFailing = lastPassFailed
+        lastPassFailed = failed
         guard isAppActive else { return }
-        record(event)
+        switch trigger {
+        case .manual, .launch:
+            record(event)
+        case .auto:
+            if failed && !wasFailing { record(event) }
+        }
     }
+
+    /// Whether the most recent pass, reported or not, failed.
+    @ObservationIgnored private var lastPassFailed = false
 
     private func consumeSyncTrigger() -> UsageSyncTrigger {
         defer {
@@ -1612,7 +1676,7 @@ final class MailViewModel {
             hasReportedSyncPass = true
         }
         if let requestedSyncTrigger { return requestedSyncTrigger }
-        return hasReportedSyncPass ? .auto : .launch
+        return hasReportedSyncPass || !reportsLaunch ? .auto : .launch
     }
 
     /// The Refresh button (and ⌘⇧K, and the post-action refresh).
@@ -1716,12 +1780,14 @@ final class MailViewModel {
 
     private func consumeEvents() async {
         for await event in events {
+            defer { syncEventsConsumed += 1 }
             switch event {
             case .began:
                 if status != .needsReauth { status = .syncing }
                 passChangedAnything = false
             case .finished:
-                recordSyncPass(.syncCompleted(trigger: consumeSyncTrigger(), changed: passChangedAnything))
+                let trigger = consumeSyncTrigger()
+                recordSyncPass(.syncCompleted(trigger: trigger, changed: passChangedAnything), trigger: trigger, failed: false)
                 passChangedAnything = false
                 if status != .needsReauth {
                     status = .idle
@@ -1756,7 +1822,7 @@ final class MailViewModel {
                 // nothing of the error itself.
                 let trigger = consumeSyncTrigger()
                 passChangedAnything = false
-                recordSyncPass(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
+                recordSyncPass(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger), trigger: trigger, failed: true)
                 if Self.requiresReauthentication(error) {
                     // The transition is the event: every poll while the session
                     // is dead fails the same way, and re-announcing it would ask

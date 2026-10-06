@@ -211,9 +211,26 @@ import Testing
         let tracker = UsageAnalytics.makeTracker(
             environment: row.environment,
             arguments: row.arguments,
-            writeKey: row.writeKey
+            writeKey: row.writeKey,
+            isDebugBuild: false
         )
         #expect((tracker is NoopUsageTracker) == row.expectsNoop, "\(row.label)")
+    }
+
+    /// A Debug build with a usable key still reports nothing unless it opted in.
+    /// Fails if the gate is dropped (a dev copy built with the key exported would
+    /// send under the release appId), or if the opt-in stops working.
+    @Test func debugBuildsReportOnlyWhenOptedIn() {
+        let off = UsageAnalytics.makeTracker(environment: [:], arguments: [], writeKey: "live-key", isDebugBuild: true)
+        #expect(off is NoopUsageTracker)
+        let optedIn = UsageAnalytics.makeTracker(
+            environment: [:], arguments: [], writeKey: "live-key", isDebugBuild: true, debugOptIn: true
+        )
+        #expect(!(optedIn is NoopUsageTracker))
+        let release = UsageAnalytics.makeTracker(
+            environment: [:], arguments: [], writeKey: "live-key", isDebugBuild: false, debugOptIn: false
+        )
+        #expect(!(release is NoopUsageTracker), "the opt-in must not be required in Release")
     }
 
     /// No test may touch the SHIPPING identity suite. swift-stats keeps the
@@ -230,7 +247,7 @@ import Testing
         let domainBefore = UserDefaults.standard.persistentDomain(forName: suite) as NSDictionary?
 
         let tracker = UsageAnalytics.makeTracker(
-            environment: [:], arguments: [], writeKey: "live-key"
+            environment: [:], arguments: [], writeKey: "live-key", isDebugBuild: false
         )
         #expect(!(tracker is NoopUsageTracker), "otherwise this passes vacuously")
 

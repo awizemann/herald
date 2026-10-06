@@ -173,6 +173,11 @@ nonisolated enum UsageAnalytics {
         )
     }
 
+    /// `defaults write com.wizemann.herald.debug HeraldSendsDebugUsage -bool YES`
+    /// (or `--args -HeraldSendsDebugUsage YES`) lets a keyed Debug build report —
+    /// for verifying events end to end. Ignored by Release builds.
+    static let debugOptInKey = "HeraldSendsDebugUsage"
+
     /// Reads the write key baked in at build time. Returns `nil` when the key is
     /// absent; an unsubstituted `$(APP_STATS_WRITE_KEY)` is returned as-is and
     /// rejected by ``makeTracker(environment:arguments:writeKey:)``.
@@ -185,13 +190,25 @@ nonisolated enum UsageAnalytics {
     /// - a demo/mock launch argument is present,
     /// - the write key is `nil`, empty or whitespace, or is an unsubstituted
     ///   `$(...)` build setting,
-    /// - or the endpoint URL will not validate.
+    /// - the endpoint URL will not validate,
+    /// - or this is a Debug build that has not opted in (``debugOptInKey``).
+    ///
+    /// The Debug gate exists because xcodebuild expands an exported
+    /// `APP_STATS_WRITE_KEY` into ANY build: a developer with the key in their
+    /// shell would otherwise bake it into the dev copy, whose events then count
+    /// under the release `appId`. The SDK marks them `isDebug` and the dashboard
+    /// hides those by default, but nothing should be sent unasked.
     static func makeTracker(
         environment: [String: String],
         arguments: [String],
-        writeKey: String?
+        writeKey: String?,
+        isDebugBuild: Bool = UpdateService.isDebugBuild,
+        debugOptIn: Bool = false
     ) -> any UsageTracking {
         for key in testEnvironmentKeys where environment[key] != nil {
+            return NoopUsageTracker()
+        }
+        if isDebugBuild && !debugOptIn {
             return NoopUsageTracker()
         }
         if arguments.contains(where: disablingArguments.contains) {

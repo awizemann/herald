@@ -405,3 +405,84 @@ struct SearchTests {
         #expect(plain.runs.count == 1)
     }
 }
+
+/// What a search REPORTS. One event per Return, carrying both tiers; the
+/// sparse-results auto search reports nothing because nobody asked.
+@MainActor
+@Suite struct SearchUsageTests {
+    @MainActor final class Recorded { var events: [UsageEvent] = [] }
+
+    private static func make() async throws -> (MailViewModel, FakeMailAPIClient, Recorded) {
+        let store = try MailStore.inMemory()
+        let api = FakeMailAPIClient()
+        let recorded = Recorded()
+        let (stream, _) = AsyncStream<SyncEvent>.makeStream(bufferingPolicy: .unbounded)
+        let model = MailViewModel(
+            accountID: "acct", accountLabel: "Test", api: api, store: store,
+            actions: MailActionService(api: api, store: store), events: stream,
+            markReadDelay: .seconds(3600),
+            record: { recorded.events.append($0) }
+        )
+        model.showListing(mailboxID: "mbA", folder: .inbox)
+        await model.reloadConversations()
+        let rows = (1...7).map {
+            MailFixtures.conversation(MailFixtures.message(id: "m\($0)", threadID: "t\($0)", mailboxID: "mbA"))
+        }
+        await api.setConversationPage(ConversationPage(conversations: rows, nextCursor: nil, totalCount: nil))
+        return (model, api, recorded)
+    }
+
+    private static func searches(_ recorded: Recorded) -> [UsageEvent] {
+        recorded.events.filter { $0.name.hasPrefix("search_") }
+    }
+
+    /// Fails if typing alone reports a search: the empty local list is below the
+    /// auto threshold, so the server tier RUNS (and is asserted to have run) —
+    /// it just must not be counted.
+    @Test func theAutomaticServerSearchReportsNothing() async throws {
+        let (model, api, recorded) = try await Self.make()
+        model.searchQuery = "invoice"
+        await model.serverSearchTask?.value
+        #expect(await api.searches().count == 1, "otherwise this passes vacuously")
+        #expect(Self.searches(recorded).isEmpty)
+    }
+
+    /// Fails if Return reports two events (local, then server), or loses the
+    /// server tier's count.
+    @Test func returnReportsOneEventWithBothTiers() async throws {
+        let (model, _, recorded) = try await Self.make()
+        model.searchQuery = "invoice"
+        await model.serverSearchTask?.value
+        model.submitSearch()
+        await model.serverSearchTask?.value
+        #expect(Self.searches(recorded) == [.searchRun(localResults: .zero, serverResults: .sixToTwenty)])
+    }
+
+    /// Fails if a committed search whose needle then changes still reports — the
+    /// question was abandoned, and the auto search that follows must not inherit it.
+    @Test func aCommittedSearchAbandonedMidFlightReportsNothing() async throws {
+        let (model, api, recorded) = try await Self.make()
+        model.searchQuery = "invoice"
+        await model.serverSearchTask?.value
+        await api.closeConversationGate()
+        model.submitSearch()
+        await api.waitForPendingSearch()
+        model.searchQuery = "invoices"
+        await api.openConversationGate()
+        await model.serverSearchTask?.value
+        #expect(Self.searches(recorded).isEmpty)
+    }
+
+    /// Fails if a committed search that fails goes unreported, or an auto search
+    /// that fails IS reported.
+    @Test func onlyACommittedSearchReportsItsFailure() async throws {
+        let (model, api, recorded) = try await Self.make()
+        await api.setConversationError(.server(code: "X", message: "boom"))
+        model.searchQuery = "invoice"
+        await model.serverSearchTask?.value
+        #expect(Self.searches(recorded).isEmpty, "the auto search's failure was reported")
+        model.submitSearch()
+        await model.serverSearchTask?.value
+        #expect(Self.searches(recorded) == [.searchFailed(kind: .server)])
+    }
+}

@@ -81,10 +81,10 @@ import Testing
         #expect(UpdateService.startsUpdater(arguments: ["Herald"], isRunningUnderTests: false, isDebugBuild: false))
 
         let validKey = "whk_0123456789abcdef"
-        let testMode = UsageAnalytics.makeTracker(environment: [:], arguments: args, writeKey: validKey)
+        let testMode = UsageAnalytics.makeTracker(environment: [:], arguments: args, writeKey: validKey, isDebugBuild: false)
         #expect(testMode.isAvailable == false, "analytics ran in UI-test mode")
         // Control: the same key without the flag builds the real tracker.
-        let normal = UsageAnalytics.makeTracker(environment: [:], arguments: ["Herald"], writeKey: validKey)
+        let normal = UsageAnalytics.makeTracker(environment: [:], arguments: ["Herald"], writeKey: validKey, isDebugBuild: false)
         #expect(normal.isAvailable)
     }
 }

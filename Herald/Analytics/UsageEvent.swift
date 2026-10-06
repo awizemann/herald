@@ -88,10 +88,6 @@ nonisolated enum UsageActionScope: String, Sendable, Hashable, CaseIterable {
     case message, conversation, selection
 }
 
-nonisolated enum UsageSearchScope: String, Sendable, Hashable, CaseIterable {
-    case local, server
-}
-
 nonisolated enum UsageComposeKind: String, Sendable, Hashable, CaseIterable {
     case new
     case reply
@@ -284,7 +280,9 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case syncFailed(kind: UsageMailErrorKind, trigger: UsageSyncTrigger)
     case messageActionPerformed(action: UsageMessageAction, scope: UsageActionScope, count: UsageBucket)
     case actionFailed(action: UsageMessageAction, kind: UsageMailErrorKind)
-    case searchRun(scope: UsageSearchScope, results: UsageBucket)
+    /// One committed search (Return). `serverResults` is `nil` when the server
+    /// tier did not run for it (too short, or the drafts list).
+    case searchRun(localResults: UsageBucket, serverResults: UsageBucket?)
     case searchFailed(kind: UsageMailErrorKind)
     case composeOpened(kind: UsageComposeKind)
     case draftSaved
@@ -356,8 +354,12 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ]
         case .actionFailed(let action, let kind):
             ["action": .string(action.rawValue), "kind": .string(kind.rawValue)]
-        case .searchRun(let scope, let results):
-            ["scope": .string(scope.rawValue), "results": .string(results.rawValue)]
+        case .searchRun(let local, let server):
+            {
+                var props: [String: UsageValue] = ["local_results": .string(local.rawValue)]
+                if let server { props["server_results"] = .string(server.rawValue) }
+                return props
+            }()
         case .searchFailed(let kind):
             ["kind": .string(kind.rawValue)]
         case .composeOpened(let kind):

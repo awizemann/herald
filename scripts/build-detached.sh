@@ -17,10 +17,12 @@ cd "$(dirname "$0")/.."
 # XCUIApplication terminates any instance of the same bundle id before launching.)
 
 if [ ! -d Herald.xcodeproj ] || [ project.yml -nt Herald.xcodeproj/project.pbxproj ]; then
-  xcodegen generate
+  env -u APP_STATS_WRITE_KEY xcodegen generate
 fi
 DD="$PWD/DerivedData"
-xcodebuild -project Herald.xcodeproj -scheme Herald -configuration Debug \
+# `env -u`: an exported APP_STATS_WRITE_KEY would otherwise be expanded into this Debug build.
+# (The app also refuses to report from Debug unless HeraldSendsDebugUsage is set.)
+env -u APP_STATS_WRITE_KEY xcodebuild -project Herald.xcodeproj -scheme Herald -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath "$DD" -skipPackagePluginValidation build 2>&1 | grep -E "error:|warning: |BUILD" || true
 APP="$DD/Build/Products/Debug/Herald.app"
 [ -d "$APP" ] || { echo "build failed"; exit 1; }

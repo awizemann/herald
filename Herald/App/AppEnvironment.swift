@@ -282,6 +282,10 @@ final class AppEnvironment {
     /// events reach the SDK in the order they happened rather than in whatever
     /// order a pile of unstructured tasks got scheduled.
     @ObservationIgnored private var pendingRecord: Task<Void, Never>?
+    /// Set by the launch restore just before it brings up its first account;
+    /// claimed (and cleared) by the first graph installed after that. Never set
+    /// on a launch with no accounts, so a first sign-in is not a "launch".
+    @ObservationIgnored private var launchReportPending = false
     private var container: ModelContainer?
     var store: MailStore?
 
@@ -569,6 +573,10 @@ final class AppEnvironment {
            let index = ordered.firstIndex(where: { $0.id == remembered }) {
             ordered.insert(ordered.remove(at: index), at: 0)
         }
+        // The launch belongs to whichever graph comes up first from here (the
+        // remembered account, or — if it fails — the first of the rest), and
+        // to no install after it: see ``MailViewModel/reportsLaunch``.
+        launchReportPending = true
         await activate(ordered[0])
         let rest = ordered.dropFirst()
         if graphs.isEmpty, rest.isEmpty {
@@ -867,6 +875,11 @@ final class AppEnvironment {
         // longer strands them.
         if let superseded { await superseded.stop() }
         guard isCurrent(graph) else { return await graph.stop() }
+        viewModel.reportsLaunch = launchReportPending && selectedAccountID == account.id
+        if viewModel.reportsLaunch { launchReportPending = false }
+        // Seeded before `start()`, which reads it for the launch view; the full
+        // `setActive` (cadence, socket) follows once the graph has started.
+        viewModel.isAppActive = isApplicationActive()
         await viewModel.start()
         // Seed the cadence from the app's CURRENT activation; the notifications
         // only report changes, and a launch into the foreground fires neither.

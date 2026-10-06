@@ -21,7 +21,7 @@ nonisolated enum UsageEventFixtures {
         .syncFailed(kind: .transport, trigger: .auto),
         .messageActionPerformed(action: .archive, scope: .selection, count: .twoToFive),
         .actionFailed(action: .trash, kind: .unauthorized),
-        .searchRun(scope: .server, results: .sixToTwenty),
+        .searchRun(localResults: .twoToFive, serverResults: .sixToTwenty),
         .searchFailed(kind: .decoding),
         .composeOpened(kind: .replyAll),
         .draftSaved,

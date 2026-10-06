@@ -10,6 +10,10 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-06
+
+A maintenance release: more accurate, better-disclosed usage analytics, and one search fix.
+
 ### Changed
 - **Usage analytics now run on swift-stats 0.3.0.** Install figures carry straight across the
   upgrade (no drop, no spike of "new" installs): Herald already counted installs with a random

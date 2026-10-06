@@ -29,6 +29,11 @@
 
 ## Done
 
+- [x] Analytics P4: new events — notification_opened, label_changed, setting_changed, notification_permission_resolved; plan doc sync (id: t-0edf2b4a) (added: 2026-10-06)
+- [x] Analytics P3: event quality — action via, draft trigger, attachments count, notification click, compose_opened, account_added kinds (id: t-b62008f5) (added: 2026-10-06)
+- [x] Analytics P2: adopt SDK record() — drop the enqueueUsage chain, flush off-chain (id: t-f688c4be) (added: 2026-10-06)
+- [x] Analytics P1: accurate numbers — sync heartbeat, launch view once per process, search on commit, Debug no-op (id: t-8788b917) (added: 2026-10-06)
+- [x] Upgrade swift-stats to 0.3.0 (pin, terminate flush, privacy copy + manifest Device ID, RelaunchProbe test) (id: t-b14be37c) (added: 2026-10-05)
 - [x] WF5: Activity log, live end-to-end verify, docs (id: t-16c493b9) (added: 2026-09-29)
 - [x] WF4: Classification engine on new mail (id: t-fce74b97) (added: 2026-09-29) (priority: high)
 - [x] WF3: Domain Workflows page — classification rules (id: t-a60f690b) (added: 2026-09-29) (priority: high)

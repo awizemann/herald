@@ -105,8 +105,6 @@ extension AppEnvironment {
         return AccountTintAssignment.tokenNames.contains(raw)
     }
 
-    /// Records (or, with `nil`, clears — Reset) the account's colour. A name
-    /// outside the tint set is refused rather than stored.
     /// Reports a setting the person changed. Called from the ONE write path of
     /// each setting (its Settings binding, or the setter below) and never on
     /// load — see ``UsageSetting`` for what is, and is not, reported.
@@ -114,6 +112,8 @@ extension AppEnvironment {
         record(.settingChanged(setting: setting, on: on))
     }
 
+    /// Records (or, with `nil`, clears — Reset) the account's colour. A name
+    /// outside the tint set is refused rather than stored.
     func setAccountTint(_ name: String?, for accountID: Account.ID) {
         let key = AccountTintAssignment.storageKey(accountID: accountID)
         if let name {
@@ -149,10 +149,10 @@ extension AppEnvironment {
     /// Records (or with `nil`, clears — Reset) a domain's colour. Repaint-only:
     /// no list or count depends on it.
     func setDomainTint(_ name: String?, for accountID: Account.ID, domainID: MailDomain.ID) async {
-        recordSettingChanged(.domainTint)
         await updateDomainPreferences(accountID: accountID, reloads: false) { defaults in
             DomainPreferences.setTintOverride(name, accountID: accountID, domainID: domainID, in: defaults)
         }
+        recordSettingChanged(.domainTint)
     }
 
     // MARK: - Domain preferences

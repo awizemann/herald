@@ -1354,13 +1354,19 @@ final class MailViewModel {
         }
 
         guard !Task.isCancelled, isCurrentSearch(query, scope) else { return }
-        if let local = pendingSearchReport {
-            pendingSearchReport = nil
-            record(.searchRun(localResults: local, serverResults: UsageBucket(count: collected.count)))
-        }
         serverResults = collected
         serverSearchState = .completed(collected.count)
         refilter()
+        // After `refilter`: what the server tier ADDED to the list is what the
+        // person got from pressing Return — not its raw answer, which includes
+        // rows already found locally and, inside a label, rows the label drops.
+        if let local = pendingSearchReport {
+            pendingSearchReport = nil
+            record(.searchRun(
+                localResults: local,
+                serverResults: UsageBucket(count: presentedConversations.count - localMatchCount)
+            ))
+        }
     }
 
     /// Whether the pass that is finishing still answers what is on screen. The
@@ -1641,8 +1647,8 @@ final class MailViewModel {
     /// caused or could see, never the cadence.
     ///
     /// - `manual` and `launch` passes are reported, success or failure.
-    /// - `auto` passes are NOT reported — except the first failure after a pass
-    ///   that worked (the moment sync broke). The cadence is 15s per account
+    /// - `auto` passes are NOT reported — except the first failure of an outage
+    ///   that the person is around to see (the moment sync is seen broken). The cadence is 15s per account
     ///   while Herald is frontmost, and swift-stats measures its 30-minute session
     ///   gap from the last event of ANY kind: reporting every pass kept a session
     ///   open for as long as Herald sat in front of a locked or idle Mac, and was
@@ -1653,22 +1659,26 @@ final class MailViewModel {
     /// passes that ARE reported is unchanged; a dropped pass still uses its
     /// trigger up (a launch behind another app reports no `launch` pass, and a
     /// Refresh whose pass finishes after the person switched away is silent).
-    /// ``lastPassFailed`` tracks every pass, reported or not, so a failure that
-    /// began in the background is not announced later as a fresh break.
+    /// An outage that began while Herald was in the background (overnight, say)
+    /// is reported at its first failure once the person is back — any success
+    /// ends the outage, reported or not.
     private func recordSyncPass(_ event: UsageEvent, trigger: UsageSyncTrigger, failed: Bool) {
-        let wasFailing = lastPassFailed
-        lastPassFailed = failed
+        if !failed { outageReported = false }
         guard isAppActive else { return }
         switch trigger {
         case .manual, .launch:
             record(event)
+            if failed { outageReported = true }
         case .auto:
-            if failed && !wasFailing { record(event) }
+            guard failed, !outageReported else { return }
+            record(event)
+            outageReported = true
         }
     }
 
-    /// Whether the most recent pass, reported or not, failed.
-    @ObservationIgnored private var lastPassFailed = false
+    /// Whether the current run of failed passes has been reported. Cleared by
+    /// any success.
+    @ObservationIgnored private var outageReported = false
 
     private func consumeSyncTrigger() -> UsageSyncTrigger {
         defer {
@@ -1951,6 +1961,8 @@ final class MailViewModel {
         }
         guard allConversations.contains(where: { $0.id == threadID }) else {
             logger.info("Notification named a conversation that is no longer in the inbox")
+            // The person is looking at the inbox now; say so, once.
+            recordViewShown(.inbox, via: via)
             return false
         }
         // Set only now, so a thread that turned out to be gone leaves nothing

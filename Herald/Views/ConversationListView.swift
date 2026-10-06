@@ -632,7 +632,13 @@ private struct ListSearchField: ViewModifier {
             .searchFocused($focused)
             // Return in the search field searches the SERVER for what is on
             // screen; the local pass has already run on every keystroke.
-            .onSubmit(of: .search) { model.submitSearch() }
+            .onSubmit(of: .search) {
+                // Return inside the 250ms debounce would otherwise search (and
+                // report) the needle as it was BEFORE the last keystrokes — and
+                // the debounce landing a moment later would cancel that pass.
+                if model.searchQuery != text { model.searchQuery = text }
+                model.submitSearch()
+            }
             .task(id: text) {
                 guard text != model.searchQuery else { return }
                 // Clearing is not typing: it needs no debounce, and waiting to

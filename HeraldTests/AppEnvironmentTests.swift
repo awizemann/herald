@@ -511,6 +511,32 @@ import Testing
         for graph in environment.graphs.values { await graph.stop() }
     }
 
+    /// A launch whose accounts all fail to come up has no launch to report — and
+    /// must not leave the claim lying around for the next install. Fails if an
+    /// Add Account after such a launch reports `view_shown(via: launch)`.
+    @Test func aLaunchWhereNothingCameUpLeavesNoLaunchForALaterSignIn() async throws {
+        let tracker = RecordingUsageTracker()
+        let first = Self.unreachableAccount()
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore(accounts: [first])),
+            defaults: Self.scratchDefaults(),
+            usage: tracker,
+            isApplicationActive: { true }
+        )
+        // No store: every activation fails, as a launch whose cache cannot open.
+        await environment.restoreAccounts()
+        #expect(environment.graphs.isEmpty, "otherwise this passes vacuously")
+
+        let added = Account(origin: URL(string: "https://127.0.0.1:13")!, clientID: "cid", scopes: [])
+        await environment.install(account: added, api: FakeMailAPIClient(), store: try MailStore.inMemory())
+        let launches = await tracker.events.filter {
+            if case .viewShown(_, .launch) = $0 { return true }
+            return false
+        }
+        #expect(launches.isEmpty)
+        for graph in environment.graphs.values { await graph.stop() }
+    }
+
     /// The other half of C10: cancelling the restore must be surgical. Fails if
     /// signing one account out stops the loop for the accounts still behind it,
     /// which would strand them on the launch placeholder until relaunch.

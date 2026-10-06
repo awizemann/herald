@@ -11,21 +11,35 @@ first, then cut the release.
 ## [Unreleased]
 
 ### Changed
-- **Usage analytics now run on swift-stats 0.3.0.** Nothing changes in what is collected:
-  Herald already counted installs with a random per-install identifier, so install figures
-  carry straight across the upgrade (no drop, no spike of "new" installs).
+- **Usage analytics now run on swift-stats 0.3.0.** Install figures carry straight across the
+  upgrade (no drop, no spike of "new" installs): Herald already counted installs with a random
+  per-install identifier.
+- **Usage reports are more accurate, and cover a few more features.** Herald now reports which
+  settings are changed (never what they were changed to, or for which domain), when a label is
+  added or removed (never which label), when a new-mail banner is clicked, and whether macOS
+  allowed notifications after you turned them on. Actions record where they were triggered
+  from (toolbar, keyboard, menu…), a search is counted once per Return, and a compose window
+  that closes leaving a draft is counted once. As before, nothing you type, no names, addresses
+  or identifiers of your mail or accounts, and no exact counts are ever sent.
 - **Settings › Privacy and the README now list everything each report carries**: the Herald
   version and build, macOS version, Mac model (never your Mac's name), processor type, and your
   language and region settings, alongside which features are used.
 - **The privacy manifest now declares the per-install identifier as Device ID** (not linked to
   you, not used for tracking). Herald has always sent it; earlier builds just didn't declare it.
+- Development builds never send usage reports unless explicitly turned on.
 
 ### Fixed
-- Background mail checks no longer count as using Herald. Sync passes that run while Herald is
-  in the background are not reported, so a Mac left running overnight no longer looks in use.
+- Automatic mail checks no longer count as using Herald. Herald used to report every
+  background sync — every 15 seconds while it was in front — so a Mac left running with Herald
+  open looked in use all night. Only syncs you start, the one at launch, and the moment sync
+  stops working are reported now.
+- A launch is counted once, not once per account, and not at all when Herald starts behind
+  other apps.
 - Launching Herald straight into the foreground now starts its analytics session properly
   (it previously had no "app opened" event), and quitting makes a best-effort attempt to send
   anything still queued.
+- Pressing Return in the search field right after typing now searches what you typed, not the
+  text from a quarter-second earlier.
 
 ## [1.1.0] - 2026-10-01
 

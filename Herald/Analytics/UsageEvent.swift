@@ -7,7 +7,7 @@ import Stats
 // THIS FILE IS THE PRIVACY CONTRACT for Herald's usage analytics. Every event that
 // can ever reach the backend is a case of `UsageEvent`, and every property that can
 // ever be attached to one is produced by `UsageEvent.props` below. There is no other
-// way to emit: `UsageTracking.track(_:)` takes a `UsageEvent`, never a free string
+// way to emit: `UsageTracking.record(_:)` takes a `UsageEvent`, never a free string
 // and never a free dictionary, so this file is the complete, auditable list.
 //
 // The only shapes a property value may take are:
@@ -324,8 +324,9 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case syncFailed(kind: UsageMailErrorKind, trigger: UsageSyncTrigger)
     case messageActionPerformed(action: UsageMessageAction, scope: UsageActionScope, via: UsageActionTrigger, count: UsageBucket)
     case actionFailed(action: UsageMessageAction, kind: UsageMailErrorKind)
-    /// One committed search (Return). `serverResults` is `nil` when the server
-    /// tier did not run for it (too short, or the drafts list).
+    /// One committed search (Return): how many rows the local tier matched, and
+    /// how many MORE the server tier added (`nil` when it did not run — too
+    /// short, or the drafts list).
     case searchRun(localResults: UsageBucket, serverResults: UsageBucket?)
     case searchFailed(kind: UsageMailErrorKind)
     case composeOpened(kind: UsageComposeKind)

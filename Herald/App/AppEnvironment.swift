@@ -583,6 +583,9 @@ final class AppEnvironment {
         launchReportPending = true
         await activate(ordered[0])
         let rest = ordered.dropFirst()
+        // Whatever came up has claimed the launch; if nothing did, nothing may
+        // claim it later — an Add Account or re-auth is not a launch.
+        if rest.isEmpty { launchReportPending = false }
         if graphs.isEmpty, rest.isEmpty {
             // The user HAS an account and it did not come up. `activate` already
             // said why, and overwriting that with `.signedOut` would replace a
@@ -595,6 +598,8 @@ final class AppEnvironment {
         restoreTask?.cancel()
         pendingRestoreIDs = Set(rest.map(\.id))
         restoreTask = Task { [weak self] in
+            // On every exit, cancellation included: see the line above.
+            defer { self?.launchReportPending = false }
             for account in rest {
                 guard !Task.isCancelled, let self else { return }
                 // Checked BEFORE activating: the accounts are brought up one at a
@@ -1091,8 +1096,8 @@ final class AppEnvironment {
                         named: NSApplication.didBecomeActiveNotification
                     )
                     for await _ in active {
-                        // The SDK drains anything recorded before this ahead of
-                        // `app_open`, so order holds without a chain.
+                        // No chain needed: the SDK drains anything already
+                        // recorded before it handles the activation.
                         await self?.recordApplicationDidBecomeActive()
                         await self?.setWindowActive(true)
                     }
@@ -1117,9 +1122,9 @@ final class AppEnvironment {
                         // via `recordFlush()`: the main thread is inside
                         // `terminate:` on its way to `exit()`, so a hop to the main
                         // actor would never run. Straight to the tracker instead,
-                        // racing the exit. Events already on disk go out next
-                        // launch; any still in `record()`'s in-memory buffer at
-                        // exit are lost — acceptable for a quit.
+                        // racing the exit. `flush()` drains `record()`'s buffer to
+                        // disk first; whatever is on disk goes out next launch,
+                        // and only what the exit beats is lost.
                         // No `applicationDidEnterBackground()`: Herald has no
                         // `.appBackground` and no background state.
                         await usage.flush()

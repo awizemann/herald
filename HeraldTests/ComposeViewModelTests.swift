@@ -651,10 +651,15 @@ actor FakeOutbox: Outboxing {
         #expect(Self.kept(recorded) == [.draftKept(via: .closed)])
     }
 
-    /// Closed mid-typing: the closing flush saves, then the draft is kept.
-    @Test func closingWithUnsavedTextSavesAndIsKeptOnce() async {
+    /// The window's `onDisappear` flush runs without a close when the scene is
+    /// merely rebuilt. Fails if that flush reports a kept draft (the window is
+    /// still open), or if the real close that follows reports it twice.
+    @Test func aWindowThatDisappearsWithoutClosingKeepsNothingUntilItCloses() async {
         let (model, recorded) = await Self.make()
         model.subject = "Lunch"
+        await model.flushAndStop()  // a rebuild: saves, reports nothing
+        #expect(Self.kept(recorded).isEmpty)
+        model.requestClose()  // now clean, so it closes outright
         await model.flushAndStop()
         #expect(Self.kept(recorded) == [.draftKept(via: .closed)])
     }

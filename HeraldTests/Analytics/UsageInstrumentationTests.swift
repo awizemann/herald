@@ -598,6 +598,33 @@ private struct UsageHarness {
         #expect(failures.first?.props.keys.sorted() == ["kind", "trigger"])
     }
 
+    /// An overnight outage — the common kind — starts with nobody looking. Fails
+    /// if it stays invisible once the person is back (the first failure they are
+    /// around for is the report), or if its later failures are reported too.
+    @Test func anOutageThatBeganInTheBackgroundIsReportedOnceThePersonIsBack() async throws {
+        let harness = try await UsageHarness.make()
+        await harness.model.start()
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        await harness.tracker.drain(until: 2)  // launch view + launch completion
+
+        await harness.model.setActive(false)
+        harness.events.yield(.began)
+        harness.events.yield(.failed(MailAPIError.cursorExpired))
+        try await wait("the backgrounded failure consumed") { harness.model.syncEventsConsumed == 4 }
+
+        await harness.model.setActive(true)
+        for _ in 0..<2 {
+            harness.events.yield(.began)
+            harness.events.yield(.failed(MailAPIError.decoding))
+        }
+        try await wait("the foreground failures consumed") { harness.model.syncEventsConsumed == 8 }
+        await harness.settle()
+
+        let failures = await harness.tracker.events.filter { $0.name == "sync_failed" }
+        #expect(failures == [.syncFailed(kind: .decoding, trigger: .auto)])
+    }
+
     /// swift-stats opens a session on any tracked event, so a pass reported while
     /// Herald is in the background would make an unattended Mac look in use.
     /// Fails if a backgrounded pass — completed OR failed — reaches the tracker,

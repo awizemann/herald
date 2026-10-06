@@ -1038,10 +1038,11 @@ final class ComposeViewModel {
             // window is going away and this flush was the last word.
             cancelAutosave()
         }
-        // The window closed with a draft on the server — kept, not sent and not
-        // discarded (both of which set `isClosed`). Save Draft in the close sheet
-        // set `isClosed` too, after reporting itself, so this never doubles it.
-        if !isClosed, draft.serverDraft != nil { record(.draftKept(via: .closed)) }
+        // No `draft_kept` here: every real close (⌘W, the red button through
+        // `WindowCloseInterceptor`, Save Draft, send, discard) has already set
+        // `isClosed` and reported itself. Reaching this line with `!isClosed`
+        // means the window disappeared WITHOUT closing (a scene rebuild), and
+        // reporting a kept draft then would count one the user never closed.
     }
 
     /// Test seam and window-close hook: waits for a pending debounce to finish.

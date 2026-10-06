@@ -416,6 +416,11 @@ import Testing
         let h = try await Self.harness(api: api)
         await api.setListError(.server(code: "INTERNAL", message: "boom"))
 
+        // Someone pressing Refresh is at the Mac. The harness keeps Herald in the
+        // background (so the automatic re-auth stays deferred), and a backgrounded
+        // pass is deliberately not reported — which would starve the barrier below.
+        // Only the view-model's reporting gate is flipped, nothing else.
+        h.mail.isAppActive = true
         await h.mail.refresh()
         try await wait("the failing pass") {
             await h.environment.drainPendingUsage()

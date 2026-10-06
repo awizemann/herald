@@ -527,6 +527,46 @@ private struct UsageHarness {
         #expect(failures == [.syncFailed(kind: .cursorExpired, trigger: .launch)])
         #expect(failures.first?.props.keys.sorted() == ["kind", "trigger"])
     }
+
+    /// swift-stats opens a session on any tracked event, so a pass reported while
+    /// Herald is in the background would make an unattended Mac look in use.
+    /// Fails if a backgrounded pass — completed OR failed — reaches the tracker,
+    /// or if dropping it disturbs the attribution of the next reported pass.
+    @Test func passesWhileInactiveAreNotReported() async throws {
+        let harness = try await UsageHarness.make()
+        await harness.model.start()
+
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        await harness.tracker.drain(until: 2)  // launch view + launch completion
+
+        await harness.model.setActive(false)
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        harness.events.yield(.began)
+        harness.events.yield(.failed(MailAPIError.cursorExpired))
+        // The gate is read when an event is CONSUMED, on the view-model's own
+        // task, so both inactive passes must be consumed before reactivating —
+        // the `.failed` status is the last thing they leave behind.
+        try await wait("both backgrounded passes consumed") {
+            if case .failed = harness.model.status { return true }
+            return false
+        }
+
+        // The barrier: the next event recorded is the first pass after
+        // reactivation, so anything the inactive passes leaked lands before it.
+        await harness.model.setActive(true)
+        harness.events.yield(.began)
+        harness.events.yield(.finished)
+        await harness.tracker.drain(until: 3)
+        await harness.settle()
+
+        let syncs = await harness.tracker.events.filter { $0.name.hasPrefix("sync_") }
+        #expect(syncs == [
+            .syncCompleted(trigger: .launch, changed: false),
+            .syncCompleted(trigger: .auto, changed: false),
+        ])
+    }
 }
 
 @MainActor

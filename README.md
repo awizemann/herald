@@ -76,9 +76,11 @@ Herald talks to your HQBase server and nothing else, with two exceptions. The fi
 opt-in mail classifier: when you turn it on for a domain, the first incoming message of each new
 conversation in that domain is sent to *your own* Cloudflare AI Gateway (Settings → AI Gateway),
 and nowhere else. The second is anonymous, **opt-out** usage analytics. When it's on, Herald reports which features are used (e.g. "archived a
-message") plus the app and OS version, tagged with a random per-install identifier so active
-installs can be counted. It never sends your mail, subjects, addresses, search text, mailbox
-names, account details, file names, or anything you type.
+message") plus the Herald version and build, macOS version, Mac model (e.g. `Mac15,3`, never
+your Mac's name), processor type, and your language and region settings, tagged with a random
+per-install identifier so active installs can be counted. It never sends your mail, subjects,
+addresses, search text, mailbox names, account details, file names, anything you type, your
+name, or your location.
 
 Turn it off in **Settings → Privacy**.
 

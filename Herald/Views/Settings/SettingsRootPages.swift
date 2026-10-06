@@ -537,18 +537,24 @@ struct PrivacySettingsPane: View {
         return isEnabled == nil ? "Loading current setting" : ""
     }
 
-    /// Verbatim from the approved plan's "Opt-out copy". Every clause of the
-    /// "never sent" list is enforced by the privacy contract in `UsageEvent.swift`.
+    /// Mirrors the swift-stats setup guide §7 table of what EVERY batch carries
+    /// (app version and build, OS version, hardware model — never the Mac's name —
+    /// CPU architecture, language and region settings); the guide forbids listing
+    /// the device under "never". Every clause of the "never sent" list is enforced
+    /// by the privacy contract in `UsageEvent.swift`. "Anonymous" in the switch's
+    /// title holds only while Herald never calls `identify(userID:)`.
     /// Swapped out entirely — not appended to — when this build has no tracker:
     /// the privacy promises below are moot if nothing can be sent either way.
     static func explanation(isAvailable: Bool) -> String {
         guard isAvailable else { return unavailableExplanation }
         return """
-            Sends which features you use (e.g. “archived a message”, “opened search”) and basic \
-            app/OS version info to Herald’s developer, tagged with a random per-install identifier \
-            so active installs can be counted. Never sent: your mail, subjects, addresses, search \
-            text, mailbox names, account details, file names, or anything you type. Turn this off \
-            and nothing further is sent, including anything queued.
+            Sends which features you use (e.g. “archived a message”, “opened search”) to Herald’s \
+            developer, along with the Herald version and build, macOS version, Mac model (e.g. \
+            “Mac15,3”, never your Mac’s name), processor type, and your language and region \
+            settings, tagged with a random per-install identifier so active installs can be \
+            counted. Never sent: your mail, subjects, addresses, search text, mailbox names, \
+            account details, file names, anything you type, your name, or your location. Turn \
+            this off and nothing further is sent, including anything queued.
             """
     }
 

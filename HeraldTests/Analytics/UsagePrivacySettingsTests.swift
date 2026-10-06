@@ -54,6 +54,22 @@ struct UsagePrivacySettingsTests {
         }
     }
 
+    /// swift-stats sends a fixed context with every batch (setup guide §7). Fails
+    /// if the copy drifts back to a vague "basic version info", or ever claims the
+    /// device itself is never sent — the hardware model IS sent.
+    @Test("The opt-out copy discloses every context field each batch carries")
+    func explanationDisclosesTheBatchContext() throws {
+        let copy = PrivacySettingsPane.explanation(isAvailable: true)
+        for disclosed in ["version and build", "macOS version", "Mac model", "processor type",
+                          "language and region", "per-install identifier"] {
+            #expect(copy.contains(disclosed), "missing: \(disclosed)")
+        }
+        let never = try #require(copy.range(of: "Never sent:")).upperBound
+        let end = try #require(copy.range(of: "Turn this off")).lowerBound
+        let neverList = copy[never..<end]
+        #expect(!neverList.contains("device") && !neverList.contains("Mac"))
+    }
+
     @Test("An unavailable build disables the switch and says why, in both the hint and the caption")
     func unavailableBuildDisablesAndExplains() async {
         let tracker = RecordingUsageTracker()

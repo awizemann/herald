@@ -493,6 +493,13 @@ final class AppEnvironment {
         // would otherwise sit in the defaults forever. Guarded to run once.
         PreferenceHygiene.purgeLegacyMailboxColorsOnce(in: defaults)
         observeActivation()
+        // A launch straight into the foreground has usually posted its
+        // didBecomeActive before `RootView.task` got here, so the observer above
+        // never hears it and the session would open with no `app_open`. The SDK
+        // treats `applicationDidBecomeActive()` as idempotent within a session, so
+        // a notification that does still arrive is harmless. On the record chain,
+        // so it lands ahead of the launch `view_shown`.
+        if isApplicationActive() { recordApplicationDidBecomeActive() }
         if routesNotificationClicks { installNotificationRouter() }
         phase = .openingCache
         let makeMailContainer = self.makeMailContainer
@@ -1053,6 +1060,7 @@ final class AppEnvironment {
     /// opening the real store.
     func observeActivation() {
         activityTask?.cancel()
+        let usage = self.usage
         activityTask = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { @Sendable [weak self] in
@@ -1075,6 +1083,23 @@ final class AppEnvironment {
                         // never overtakes the events it exists to push.
                         await self?.recordFlush()
                         await self?.setWindowActive(false)
+                    }
+                }
+                group.addTask { @Sendable in
+                    let terminating = NotificationCenter.default.notifications(
+                        named: NSApplication.willTerminateNotification
+                    )
+                    for await _ in terminating {
+                        // Best-effort (swift-stats guide §4), and deliberately NOT
+                        // via `recordFlush()`: the main thread is inside
+                        // `terminate:` on its way to `exit()`, so a hop to the main
+                        // actor would never run. Straight to the tracker instead,
+                        // racing the exit. Events the SDK has already taken are on
+                        // disk and go out next launch; any still waiting in
+                        // ``enqueueUsage``'s chain are lost — acceptable for a quit.
+                        // No `applicationDidEnterBackground()`: Herald has no
+                        // `.appBackground` and no background state.
+                        await usage.flush()
                     }
                 }
             }

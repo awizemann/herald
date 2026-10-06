@@ -10,6 +10,23 @@ first, then cut the release.
 
 ## [Unreleased]
 
+### Changed
+- **Usage analytics now run on swift-stats 0.3.0.** Nothing changes in what is collected:
+  Herald already counted installs with a random per-install identifier, so install figures
+  carry straight across the upgrade (no drop, no spike of "new" installs).
+- **Settings › Privacy and the README now list everything each report carries**: the Herald
+  version and build, macOS version, Mac model (never your Mac's name), processor type, and your
+  language and region settings, alongside which features are used.
+- **The privacy manifest now declares the per-install identifier as Device ID** (not linked to
+  you, not used for tracking). Herald has always sent it; earlier builds just didn't declare it.
+
+### Fixed
+- Background mail checks no longer count as using Herald. Sync passes that run while Herald is
+  in the background are not reported, so a Mac left running overnight no longer looks in use.
+- Launching Herald straight into the foreground now starts its analytics session properly
+  (it previously had no "app opened" event), and quitting makes a best-effort attempt to send
+  anything still queued.
+
 ## [1.1.0] - 2026-10-01
 
 Herald 1.1 adds one opt-in feature: AI tagging of new mail, run through your own Cloudflare AI

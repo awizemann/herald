@@ -3,10 +3,13 @@
 <plist version="1.0">
 <dict>
 	<!-- Herald does not track. The only identifier that leaves the device is a
-	     random per-install UUID hashed with a constant salt; it is never joined
-	     with data from other companies, never used for advertising, and never
-	     sent to a data broker. See Herald/Analytics/UsageEvent.swift for the
-	     complete list of what is (and is never) collected. -->
+	     random per-install UUID hashed with a constant salt (declared below as
+	     Device ID, matching the swift-stats 0.3.0 SDK manifest); it is never
+	     joined with data from other companies, never used for advertising, and
+	     never sent to a data broker. Herald never calls identify(userID:), so no
+	     User ID is collected and nothing is linked. See
+	     Herald/Analytics/UsageEvent.swift for the complete list of what is (and
+	     is never) collected. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -36,6 +39,18 @@
 			<key>NSPrivacyCollectedDataTypePurposes</key>
 			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
 			</array>
 		</dict>

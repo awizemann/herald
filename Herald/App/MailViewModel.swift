@@ -1590,6 +1590,22 @@ final class MailViewModel {
     /// Whether anything actually changed during the pass now in flight.
     @ObservationIgnored private var passChangedAnything = false
 
+    /// Reports a finished or failed pass — but only while Herald is the active
+    /// app. Passes run on a cadence whether or not anyone is at the Mac, and
+    /// swift-stats opens a session on ANY tracked event, so a backgrounded
+    /// Herald reporting its 60s idle poll would make an unattended Mac look in
+    /// use all night (swift-stats setup guide §4, "Unattended work"). The
+    /// trigger is still consumed by the caller, so launch → manual → auto
+    /// attribution is unchanged for the passes that are reported — and a
+    /// dropped pass still uses its trigger up: a launch behind another app (a
+    /// login item, `open -g`) reports no `launch` pass at all, and a Refresh
+    /// whose pass finishes after the person switched away is not reported.
+    /// Both are unattended by then, which is the point.
+    private func recordSyncPass(_ event: UsageEvent) {
+        guard isAppActive else { return }
+        record(event)
+    }
+
     private func consumeSyncTrigger() -> UsageSyncTrigger {
         defer {
             requestedSyncTrigger = nil
@@ -1705,7 +1721,7 @@ final class MailViewModel {
                 if status != .needsReauth { status = .syncing }
                 passChangedAnything = false
             case .finished:
-                record(.syncCompleted(trigger: consumeSyncTrigger(), changed: passChangedAnything))
+                recordSyncPass(.syncCompleted(trigger: consumeSyncTrigger(), changed: passChangedAnything))
                 passChangedAnything = false
                 if status != .needsReauth {
                     status = .idle
@@ -1740,7 +1756,7 @@ final class MailViewModel {
                 // nothing of the error itself.
                 let trigger = consumeSyncTrigger()
                 passChangedAnything = false
-                record(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
+                recordSyncPass(.syncFailed(kind: UsageMailErrorKind(anyError: error), trigger: trigger))
                 if Self.requiresReauthentication(error) {
                     // The transition is the event: every poll while the session
                     // is dead fails the same way, and re-announcing it would ask

@@ -57,17 +57,20 @@ nonisolated struct NoopUsageTracker: UsageTracking {
 /// design is an actor owning a "consent has been applied this process" latch, but
 /// the SDK makes that both unnecessary and wrong:
 ///
-/// - **Unnecessary.** `StatsConfiguration.consent` is documented as "initial
-///   consent, used only the first time this app runs (afterwards the persisted
-///   choice wins)", so seeding `.all` in the configuration is *the* API for setting
-///   consent on first use. It is synchronous, so no latch, no `Task` handle, and
-///   no actor reentrancy argument is needed.
+/// - **Unnecessary.** `StatsConfiguration.consent` applies on every launch until
+///   the app first records a choice with `setConsent` (swift-stats 0.3.0 corrected
+///   its earlier "first run only" wording); Herald never records one, so passing
+///   `.all` in the configuration *is* the consent. It is synchronous, so no latch,
+///   no `Task` handle, and no actor reentrancy argument is needed.
 /// - **Wrong.** Calling `setConsent(.all)` once per launch would re-widen any
 ///   consent a person had deliberately narrowed. Consent revocation is required by
 ///   schema §11 to be unresumable; re-granting it on their behalf at next launch
 ///   would break exactly that.
 ///
-/// Verified against swift-stats 0.2.0 (additive over 0.1.0; see CHANGELOG upgrade notes).
+/// Verified against swift-stats 0.3.0. Herald configures `.all` (= 0.3.0's
+/// `.default`), never calls `setConsent` or `identify(userID:)`, and builds one
+/// client per process — so 0.3.0's per-install default, its `identify` change and
+/// its one-client-per-app-id rule change nothing here (CHANGELOG "Upgrade notes").
 nonisolated struct StatsUsageTracker: UsageTracking {
     private let client: StatsClient
 
@@ -81,19 +84,8 @@ nonisolated struct StatsUsageTracker: UsageTracking {
     /// "Consumer checklist") — so this is safe to call directly in
     /// `AppEnvironment.init` on the main actor, with no `Task.detached` around it.
     init(writeKey: String, endpoint: CloudflareEndpoint) {
-        self.init(client: StatsClient(configuration: StatsConfiguration(
-            appId: UsageAnalytics.appId,
-            projectId: UsageAnalytics.projectId,
-            installIdSalt: UsageAnalytics.installIdSalt,
-            sink: CloudflareSink(endpoint: endpoint, writeKey: writeKey),
-            // First-run seed only; the persisted choice wins on every later launch.
-            // `.identity` is in the set because counting active installs is the
-            // whole point — it is what the privacy manifest and the opt-out copy
-            // disclose.
-            consent: .all,
-            // No `.appBackground`: Herald is a mail client people leave running, so
-            // an event per app switch is noise, not signal.
-            autoEvents: [.appOpen, .sessions]
+        self.init(client: StatsClient(configuration: UsageAnalytics.configuration(
+            sink: CloudflareSink(endpoint: endpoint, writeKey: writeKey)
         )))
     }
 
@@ -160,6 +152,26 @@ nonisolated enum UsageAnalytics {
     static let testEnvironmentKeys = [
         "XCTestConfigurationFilePath", "XCTestBundlePath", "XCTestSessionIdentifier",
     ]
+
+    /// The shipping configuration, with the sink left to the caller so a test can
+    /// run Herald's REAL consent and identity settings over an in-memory sink
+    /// (`RelaunchProbe`) instead of a hand-copied lookalike.
+    static func configuration(sink: any StatsSink) -> StatsConfiguration {
+        StatsConfiguration(
+            appId: appId,
+            projectId: projectId,
+            installIdSalt: installIdSalt,
+            sink: sink,
+            // Applies on every launch until something calls `setConsent` — and
+            // nothing in Herald does, so this IS the consent. `.identity` is in the
+            // set because counting active installs is the whole point; it is what
+            // the privacy manifest (Device ID) and the opt-out copy disclose.
+            consent: .all,
+            // No `.appBackground`: Herald is a mail client people leave running, so
+            // an event per app switch is noise, not signal.
+            autoEvents: [.appOpen, .sessions]
+        )
+    }
 
     /// Reads the write key baked in at build time. Returns `nil` when the key is
     /// absent; an unsubstituted `$(APP_STATS_WRITE_KEY)` is returned as-is and

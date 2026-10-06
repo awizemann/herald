@@ -97,3 +97,9 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 ## Update (2026-10-01 — v1.1.0 prepared)
 - [done] 1.1.0 prepped: CHANGELOG `## [1.1.0] - 2026-10-01` (the opt-in AI classification feature), README now discloses the classifier (it is the second thing besides analytics that talks to a non-HQBase host — the user's own Cloudflare AI Gateway) — commit 7eb7c66. 547 unit tests green; `--dry-run` passed end to end (build 13, identity gate OK, key baked, 0 key occurrences in the log); bump reverted, dry-run artifacts removed. Real run is the owner's #release
 - [rule] Any feature that sends data off the Mac to a host other than the HQBase server must also update README "Privacy and analytics" — that section states what Herald talks to #privacy
+
+
+
+## Update (2026-10-01 — v1.1.0 shipped)
+- [done] v1.1.0 released (build 13) by the agent with the owner's explicit go — the auto-mode block noted for 1.0.0 did not recur. Notarization Accepted, main + tag pushed (a80015c), GitHub release zip HTTP 200 and byte-identical to the local signed zip (5280582 bytes = appcast enclosure length), `spctl` accepted (Notarized Developer ID), gh-pages appcast advertises 1.1.0/13 #release
+- [gotcha] The first `curl -L` of a fresh release asset returned a 92-byte body (not the zip); a retry a minute later was correct. Check `curl -sIL` for 200 + content-length before calling a download broken #release

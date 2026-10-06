@@ -25,6 +25,7 @@ P8 (task t-75e2f028), 2026-09-04. Labels shipped against the v1 API, whose messa
 - relates_to [[HQBase Mail API v1 Contract]]
 - relates_to [[Herald Sync Model]]
 - relates_to [[Herald Design System and Accessibility]]
+- relates_to [[Herald AI Classification via Cloudflare AI Gateway]]
 
 
 ## Further decisions and deferrals (P8)

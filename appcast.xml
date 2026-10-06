@@ -3,21 +3,30 @@
     <channel>
         <title>Herald</title>
         <item>
-            <title>1.1.0</title>
-            <pubDate>Thu, 01 Oct 2026 09:06:58 -0400</pubDate>
-            <sparkle:version>13</sparkle:version>
-            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <title>1.1.1</title>
+            <pubDate>Tue, 06 Oct 2026 10:00:57 -0400</pubDate>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description><![CDATA[<p>Herald 1.1 adds one opt-in feature: AI tagging of new mail, run through your own Cloudflare AI Gateway. It is off until you set it up, and nothing leaves your Mac for it until you do.</p>
-<h3>Added</h3>
+            <description><![CDATA[<p>A maintenance release: more accurate, better-disclosed usage analytics, and one search fix.</p>
+<h3>Changed</h3>
 <ul>
-<li><strong>Classify new mail (opt-in).</strong> A domain&#x27;s new Workflows page can have an AI model tag each new conversation with one of your existing HQBase tags, using descriptions you write for each tag. Requests go to your own Cloudflare AI Gateway (Settings › AI Gateway: account, gateway, model and a token kept in the Keychain) and only Cloudflare-hosted models are offered. Only the first incoming message of a conversation with no tag yet is classified, never mail that arrived before you turned it on, and the conversation is re-checked on the server first so a tagged or older conversation never costs a model call. At most 60 requests an hour.</li>
-<li><strong>Recent activity</strong> on the Workflows page lists what was classified for that domain — the tag applied, &quot;No tag&quot;, or why a message was skipped or failed — and which model answered.</li>
-<li>A gateway problem (rejected token, no credits, model not enabled) pauses classification once and says so on the Workflows page; saving a new token or changing the gateway settings resumes it.</li>
+<li><strong>Usage analytics now run on swift-stats 0.3.0.</strong> Install figures carry straight across the upgrade (no drop, no spike of &quot;new&quot; installs): Herald already counted installs with a random per-install identifier.</li>
+<li><strong>Usage reports are more accurate, and cover a few more features.</strong> Herald now reports which settings are changed (never what they were changed to, or for which domain), when a label is added or removed (never which label), when a new-mail banner is clicked, and whether macOS allowed notifications after you turned them on. Actions record where they were triggered from (toolbar, keyboard, menu…), a search is counted once per Return, and a compose window that closes leaving a draft is counted once. As before, nothing you type, no names, addresses or identifiers of your mail or accounts, and no exact counts are ever sent.</li>
+<li><strong>Settings › Privacy and the README now list everything each report carries</strong>: the Herald version and build, macOS version, Mac model (never your Mac&#x27;s name), processor type, and your language and region settings, alongside which features are used.</li>
+<li><strong>The privacy manifest now declares the per-install identifier as Device ID</strong> (not linked to you, not used for tracking). Herald has always sent it; earlier builds just didn&#x27;t declare it.</li>
+<li>Development builds never send usage reports unless explicitly turned on.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Automatic mail checks no longer count as using Herald. Herald used to report every background sync — every 15 seconds while it was in front — so a Mac left running with Herald open looked in use all night. Only syncs you start, the one at launch, and the moment sync stops working are reported now.</li>
+<li>A launch is counted once, not once per account, and not at all when Herald starts behind other apps.</li>
+<li>Launching Herald straight into the foreground now starts its analytics session properly (it previously had no &quot;app opened&quot; event), and quitting makes a best-effort attempt to send anything still queued.</li>
+<li>Pressing Return in the search field right after typing now searches what you typed, not the text from a quarter-second earlier.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/awizemann/herald/releases/download/v1.1.0/Herald-1.1.0.zip" length="5280582" type="application/octet-stream" sparkle:edSignature="MSFz6GDJnBK5NpUAvEEDCPoajGHM1uNCwtpe7BkjTxyUlrAt5XwUMhp69hY8IKQicczdJyGnFLJx+/VN9B9HDw=="/>
+            <enclosure url="https://github.com/awizemann/herald/releases/download/v1.1.1/Herald-1.1.1.zip" length="5311240" type="application/octet-stream" sparkle:edSignature="10RLirQLxikLO84BWRPQc7MSmgg47eRwPwz56sDZdOeqk3VZ/ue6HyGFuZ9AedktrS+EAuzgcWSDECFXPtzpDg=="/>
         </item>
     </channel>
 </rss>

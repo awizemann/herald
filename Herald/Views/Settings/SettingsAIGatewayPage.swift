@@ -25,7 +25,10 @@ struct AIGatewaySettingsPage: View {
         }
         .onAppear {
             if model == nil {
-                model = AIGatewaySettingsModel(onTokenSaved: { [environment] in environment.resumeClassification() })
+                model = AIGatewaySettingsModel(onTokenSaved: { [environment] in
+                    environment.resumeClassification()
+                    environment.recordSettingChanged(.aiGatewayToken, on: true)
+                })
             }
         }
     }

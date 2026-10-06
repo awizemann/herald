@@ -48,6 +48,8 @@ struct GeneralSettingsPage: View {
                         .labelsHidden()
                         .fixedSize()
                         .accessibilityLabel("Density")
+                        // `onChange` fires on the person's pick, never on load.
+                        .onChange(of: density) { _, _ in environment.recordSettingChanged(.listDensity) }
                         .accessibilityIdentifier(AccessibilityID.Settings.density)
                     }
                     HStack(alignment: .top, spacing: MailTheme.Spacing.md) {
@@ -445,8 +447,9 @@ struct NotificationSettingsPane: View {
                     Toggle("Show unread count on the Dock icon", isOn: $dockBadgeEnabled)
                         .toggleStyle(.switch)
                         .labelsHidden()
-                        .onChange(of: dockBadgeEnabled) { _, _ in
+                        .onChange(of: dockBadgeEnabled) { _, enabled in
                             environment.applyDockBadge()
+                            environment.recordSettingChanged(.dockBadge, on: enabled)
                         }
                 }
             }

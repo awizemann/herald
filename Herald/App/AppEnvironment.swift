@@ -1052,18 +1052,24 @@ final class AppEnvironment {
     func notificationsSettingChanged(enabled: Bool) async {
         record(.notificationsToggled(enabled: enabled))
         guard enabled else { return }
+        // What macOS answered — the gap between "turned it on" and "can actually
+        // be notified" is a user lost to the system prompt.
         guard !graphs.isEmpty else {
             // Opted in before signing in: still ask, so the prompt belongs to the
             // switch the user just flipped rather than to the first mail to land.
-            _ = await notificationPoster.requestAuthorization()
+            let granted = await notificationPoster.requestAuthorization()
+            record(.notificationPermissionResolved(granted: granted))
             return
         }
         // Each account's notifier caches the answer; the system prompts once and
-        // hands the rest the stored result.
+        // hands the rest the stored result — so the FIRST answer is the one.
+        var answer: Bool?
         for id in accountIDs {
             guard let notifier = graphs[id]?.notifier else { continue }
-            await notifier.ensureAuthorized()
+            let granted = await notifier.ensureAuthorized()
+            if answer == nil { answer = granted }
         }
+        if let answer { record(.notificationPermissionResolved(granted: answer)) }
     }
 
     // MARK: - Activation

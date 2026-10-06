@@ -40,10 +40,13 @@ nonisolated enum UsageEventFixtures {
         .updateCheckRequested,
         .launchFailed(kind: .cache),
         .notificationOpened(landed: true),
+        .settingChanged(setting: .classification, on: true),
+        .notificationPermissionResolved(granted: false),
+        .labelChanged(assigned: true, scope: .conversation),
     ]
 
     /// The number of arms in ``discriminant(of:)``. Bump it when you add one.
-    static let caseCount = 24
+    static let caseCount = 27
 
     /// Exhaustive, no `default`. See the gate description above.
     static func discriminant(of event: UsageEvent) -> Int {
@@ -72,6 +75,9 @@ nonisolated enum UsageEventFixtures {
         case .updateCheckRequested: 21
         case .launchFailed: 22
         case .notificationOpened: 23
+        case .settingChanged: 24
+        case .notificationPermissionResolved: 25
+        case .labelChanged: 26
         }
     }
 }

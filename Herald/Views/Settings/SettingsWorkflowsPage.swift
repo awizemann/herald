@@ -129,6 +129,7 @@ struct DomainWorkflowsSettingsPage: View {
                 )
             },
             set: { newValue in
+                environment.recordSettingChanged(.classification, on: newValue)
                 Task {
                     await environment.updateDomainPreferences(accountID: accountID, reloads: false) { defaults in
                         WorkflowPreferences.setEnabled(newValue, accountID: accountID, domainID: item.id, in: defaults)
@@ -238,7 +239,10 @@ private struct WorkflowLabelRow: View {
 
     var body: some View {
         HStack(spacing: MailTheme.Spacing.md) {
-            Toggle(isOn: Binding(get: { stored.included }, set: { write(included: $0, description: currentDescription) })) {
+            Toggle(isOn: Binding(get: { stored.included }, set: {
+                environment.recordSettingChanged(.classificationLabel, on: $0)
+                write(included: $0, description: currentDescription)
+            })) {
                 LabelChip(label: label)
             }
             .toggleStyle(.checkbox)

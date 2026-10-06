@@ -29,6 +29,11 @@ import Testing
     ]
     static let actionScopes: Set<String> = ["message", "conversation"]
     static let draftKeptTriggers: Set<String> = ["closed", "save_button"]
+    static let settings: Set<String> = [
+        "list_density", "account_tint", "dock_badge", "domain_tint", "domain_default_from",
+        "domain_include_in_all", "domain_count_in_badge", "domain_notify",
+        "classification", "classification_label", "ai_gateway_token",
+    ]
     static let actionTriggers: Set<String> = [
         "toolbar", "row", "context_menu", "menu", "keyboard", "reading_pane", "bulk",
     ]
@@ -86,6 +91,9 @@ import Testing
         "account_switched": ["accounts": buckets],
         "notifications_toggled": ["enabled": Set<String>?.none],
         "notification_opened": ["landed": Set<String>?.none],
+        "setting_changed": ["setting": settings, "on": Set<String>?.none],
+        "notification_permission_resolved": ["granted": Set<String>?.none],
+        "label_changed": ["assigned": Set<String>?.none, "scope": actionScopes],
         "update_check_requested": [:],
         "launch_failed": ["kind": launchFailureKinds],
     ]
@@ -167,6 +175,7 @@ import Testing
         #expect(Set(UsageComposeKind.allCases.map(\.rawValue)) == Self.composeKinds)
         #expect(Set(UsageDraftKeptTrigger.allCases.map(\.rawValue)) == Self.draftKeptTriggers)
         #expect(Set(UsageActionTrigger.allCases.map(\.rawValue)) == Self.actionTriggers)
+        #expect(Set(UsageSetting.allCases.map(\.rawValue)) == Self.settings)
         #expect(Set(UsageAccountOutcome.allCases.map(\.rawValue)) == Self.accountOutcomes)
         #expect(Set(UsageLaunchFailureKind.allCases.map(\.rawValue)) == Self.launchFailureKinds)
         #expect(Set(UsageMailErrorKind.allCases.map(\.rawValue)) == Self.mailErrorKinds)

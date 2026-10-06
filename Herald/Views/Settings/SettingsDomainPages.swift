@@ -102,6 +102,7 @@ struct DomainOverviewSettingsPage: View {
         Binding(
             get: { DomainPreferences.includeInAll(accountID: accountID, domainID: item.id, in: environment.domainPreferencesObserved()) },
             set: { newValue in
+                environment.recordSettingChanged(.domainIncludeInAll, on: newValue)
                 Task {
                     await environment.updateDomainPreferences(accountID: accountID) { defaults in
                         DomainPreferences.setIncludeInAll(newValue, accountID: accountID, domainID: item.id, in: defaults)
@@ -115,6 +116,7 @@ struct DomainOverviewSettingsPage: View {
         Binding(
             get: { DomainPreferences.countInBadge(accountID: accountID, domainID: item.id, in: environment.domainPreferencesObserved()) },
             set: { newValue in
+                environment.recordSettingChanged(.domainCountInBadge, on: newValue)
                 Task {
                     await environment.updateDomainPreferences(accountID: accountID) { defaults in
                         DomainPreferences.setCountInBadge(newValue, accountID: accountID, domainID: item.id, in: defaults)
@@ -217,6 +219,7 @@ private struct DomainDefaultFromRow: View {
                     sendable.contains { $0.address.lowercased() == value } ? value : nil
                 } ?? Self.automatic) },
                 set: { newValue in
+                    environment.recordSettingChanged(.domainDefaultFrom)
                     Task {
                         await environment.updateDomainPreferences(accountID: accountID, reloads: false) { defaults in
                             DomainPreferences.setDefaultFrom(
@@ -277,6 +280,7 @@ private struct DomainNotifyRow: View {
                 Toggle("Notify me about new mail", isOn: Binding(
                     get: { effective },
                     set: { newValue in
+                        environment.recordSettingChanged(.domainNotify, on: newValue)
                         Task {
                             await environment.updateDomainPreferences(accountID: accountID) { defaults in
                                 DomainPreferences.setNotify(newValue, accountID: accountID, domainID: domainID, in: defaults)

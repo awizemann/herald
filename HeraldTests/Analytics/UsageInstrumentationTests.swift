@@ -849,3 +849,56 @@ private nonisolated final class StalledFlushTracker: UsageTracking, @unchecked S
         continuation?.resume()
     }
 }
+
+/// Settings and the notification permission prompt.
+@MainActor
+@Suite(.scratchDefaults) struct UsageSettingsTests {
+    /// Fails if a colour the setter REJECTS is reported as a change, or if the
+    /// chosen colour's name ever becomes a prop.
+    @Test func anAccountColourIsReportedOnlyWhenItWasApplied() async throws {
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(defaults: UsageHarness.scratchDefaults(), usage: tracker)
+        let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
+
+        environment.setAccountTint("not-a-colour", for: a.id)
+        #expect(await tracker.names.contains("setting_changed") == false)
+
+        let name = try #require(AccountTintAssignment.tokenNames.first)
+        environment.setAccountTint(name, for: a.id)
+        environment.setAccountTint(nil, for: a.id)  // reset is a change too
+        let changes = await tracker.events.filter { $0.name == "setting_changed" }
+        #expect(changes == [
+            .settingChanged(setting: .accountTint, on: nil),
+            .settingChanged(setting: .accountTint, on: nil),
+        ])
+        #expect(!changes.contains { $0.props.values.contains(.string(name)) })
+    }
+
+    /// The gap between "turned notifications on" and "macOS lets Herald notify"
+    /// is a user lost to the system prompt. Fails if the answer is not
+    /// reported, is reported for turning them OFF, or reports the wrong answer.
+    @Test(arguments: [true, false])
+    func turningNotificationsOnReportsWhatMacOSAnswered(granted: Bool) async {
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(
+            defaults: UsageHarness.scratchDefaults(),
+            notificationPoster: AnsweringPoster(granted: granted),
+            usage: tracker
+        )
+        await environment.notificationsSettingChanged(enabled: false)
+        await environment.notificationsSettingChanged(enabled: true)
+        #expect(await tracker.events == [
+            .notificationsToggled(enabled: false),
+            .notificationsToggled(enabled: true),
+            .notificationPermissionResolved(granted: granted),
+        ])
+    }
+}
+
+private actor AnsweringPoster: NewMailNotificationPosting {
+    let granted: Bool
+    init(granted: Bool) { self.granted = granted }
+    func requestAuthorization() async -> Bool { granted }
+    func post(_ notification: NewMailNotification) async {}
+    func removeDelivered(forAccount accountID: String) async {}
+}

@@ -223,6 +223,7 @@ extension MailViewModel {
                 assigned: assigned,
                 representativeMessageID: conversation(withID: threadID)?.latest.id
             )
+            record(.labelChanged(assigned: assigned, scope: .conversation))
         } catch {
             logger.warning("Label change failed: \(error.localizedDescription, privacy: .private)")
             actionError = error.localizedDescription
@@ -237,6 +238,7 @@ extension MailViewModel {
             try await actions.setLabel(
                 labelID, onMessage: messageID, accountID: accountID, assigned: assigned
             )
+            record(.labelChanged(assigned: assigned, scope: .message))
         } catch {
             logger.warning("Label change failed: \(error.localizedDescription, privacy: .private)")
             actionError = error.localizedDescription

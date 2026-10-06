@@ -100,6 +100,25 @@ nonisolated enum UsageActionTrigger: String, Sendable, Hashable, CaseIterable {
     case bulk
 }
 
+/// Which setting a person changed (Settings). Names only — never the value
+/// chosen (a colour, an address, a model), never which domain or account.
+/// Deliberately absent: the usage opt-out itself (an opt-out must not report
+/// itself), notifications (``UsageEvent/notificationsToggled(enabled:)``), and
+/// free-text fields (monogram, label descriptions), which commit per keystroke.
+nonisolated enum UsageSetting: String, Sendable, Hashable, CaseIterable {
+    case listDensity = "list_density"
+    case accountTint = "account_tint"
+    case dockBadge = "dock_badge"
+    case domainTint = "domain_tint"
+    case domainDefaultFrom = "domain_default_from"
+    case domainIncludeInAll = "domain_include_in_all"
+    case domainCountInBadge = "domain_count_in_badge"
+    case domainNotify = "domain_notify"
+    case classification
+    case classificationLabel = "classification_label"
+    case aiGatewayToken = "ai_gateway_token"
+}
+
 /// How a compose window ended up leaving its draft on the server: closed with
 /// a draft in place (the autosave already had it, or the closing flush saved
 /// it), or the close sheet's Save Draft.
@@ -339,6 +358,16 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     /// THE click count: the account switch and inbox reset it causes are not
     /// reported separately; only the thread's own `view_shown` is.
     case notificationOpened(landed: Bool)
+    /// The person changed a setting. `on` for a switch (its new position),
+    /// absent for a choice (density, a colour, an address).
+    case settingChanged(setting: UsageSetting, on: Bool?)
+    /// Herald asked macOS for notification permission (the moment the user
+    /// turned notifications on) and got this answer.
+    case notificationPermissionResolved(granted: Bool)
+    /// A label was added to or removed from a conversation (the list's context
+    /// menu) or a message (the reading pane) — reported once it took. Never
+    /// which label.
+    case labelChanged(assigned: Bool, scope: UsageActionScope)
     case updateCheckRequested
     case launchFailed(kind: UsageLaunchFailureKind)
 
@@ -368,6 +397,9 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .accountSwitched: "account_switched"
         case .notificationsToggled: "notifications_toggled"
         case .notificationOpened: "notification_opened"
+        case .settingChanged: "setting_changed"
+        case .notificationPermissionResolved: "notification_permission_resolved"
+        case .labelChanged: "label_changed"
         case .updateCheckRequested: "update_check_requested"
         case .launchFailed: "launch_failed"
         }
@@ -446,6 +478,16 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ["enabled": .bool(enabled)]
         case .notificationOpened(let landed):
             ["landed": .bool(landed)]
+        case .settingChanged(let setting, let on):
+            {
+                var props: [String: UsageValue] = ["setting": .string(setting.rawValue)]
+                if let on { props["on"] = .bool(on) }
+                return props
+            }()
+        case .notificationPermissionResolved(let granted):
+            ["granted": .bool(granted)]
+        case .labelChanged(let assigned, let scope):
+            ["assigned": .bool(assigned), "scope": .string(scope.rawValue)]
         case .launchFailed(let kind):
             ["kind": .string(kind.rawValue)]
         }

@@ -31,7 +31,9 @@ private struct LabelHarness {
         MailLabel(id: id, name: name, color: color)
     }
 
-    static func make() async throws -> LabelHarness {
+    static func make(
+        record: @escaping @MainActor @Sendable (UsageEvent) -> Void = { _ in }
+    ) async throws -> LabelHarness {
         let store = try MailStore.inMemory()
         let api = FakeMailAPIClient()
         let sync = LabelFakeSync()
@@ -44,7 +46,8 @@ private struct LabelHarness {
             actions: MailActionService(api: api, store: store),
             sync: sync,
             events: stream,
-            markReadDelay: .seconds(3_600)
+            markReadDelay: .seconds(3_600),
+            record: record
         )
         return LabelHarness(store: store, api: api, sync: sync, model: model)
     }
@@ -488,5 +491,35 @@ struct LabelsTests {
             await harness.api.labelListRequests.isEmpty,
             "the embedded set is enough; nothing should fall back to the per-label sweep"
         )
+    }
+}
+
+/// `label_changed`: reported once a label write TOOK, by direction and scope,
+/// never which label.
+@MainActor
+@Suite struct LabelUsageTests {
+    @MainActor final class Recorded { var events: [UsageEvent] = [] }
+
+    /// Fails if a refused write is reported as a change, if the reading pane's
+    /// message-level write is reported as a conversation one, or if the label's
+    /// id ever becomes a prop.
+    @Test func aLabelChangeIsReportedOnlyWhenItTook() async throws {
+        let recorded = Recorded()
+        let harness = try await LabelHarness.make(record: { recorded.events.append($0) })
+        try await harness.seed()
+
+        await harness.model.setLabel("lbl_2", onThread: "thr_inbox", assigned: true)
+        await harness.model.setLabel("lbl_1", onMessage: "m2", assigned: false)
+        await harness.api.setLabelWriteError(.server(code: "X", message: "no"))
+        await harness.model.setLabel("lbl_2", onThread: "thr_inbox", assigned: false)
+
+        let changes = recorded.events.filter { $0.name == "label_changed" }
+        #expect(changes == [
+            .labelChanged(assigned: true, scope: .conversation),
+            .labelChanged(assigned: false, scope: .message),
+        ])
+        for event in changes {
+            #expect(!event.props.values.contains { $0 == .string("lbl_2") || $0 == .string("lbl_1") })
+        }
     }
 }

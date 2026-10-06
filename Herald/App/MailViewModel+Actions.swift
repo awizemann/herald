@@ -41,9 +41,9 @@ extension MailViewModel {
 
     // MARK: - Actions
 
-    func perform(_ action: MessageAction, on messageID: String) async {
+    func perform(_ action: MessageAction, on messageID: String, via: UsageActionTrigger) async {
         record(.messageActionPerformed(
-            action: Self.usageAction(for: action), scope: .message, count: .one
+            action: Self.usageAction(for: action), scope: .message, via: via, count: .one
         ))
         do {
             try await actions.perform(action, on: messageID, accountID: accountID)
@@ -54,17 +54,16 @@ extension MailViewModel {
         await reloadAfterAction(threadID: threadMessages.first(where: { $0.id == messageID })?.threadID)
     }
 
-    /// - Parameter scope: what the user acted on. `.conversation` for a row or a
-    ///   context menu, `.selection` for the menu-bar verbs that act on whatever
-    ///   is selected.
+    /// - Parameter via: where the user triggered it, for the usage event.
+    ///   Required, so a new entry point cannot silently report as another.
     func perform(
         _ action: ConversationAction,
         onThread threadID: String,
-        scope: UsageActionScope = .conversation
+        via: UsageActionTrigger
     ) async {
         // Trashing what is already trashed is a server no-op; do not pretend.
         if isTrashScope, action == .trash { return }
-        await performConversationAction(action, onThread: threadID, scope: scope)
+        await performConversationAction(action, onThread: threadID, via: via)
     }
 
     /// Whether the list the user is looking at is the Trash.
@@ -114,14 +113,14 @@ extension MailViewModel {
     private func performConversationAction(
         _ action: ConversationAction,
         onThread threadID: String,
-        scope: UsageActionScope
+        via: UsageActionTrigger
     ) async {
         // The folder the row is listed in — what the server matches restore
         // and unarchive against. Drafts list no conversations, so nothing can
         // be acted on from there.
         guard let listFolder = folder.conversationFolder else { return }
         record(.messageActionPerformed(
-            action: Self.usageAction(for: action), scope: scope, count: .one
+            action: Self.usageAction(for: action), scope: .conversation, via: via, count: .one
         ))
         // Where the row sits in the list the user is looking at, captured BEFORE
         // it disappears: archiving the message you are reading has to move to the
@@ -186,20 +185,20 @@ extension MailViewModel {
     }
 
     /// Convenience for the commands: act on the current selection.
-    func performOnSelection(_ action: ConversationAction) async {
+    func performOnSelection(_ action: ConversationAction, via: UsageActionTrigger) async {
         guard let threadID = selectedThreadID else { return }
         // Herald's list is single-selection, so the count is always one — the
         // bucket is what makes a future multi-select reportable without changing
         // the event.
-        await perform(action, onThread: threadID, scope: .selection)
+        await perform(action, onThread: threadID, via: via)
     }
 
-    func toggleStar(_ row: ConversationSummary) async {
-        await perform(row.isStarred ? .unstar : .star, onThread: row.id)
+    func toggleStar(_ row: ConversationSummary, via: UsageActionTrigger) async {
+        await perform(row.isStarred ? .unstar : .star, onThread: row.id, via: via)
     }
 
-    func toggleRead(_ row: ConversationSummary) async {
-        await perform(row.isUnread ? .read : .unread, onThread: row.id)
+    func toggleRead(_ row: ConversationSummary, via: UsageActionTrigger) async {
+        await perform(row.isUnread ? .read : .unread, onThread: row.id, via: via)
     }
 
     /// Runs the save panel and writes the attachment. The API client stays private
@@ -207,8 +206,8 @@ extension MailViewModel {
     func saveAttachment(_ attachment: Attachment) async {
         switch await AttachmentSaver.save(attachment, accountID: accountID, using: api) {
         case .saved:
-            // No props: the filename, its size and its type are all off limits.
-            record(.attachmentSaved)
+            // Only a count: the filename, its size and its type are all off limits.
+            record(.attachmentSaved(count: .one, all: false))
         case .cancelled:
             break
         case .failed(let message):
@@ -231,7 +230,9 @@ extension MailViewModel {
             release: { await AttachmentFile.shared.unpin($0.id, accountID: accountID) },
             progress: progress
         )
-        for _ in report.saved { record(.attachmentSaved) }
+        if !report.saved.isEmpty {
+            record(.attachmentSaved(count: UsageBucket(count: report.saved.count), all: true))
+        }
         if let message = report.failureMessage { actionError = message }
     }
 
@@ -275,7 +276,9 @@ extension MailViewModel {
         messageID: String?,
         mailboxID: String?
     ) {
-        record(.composeOpened(kind: Self.usageComposeKind(for: kind)))
+        // `compose_opened` is reported by `AppEnvironment.prepareCompose` once
+        // the window can actually open — a reply whose message cannot be loaded
+        // opens nothing and must not count.
         composeRequest = ComposeRequest(kind: kind, messageID: messageID, mailboxID: mailboxID)
     }
 

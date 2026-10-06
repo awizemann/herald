@@ -1000,7 +1000,6 @@ final class ComposeViewModel {
             // The cache learns about the draft the moment the server does, so the
             // Drafts folder shows what is being typed without waiting for a poll.
             publishDraftState()
-            record(.draftSaved)
             if status == .saving { status = .idle }
             rescheduleAutosaveIfStillDirty()
         } catch {
@@ -1032,11 +1031,17 @@ final class ComposeViewModel {
         // Whatever else happens, the window is going away: the poll must get its
         // draft back or it could never tombstone that row again.
         defer { if let id = draft.serverDraft?.id { draftCache(.closed(id)) } }
-        guard !isClosed, draft.isDirty else { return }
-        await saveNow()
-        // "Stop": a save that landed still dirty may have queued another; the
-        // window is going away and this flush was the last word.
-        cancelAutosave()
+        guard !isClosed else { return }
+        if draft.isDirty {
+            await saveNow()
+            // "Stop": a save that landed still dirty may have queued another; the
+            // window is going away and this flush was the last word.
+            cancelAutosave()
+        }
+        // The window closed with a draft on the server — kept, not sent and not
+        // discarded (both of which set `isClosed`). Save Draft in the close sheet
+        // set `isClosed` too, after reporting itself, so this never doubles it.
+        if !isClosed, draft.serverDraft != nil { record(.draftKept(via: .closed)) }
     }
 
     /// Test seam and window-close hook: waits for a pending debounce to finish.
@@ -1198,11 +1203,17 @@ final class ComposeViewModel {
         await waitForUploads()
         await saveNow()
         guard status.message == nil else { return } // Save failed: keep the window.
+        if draft.serverDraft != nil { record(.draftKept(via: .saveButton)) }
         isClosed = true
     }
 
+    /// The clean close (⌘W, the close button) of a window with nothing unsaved.
+    /// A draft the autosave already put on the server is KEPT by it — the most
+    /// common way a draft is kept, so it is reported here: ``flushAndStop()``
+    /// runs after `isClosed` is set and cannot see it.
     func close() {
         cancelAutosave()
+        if !isClosed, draft.serverDraft != nil { record(.draftKept(via: .closed)) }
         isClosed = true
     }
 

@@ -132,7 +132,6 @@ extension MailViewModel {
     /// draft including its version stamp is already there — so this costs no
     /// round trip and works offline.
     func openDraft(_ draftID: String) {
-        record(.composeOpened(kind: .draft))
         composeRequest = ComposeRequest(kind: .draft, draftID: draftID)
     }
 

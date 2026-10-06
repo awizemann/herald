@@ -283,7 +283,7 @@ func wait(
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
-        await harness.model.perform(.archive, onThread: "t1")
+        await harness.model.perform(.archive, onThread: "t1", via: .row)
         #expect(harness.model.presentedConversations.isEmpty)
         // The wire id is a MEMBER MESSAGE id, not the thread id: the server
         // resolves the mailbox for its access check from it (see the API contract
@@ -301,7 +301,7 @@ func wait(
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
 
         await harness.api.setActionError(.server(code: "boom", message: "nope"))
-        await harness.model.perform(.archive, onThread: "t1")
+        await harness.model.perform(.archive, onThread: "t1", via: .row)
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"])
         #expect(harness.model.actionError != nil)
     }
@@ -320,7 +320,7 @@ func wait(
         harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
-        await harness.model.perform(.trash, onThread: "t1")
+        await harness.model.perform(.trash, onThread: "t1", via: .row)
         #expect(harness.model.presentedConversations.isEmpty, "the row must leave the inbox")
 
         harness.model.showListing(mailboxID: "mbA", folder: .trash)
@@ -337,7 +337,7 @@ func wait(
         await harness.model.start()
 
         await harness.api.setActionError(.server(code: "boom", message: "nope"))
-        await harness.model.perform(.trash, onThread: "t1")
+        await harness.model.perform(.trash, onThread: "t1", via: .row)
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"], "the inbox row must come back")
 
         harness.model.showListing(mailboxID: "mbA", folder: .trash)
@@ -507,7 +507,7 @@ func wait(
         #expect(harness.model.restoreAction == .restore)
         #expect(harness.model.restoreActionTitle == "Put Back")
 
-        await harness.model.perform(.restore, onThread: "t7")
+        await harness.model.perform(.restore, onThread: "t7", via: .row)
 
         #expect(await harness.api.conversationActionIDs("restore") == ["m7b"])
         #expect(await harness.api.messageActionIDs("restore").isEmpty)
@@ -532,7 +532,7 @@ func wait(
         #expect(harness.model.offersArchiveAction == false)
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
 
-        await harness.model.perform(.unarchive, onThread: "t3")
+        await harness.model.perform(.unarchive, onThread: "t3", via: .row)
 
         #expect(await harness.api.conversationActionIDs("unarchive") == ["m3"])
         #expect(await harness.api.messageActionIDs("unarchive").isEmpty)
@@ -549,7 +549,7 @@ func wait(
         harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
 
-        await harness.model.perform(.archive, onThread: "t1")
+        await harness.model.perform(.archive, onThread: "t1", via: .row)
 
         #expect(await harness.api.conversationActionIDs("archive") == ["m1"])
         #expect(await harness.api.messageActionIDs("archive").isEmpty)
@@ -563,7 +563,7 @@ func wait(
         harness.model.showListing(mailboxID: "mbA", folder: .trash)
         await harness.model.start()
 
-        await harness.model.perform(.trash, onThread: "t7")
+        await harness.model.perform(.trash, onThread: "t7", via: .row)
 
         #expect(await harness.api.actionCount("trash", on: "m7b") == 0)
         #expect(harness.model.presentedConversations.map(\.id) == ["t7"])
@@ -584,7 +584,7 @@ func wait(
         await harness.model.start()
         await harness.api.setConversationAffected(0)
 
-        await harness.model.perform(.archive, onThread: "t1")
+        await harness.model.perform(.archive, onThread: "t1", via: .row)
 
         #expect(harness.model.presentedConversations.map(\.id) == ["t1"], "the row was not put back")
         #expect(try await harness.store.message(id: "m1", accountID: "acct")?.folder == .inbox)
@@ -624,7 +624,7 @@ func wait(
         await harness.model.start()
         #expect(harness.model.presentedConversations.map(\.id) == ["t3"])
 
-        await harness.model.perform(.read, onThread: "t3")
+        await harness.model.perform(.read, onThread: "t3", via: .row)
         // `m3` is t3's only message, and the member message id is what goes on
         // the wire; the FOLDER is what this test is about.
         #expect(await harness.api.actionFolders("read", on: "m3") == [.archived])
@@ -680,7 +680,7 @@ func wait(
         #expect(harness.model.presentedConversations.map(\.id) == ["t3", "t2", "t1"])
 
         harness.model.selectedThreadID = "t2" // The middle row.
-        await harness.model.perform(.archive, onThread: "t2")
+        await harness.model.perform(.archive, onThread: "t2", via: .row)
 
         #expect(harness.model.presentedConversations.map(\.id) == ["t3", "t1"])
         #expect(harness.model.selectedThreadID == "t1", "The selection did not follow the archive")
@@ -695,7 +695,7 @@ func wait(
         await harness.model.start()
 
         harness.model.selectedThreadID = "t1" // Oldest, so last in the list.
-        await harness.model.perform(.trash, onThread: "t1")
+        await harness.model.perform(.trash, onThread: "t1", via: .row)
 
         #expect(harness.model.selectedThreadID == "t2")
     }
@@ -715,7 +715,7 @@ func wait(
         harness.model.selectedThreadID = "t3" // The row directly above the thread.
         #expect(harness.model.isShowingThread == false)
 
-        await harness.model.perform(.archive, onThread: "t3")
+        await harness.model.perform(.archive, onThread: "t3", via: .row)
 
         #expect(harness.model.selectedThreadID == "t9", "the selection did not follow the archive")
         #expect(
@@ -732,7 +732,7 @@ func wait(
         harness.model.showListing(mailboxID: "mbA", folder: .inbox)
         await harness.model.start()
         harness.model.selectedThreadID = "t3"
-        await harness.model.perform(.archive, onThread: "t3")
+        await harness.model.perform(.archive, onThread: "t3", via: .row)
         #expect(harness.model.isShowingThread == false)
 
         harness.model.selectedThreadID = "t1"
@@ -749,7 +749,7 @@ func wait(
         await harness.model.start()
 
         harness.model.selectedThreadID = "t2"
-        await harness.model.perform(.read, onThread: "t2")
+        await harness.model.perform(.read, onThread: "t2", via: .row)
 
         #expect(harness.model.selectedThreadID == "t2")
     }

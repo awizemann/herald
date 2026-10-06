@@ -27,7 +27,11 @@ import Testing
     static let messageActions: Set<String> = [
         "read", "unread", "star", "unstar", "archive", "unarchive", "trash", "restore",
     ]
-    static let actionScopes: Set<String> = ["message", "conversation", "selection"]
+    static let actionScopes: Set<String> = ["message", "conversation"]
+    static let draftKeptTriggers: Set<String> = ["closed", "save_button"]
+    static let actionTriggers: Set<String> = [
+        "toolbar", "row", "context_menu", "menu", "keyboard", "reading_pane", "bulk",
+    ]
     static let composeKinds: Set<String> = ["new", "reply", "reply_all", "forward", "draft"]
     static let accountOutcomes: Set<String> = ["success", "cancelled", "failed"]
     static let launchFailureKinds: Set<String> = ["cache", "restore", "other"]
@@ -38,7 +42,7 @@ import Testing
     static let oauthErrorKinds: Set<String> = [
         "discovery", "registration", "server", "state_mismatch", "missing_code",
         "reauth_required", "missing_refresh_token", "malformed_token", "cancelled",
-        "web_auth", "unknown_account", "transport", "other",
+        "web_auth", "unknown_account", "transport", "invalid_origin", "already_added", "other",
     ]
     static let outboxErrorKinds: Set<String> = [
         "invalid_recipient", "no_recipients", "attachment_too_large", "draft_too_large",
@@ -57,13 +61,13 @@ import Testing
         "sync_completed": ["trigger": syncTriggers, "changed": Set<String>?.none],
         "sync_failed": ["kind": mailErrorKinds, "trigger": syncTriggers],
         "message_action_performed": [
-            "action": messageActions, "scope": actionScopes, "count": buckets,
+            "action": messageActions, "scope": actionScopes, "via": actionTriggers, "count": buckets,
         ],
         "action_failed": ["action": messageActions, "kind": mailErrorKinds],
         "search_run": ["local_results": buckets, "server_results": buckets],
         "search_failed": ["kind": mailErrorKinds],
         "compose_opened": ["kind": composeKinds],
-        "draft_saved": [:],
+        "draft_kept": ["via": draftKeptTriggers],
         "message_sent": [
             "attachments": buckets,
             "has_cc": Set<String>?.none,
@@ -72,15 +76,16 @@ import Testing
         "send_failed": ["kind": outboxErrorKinds],
         "compose_discarded": [:],
         "draft_deleted": [:],
-        "attachment_saved": [:],
+        "attachment_saved": ["count": buckets, "all": Set<String>?.none],
         "remote_media_loaded": [:],
-        "account_added": ["outcome": accountOutcomes, "kind": oauthErrorKinds],
+        "account_added": ["outcome": accountOutcomes, "kind": oauthErrorKinds, "accounts": buckets],
         "account_reauthenticated": [
             "outcome": accountOutcomes, "kind": oauthErrorKinds, "automatic": Set<String>?.none,
         ],
         "account_removed": [:],
         "account_switched": ["accounts": buckets],
         "notifications_toggled": ["enabled": Set<String>?.none],
+        "notification_opened": ["landed": Set<String>?.none],
         "update_check_requested": [:],
         "launch_failed": ["kind": launchFailureKinds],
     ]
@@ -160,6 +165,8 @@ import Testing
         #expect(Set(UsageMessageAction.allCases.map(\.rawValue)) == Self.messageActions)
         #expect(Set(UsageActionScope.allCases.map(\.rawValue)) == Self.actionScopes)
         #expect(Set(UsageComposeKind.allCases.map(\.rawValue)) == Self.composeKinds)
+        #expect(Set(UsageDraftKeptTrigger.allCases.map(\.rawValue)) == Self.draftKeptTriggers)
+        #expect(Set(UsageActionTrigger.allCases.map(\.rawValue)) == Self.actionTriggers)
         #expect(Set(UsageAccountOutcome.allCases.map(\.rawValue)) == Self.accountOutcomes)
         #expect(Set(UsageLaunchFailureKind.allCases.map(\.rawValue)) == Self.launchFailureKinds)
         #expect(Set(UsageMailErrorKind.allCases.map(\.rawValue)) == Self.mailErrorKinds)

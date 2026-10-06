@@ -19,19 +19,19 @@ nonisolated enum UsageEventFixtures {
         .viewShown(view: .inbox, via: .launch),
         .syncCompleted(trigger: .manual, changed: true),
         .syncFailed(kind: .transport, trigger: .auto),
-        .messageActionPerformed(action: .archive, scope: .selection, count: .twoToFive),
+        .messageActionPerformed(action: .archive, scope: .conversation, via: .keyboard, count: .twoToFive),
         .actionFailed(action: .trash, kind: .unauthorized),
         .searchRun(localResults: .twoToFive, serverResults: .sixToTwenty),
         .searchFailed(kind: .decoding),
         .composeOpened(kind: .replyAll),
-        .draftSaved,
+        .draftKept(via: .saveButton),
         .messageSent(attachments: .one, hasCC: true, hasBCC: false),
         .sendFailed(kind: .api(.server)),
         .composeDiscarded,
         .draftDeleted,
-        .attachmentSaved,
+        .attachmentSaved(count: .sixToTwenty, all: true),
         .remoteMediaLoaded,
-        .accountAdded(outcome: .failed, kind: .stateMismatch),
+        .accountAdded(outcome: .failed, kind: .stateMismatch, accounts: nil),
         .accountReauthenticated(outcome: .success, kind: nil, automatic: true),
         .accountRemoved,
         .accountSwitched(accounts: .twentyPlus),
@@ -39,10 +39,11 @@ nonisolated enum UsageEventFixtures {
         .scopeChanged(to: .allDomains, via: .sidebar),
         .updateCheckRequested,
         .launchFailed(kind: .cache),
+        .notificationOpened(landed: true),
     ]
 
     /// The number of arms in ``discriminant(of:)``. Bump it when you add one.
-    static let caseCount = 23
+    static let caseCount = 24
 
     /// Exhaustive, no `default`. See the gate description above.
     static func discriminant(of event: UsageEvent) -> Int {
@@ -55,7 +56,7 @@ nonisolated enum UsageEventFixtures {
         case .searchRun: 5
         case .searchFailed: 6
         case .composeOpened: 7
-        case .draftSaved: 8
+        case .draftKept: 8
         case .messageSent: 9
         case .sendFailed: 10
         case .composeDiscarded: 11
@@ -70,6 +71,7 @@ nonisolated enum UsageEventFixtures {
         case .scopeChanged: 20
         case .updateCheckRequested: 21
         case .launchFailed: 22
+        case .notificationOpened: 23
         }
     }
 }

@@ -211,16 +211,16 @@ struct MailCommands: Commands {
 
     private func perform(_ action: ConversationAction) {
         guard let model else { return }
-        Task { await model.performOnSelection(action) }
+        Task { await model.performOnSelection(action, via: .menu) }
     }
 
     private func toggleRead() {
         guard let model, let row = model.selectedConversation else { return }
-        Task { await model.toggleRead(row) }
+        Task { await model.toggleRead(row, via: .menu) }
     }
 
     private func toggleStar() {
         guard let model, let row = model.selectedConversation else { return }
-        Task { await model.toggleStar(row) }
+        Task { await model.toggleStar(row, via: .menu) }
     }
 }

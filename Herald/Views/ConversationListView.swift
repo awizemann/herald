@@ -86,18 +86,18 @@ struct ConversationListView: View {
                     minHeight: rowHeight,
                     isSelected: model.selectedThreadID == row.id,
                     labels: rowLabels,
-                    toggleStar: { Task { await model.toggleStar(row) } },
+                    toggleStar: { Task { await model.toggleStar(row, via: .row) } },
                     archive: model.offersArchiveAction
-                        ? { Task { await model.perform(.archive, onThread: row.id) } }
+                        ? { Task { await model.perform(.archive, onThread: row.id, via: .row) } }
                         : nil,
                     restoreTitle: model.restoreActionTitle,
                     restore: model.restoreAction.map { action in
-                        { Task<Void, Never> { await model.perform(action, onThread: row.id) } }
+                        { Task<Void, Never> { await model.perform(action, onThread: row.id, via: .row) } }
                     },
                     // In the Trash there is nothing to trash: the rotor action goes
                     // away rather than offering a no-op.
                     trash: model.offersTrashAction
-                        ? { Task { await model.perform(.trash, onThread: row.id) } }
+                        ? { Task { await model.perform(.trash, onThread: row.id, via: .row) } }
                         : nil,
                     openThread: row.messageCount > 1 ? { model.openThread(row.id) } : nil
                 )
@@ -193,23 +193,23 @@ struct ConversationListView: View {
                 Divider()
 
                 Button(row.isUnread ? "Mark as Read" : "Mark as Unread") {
-                    Task { await model.toggleRead(row) }
+                    Task { await model.toggleRead(row, via: .contextMenu) }
                 }
-                Button(row.isStarred ? "Unstar" : "Star") { Task { await model.toggleStar(row) } }
+                Button(row.isStarred ? "Unstar" : "Star") { Task { await model.toggleStar(row, via: .contextMenu) } }
                 Divider()
                 if model.offersArchiveAction {
-                    Button("Archive") { Task { await model.perform(.archive, onThread: id) } }
+                    Button("Archive") { Task { await model.perform(.archive, onThread: id, via: .contextMenu) } }
                 }
                 // "Put Back" in the Trash, "Move to Inbox" in the Archive —
                 // upstream 1.3.4's restore/unarchive (issue #7, #8).
                 if let restore = model.restoreAction {
                     Button(model.restoreActionTitle) {
-                        Task { await model.perform(restore, onThread: id) }
+                        Task { await model.perform(restore, onThread: id, via: .contextMenu) }
                     }
                 }
                 if model.offersTrashAction {
                     Button("Move to Trash", role: .destructive) {
-                        Task { await model.perform(.trash, onThread: id) }
+                        Task { await model.perform(.trash, onThread: id, via: .contextMenu) }
                     }
                 }
                 LabelMenu(model: model, threadID: id)
@@ -229,7 +229,7 @@ struct ConversationListView: View {
     /// there is nothing selected.
     private func act(_ action: ConversationAction) -> KeyPress.Result {
         guard model.selectedThreadID != nil else { return .ignored }
-        Task { await model.performOnSelection(action) }
+        Task { await model.performOnSelection(action, via: .keyboard) }
         return .handled
     }
 }

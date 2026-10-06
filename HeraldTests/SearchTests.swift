@@ -365,7 +365,7 @@ struct SearchTests {
         await harness.settle()
         #expect(harness.model.presentedConversations.map(\.id) == ["t9"])
 
-        await harness.model.perform(.archive, onThread: "t9")
+        await harness.model.perform(.archive, onThread: "t9", via: .row)
         #expect(harness.model.presentedConversations.isEmpty, "The archived server row came back")
     }
 

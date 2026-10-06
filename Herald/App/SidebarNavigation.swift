@@ -259,7 +259,8 @@ extension MailViewModel {
         }
         guard !targets.isEmpty, !Task.isCancelled else { return }
         record(.messageActionPerformed(
-            action: Self.usageAction(for: ConversationAction.read), scope: .conversation, count: UsageBucket(count: threadCount)
+            action: Self.usageAction(for: ConversationAction.read), scope: .conversation, via: .bulk,
+            count: UsageBucket(count: threadCount)
         ))
         let actions = self.actions
         let accountID = self.accountID

@@ -601,3 +601,87 @@ actor FakeOutbox: Outboxing {
         attachments: []
     )
 }
+
+/// The compose funnel's third end. A window that goes away leaving a draft on
+/// the server reports `draft_kept` exactly once, by how it was closed — and a
+/// sent, discarded or never-saved one reports nothing.
+@MainActor
+@Suite struct ComposeDraftKeptTests {
+    @MainActor final class Recorded { var events: [UsageEvent] = [] }
+
+    /// The outbox answers with a STORED draft, as the real one does — a kept
+    /// draft is one the server holds (`serverDraft`).
+    private static func make() async -> (ComposeViewModel, Recorded) {
+        let recorded = Recorded()
+        let outbox = FakeOutbox()
+        await outbox.setNormalizer { sent in
+            ComposeDraft(
+                id: sent.id, mode: sent.mode, mailboxID: sent.mailboxID, fromAddress: sent.fromAddress,
+                to: sent.to, cc: sent.cc, bcc: sent.bcc, subject: sent.subject, body: sent.body,
+                signature: sent.signature, sendAttemptKey: sent.sendAttemptKey,
+                serverDraft: Draft(
+                    id: "draft-1", version: 1, updatedAt: MailFixtures.epoch, attachments: [],
+                    content: DraftInput(mailboxID: "mbA", from: sent.fromAddress, to: sent.to, subject: sent.subject, text: sent.body)
+                ),
+                isDirty: false
+            )
+        }
+        let model = ComposeViewModel(
+            context: ComposeContext(kind: .new, fromAddress: "me@example.com"),
+            outbox: outbox,
+            autosaveDelay: .seconds(3600),
+            record: { recorded.events.append($0) }
+        )
+        return (model, recorded)
+    }
+
+    private static func kept(_ recorded: Recorded) -> [UsageEvent] {
+        recorded.events.filter { $0.name == "draft_kept" }
+    }
+
+    /// The common case: the autosave already has the draft, ⌘W closes clean, and
+    /// the window's flush runs after. Fails if it is missed (the flush sees a
+    /// closed composer) or counted twice.
+    @Test func aCleanCloseOfAnAutosavedDraftIsKeptOnce() async {
+        let (model, recorded) = await Self.make()
+        model.subject = "Lunch"
+        await model.saveNow()
+        model.requestClose()
+        await model.flushAndStop()
+        #expect(Self.kept(recorded) == [.draftKept(via: .closed)])
+    }
+
+    /// Closed mid-typing: the closing flush saves, then the draft is kept.
+    @Test func closingWithUnsavedTextSavesAndIsKeptOnce() async {
+        let (model, recorded) = await Self.make()
+        model.subject = "Lunch"
+        await model.flushAndStop()
+        #expect(Self.kept(recorded) == [.draftKept(via: .closed)])
+    }
+
+    /// Save Draft in the close sheet, then the window's flush: one event, by
+    /// the button.
+    @Test func saveDraftInTheCloseSheetIsKeptOnceByTheButton() async {
+        let (model, recorded) = await Self.make()
+        model.subject = "Lunch"
+        await model.saveAndClose()
+        await model.flushAndStop()
+        #expect(Self.kept(recorded) == [.draftKept(via: .saveButton)])
+    }
+
+    /// Fails if a discarded draft, or a composer that never saved anything,
+    /// reports a kept draft.
+    @Test func discardedAndEmptyComposersKeepNothing() async {
+        let (discarded, recordedA) = await Self.make()
+        discarded.subject = "Lunch"
+        await discarded.saveNow()
+        await discarded.discard()
+        await discarded.flushAndStop()
+        #expect(Self.kept(recordedA).isEmpty)
+
+        let (empty, recordedB) = await Self.make()
+        empty.requestClose()
+        await empty.flushAndStop()
+        #expect(Self.kept(recordedB).isEmpty)
+    }
+}

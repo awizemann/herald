@@ -1908,14 +1908,20 @@ final class MailViewModel {
     /// Inbox when All domains leaves that domain out
     /// (``revealScope(forThread:)``). A thread that is genuinely gone leaves
     /// the UI on the inbox rather than selecting nothing in a mystery scope.
-    func revealConversation(threadID: String) async {
+    ///
+    /// Reports ONE view: the thread it lands on. The inbox reset on the way is
+    /// plumbing, not something the user chose — reporting it (and its scope
+    /// change) made one banner click read as two or three navigations. The
+    /// click itself is the caller's `notification_opened`.
+    /// - Returns: whether the conversation was found and selected.
+    @discardableResult
+    func revealConversation(threadID: String) async -> Bool {
         // How this reveal was reached is the CALLER's to say — the notification
         // router sets `.notification` before calling — so an unattributed reveal
         // is `other` like every other unlabelled navigation, rather than being
         // silently credited to a banner nobody clicked.
         let via = pendingNavigationSource ?? .other
         pendingNavigationSource = nil
-        let wasShowingLabel = selectedLabelID != nil
         searchQuery = ""
         // ONE navigation for all three axes, so a click from Drafts or from
         // inside a label is one `view_shown`, never a drafts→inbox trail. The
@@ -1925,20 +1931,10 @@ final class MailViewModel {
         var inbox = Location.launchDefault
         inbox.scope = await revealScope(forThread: threadID)
         if location != inbox {
-            let changesView = location.scope != inbox.scope || location.folder != inbox.folder
-            pendingNavigationSource = via
-            navigate(to: inbox)
-            // Leaving a label for the inbox that was already under it changes
-            // neither scope nor folder, so `navigate` reports nothing; the click
-            // still moved the user onto a different list.
-            if !changesView, wasShowingLabel { recordViewShown(.inbox, via: via) }
+            navigate(to: inbox, reportsView: false)
             // `navigate` starts the reload; awaiting it is what makes the row
             // available to select below.
             await reloadTask?.value
-        } else if isShowingThread {
-            // Already on the inbox, but inside a thread: the click still moved
-            // the user back to the conversation list.
-            recordViewShown(.inbox, via: via)
         }
         leaveThreadSilently()
         if !allConversations.contains(where: { $0.id == threadID }) {
@@ -1955,13 +1951,14 @@ final class MailViewModel {
         }
         guard allConversations.contains(where: { $0.id == threadID }) else {
             logger.info("Notification named a conversation that is no longer in the inbox")
-            return
+            return false
         }
         // Set only now, so a thread that turned out to be gone leaves nothing
         // stale behind for the user's next click to wear.
         pendingNavigationSource = via
         select(threadID, drill: true)
         pendingNavigationSource = nil
+        return true
     }
 
     /// The scope a clicked banner lands in: All domains, unless the thread's

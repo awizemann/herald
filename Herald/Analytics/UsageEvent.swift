@@ -85,7 +85,27 @@ nonisolated enum UsageMessageAction: String, Sendable, Hashable, CaseIterable {
 }
 
 nonisolated enum UsageActionScope: String, Sendable, Hashable, CaseIterable {
-    case message, conversation, selection
+    case message, conversation
+}
+
+/// Where an action was triggered from — the one thing that answers "do people
+/// use the keyboard?". `menu` covers both a click on the menu item and its ⌘
+/// shortcut (AppKit does not say which); `keyboard` is the list's bare keys
+/// (`e`, ⌫); `bulk` is Mark All as Read.
+nonisolated enum UsageActionTrigger: String, Sendable, Hashable, CaseIterable {
+    case toolbar, row
+    case contextMenu = "context_menu"
+    case menu, keyboard
+    case readingPane = "reading_pane"
+    case bulk
+}
+
+/// How a compose window ended up leaving its draft on the server: closed with
+/// a draft in place (the autosave already had it, or the closing flush saved
+/// it), or the close sheet's Save Draft.
+nonisolated enum UsageDraftKeptTrigger: String, Sendable, Hashable, CaseIterable {
+    case closed
+    case saveButton = "save_button"
 }
 
 nonisolated enum UsageComposeKind: String, Sendable, Hashable, CaseIterable {
@@ -162,6 +182,11 @@ nonisolated enum UsageOAuthErrorKind: String, Sendable, Hashable, CaseIterable {
     case webAuth = "web_auth"
     case unknownAccount = "unknown_account"
     case transport
+    /// Add Account only, decided before any OAuth: the address typed is not an
+    /// https origin Herald can use.
+    case invalidOrigin = "invalid_origin"
+    /// Add Account only: that server is already signed in.
+    case alreadyAdded = "already_added"
     /// Anything that is not an ``OAuthError`` at all — see ``UsageMailErrorKind.other``.
     case other
 
@@ -278,21 +303,29 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case scopeChanged(to: UsageScopeKind, via: UsageViewTrigger)
     case syncCompleted(trigger: UsageSyncTrigger, changed: Bool)
     case syncFailed(kind: UsageMailErrorKind, trigger: UsageSyncTrigger)
-    case messageActionPerformed(action: UsageMessageAction, scope: UsageActionScope, count: UsageBucket)
+    case messageActionPerformed(action: UsageMessageAction, scope: UsageActionScope, via: UsageActionTrigger, count: UsageBucket)
     case actionFailed(action: UsageMessageAction, kind: UsageMailErrorKind)
     /// One committed search (Return). `serverResults` is `nil` when the server
     /// tier did not run for it (too short, or the drafts list).
     case searchRun(localResults: UsageBucket, serverResults: UsageBucket?)
     case searchFailed(kind: UsageMailErrorKind)
     case composeOpened(kind: UsageComposeKind)
-    case draftSaved
+    /// The compose window went away and its draft stays on the server — the
+    /// third end of the compose funnel beside `message_sent` and
+    /// `compose_discarded`. Replaces `draft_saved`, which fired on every
+    /// debounced autosave and so tracked typing rather than a decision.
+    case draftKept(via: UsageDraftKeptTrigger)
     case messageSent(attachments: UsageBucket, hasCC: Bool, hasBCC: Bool)
     case sendFailed(kind: UsageOutboxErrorKind)
     case composeDiscarded
     case draftDeleted
-    case attachmentSaved
+    /// One save action: a single attachment, or "Download All" (`all`) with how
+    /// many made it, bucketed — never one event per file.
+    case attachmentSaved(count: UsageBucket, all: Bool)
     case remoteMediaLoaded
-    case accountAdded(outcome: UsageAccountOutcome, kind: UsageOAuthErrorKind?)
+    /// - Parameter accounts: on success, how many accounts Herald now has,
+    ///   bucketed — `1` is a first sign-in (onboarding), more is an addition.
+    case accountAdded(outcome: UsageAccountOutcome, kind: UsageOAuthErrorKind?, accounts: UsageBucket?)
     /// - Parameter automatic: whether Herald ran consent by itself (see
     ///   ``AutoReauthPolicy``) rather than the user pressing the banner's button.
     ///   Without it the two are indistinguishable and the metric mixes machine
@@ -301,6 +334,11 @@ nonisolated enum UsageEvent: Sendable, Hashable {
     case accountRemoved
     case accountSwitched(accounts: UsageBucket)
     case notificationsToggled(enabled: Bool)
+    /// A new-mail banner was clicked. `landed`: the conversation it named was
+    /// found and shown (false when it has gone — archived, trashed — since).
+    /// THE click count: the account switch and inbox reset it causes are not
+    /// reported separately; only the thread's own `view_shown` is.
+    case notificationOpened(landed: Bool)
     case updateCheckRequested
     case launchFailed(kind: UsageLaunchFailureKind)
 
@@ -317,7 +355,7 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .searchRun: "search_run"
         case .searchFailed: "search_failed"
         case .composeOpened: "compose_opened"
-        case .draftSaved: "draft_saved"
+        case .draftKept: "draft_kept"
         case .messageSent: "message_sent"
         case .sendFailed: "send_failed"
         case .composeDiscarded: "compose_discarded"
@@ -329,6 +367,7 @@ nonisolated enum UsageEvent: Sendable, Hashable {
         case .accountRemoved: "account_removed"
         case .accountSwitched: "account_switched"
         case .notificationsToggled: "notifications_toggled"
+        case .notificationOpened: "notification_opened"
         case .updateCheckRequested: "update_check_requested"
         case .launchFailed: "launch_failed"
         }
@@ -346,10 +385,11 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ["trigger": .string(trigger.rawValue), "changed": .bool(changed)]
         case .syncFailed(let kind, let trigger):
             ["kind": .string(kind.rawValue), "trigger": .string(trigger.rawValue)]
-        case .messageActionPerformed(let action, let scope, let count):
+        case .messageActionPerformed(let action, let scope, let via, let count):
             [
                 "action": .string(action.rawValue),
                 "scope": .string(scope.rawValue),
+                "via": .string(via.rawValue),
                 "count": .string(count.rawValue),
             ]
         case .actionFailed(let action, let kind):
@@ -364,8 +404,8 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ["kind": .string(kind.rawValue)]
         case .composeOpened(let kind):
             ["kind": .string(kind.rawValue)]
-        case .draftSaved:
-            [:]
+        case .draftKept(let via):
+            ["via": .string(via.rawValue)]
         case .messageSent(let attachments, let hasCC, let hasBCC):
             [
                 "attachments": .string(attachments.rawValue),
@@ -374,15 +414,18 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ]
         case .sendFailed(let kind):
             ["kind": .string(kind.rawValue)]
-        case .composeDiscarded, .draftDeleted, .attachmentSaved, .remoteMediaLoaded,
+        case .attachmentSaved(let count, let all):
+            ["count": .string(count.rawValue), "all": .bool(all)]
+        case .composeDiscarded, .draftDeleted, .remoteMediaLoaded,
             .accountRemoved, .updateCheckRequested:
             [:]
-        case .accountAdded(let outcome, let kind):
+        case .accountAdded(let outcome, let kind, let accounts):
             {
                 var props: [String: UsageValue] = ["outcome": .string(outcome.rawValue)]
                 // `kind` is present only on `.failed` — a success has no error to
                 // classify, and a cancellation is a person's choice, not a fault.
                 if outcome == .failed, let kind { props["kind"] = .string(kind.rawValue) }
+                if outcome == .success, let accounts { props["accounts"] = .string(accounts.rawValue) }
                 return props
             }()
         case .accountReauthenticated(let outcome, let kind, let automatic):
@@ -401,6 +444,8 @@ nonisolated enum UsageEvent: Sendable, Hashable {
             ["accounts": .string(accounts.rawValue)]
         case .notificationsToggled(let enabled):
             ["enabled": .bool(enabled)]
+        case .notificationOpened(let landed):
+            ["landed": .bool(landed)]
         case .launchFailed(let kind):
             ["kind": .string(kind.rawValue)]
         }

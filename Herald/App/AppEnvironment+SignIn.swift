@@ -38,7 +38,11 @@ extension AppEnvironment {
                 generation: generation,
                 refusesExistingOrigin: true
             )
-            self.record(.accountAdded(outcome: result.outcome, kind: result.kind))
+            self.record(.accountAdded(
+                outcome: result.outcome,
+                kind: result.kind,
+                accounts: result.outcome == .success ? UsageBucket(count: self.accountIDs.count) : nil
+            ))
         }
         signInCancellation = { task.cancel() }
         await task.value
@@ -174,9 +178,9 @@ extension AppEnvironment {
             if ownsOnboardingError() {
                 signInError = "Enter the https address of your HQBase server, for example https://mail.example.com"
             }
-            // A typo in the address field, not an OAuth fault: there is no kind
-            // to report, and the text the user typed is never one.
-            return SignInResult(outcome: .failed)
+            // A typo in the address field, not an OAuth fault — its own kind,
+            // and the text the user typed is never reported.
+            return SignInResult(outcome: .failed, kind: .invalidOrigin)
         }
         if ownsSignInUI(generation) {
             isSigningIn = true
@@ -195,10 +199,11 @@ extension AppEnvironment {
         if refusesExistingOrigin, let refusal = await addAccountRefusal(for: origin) {
             // The check suspended (a Keychain read): the user may have cancelled.
             guard ownsSignInUI(generation), !Task.isCancelled else { return SignInResult(outcome: .cancelled) }
-            signInError = refusal
+            signInError = refusal.message
             logger.info("Add Account refused before OAuth")
-            // Not an OAuth fault — nothing was attempted — so no kind.
-            return SignInResult(outcome: .failed)
+            // Not an OAuth fault — nothing was attempted — but why it stopped is
+            // still worth a kind.
+            return SignInResult(outcome: .failed, kind: refusal.kind)
         }
         do {
             let account = try await auth.addAccount(origin: origin) { [weak self] step in
@@ -281,18 +286,21 @@ extension AppEnvironment {
     ///
     /// Any OTHER failure to read the list (a Keychain error) does not block:
     /// the sign-in's own save surfaces it.
-    private func addAccountRefusal(for origin: URL) async -> String? {
+    private func addAccountRefusal(for origin: URL) async -> (message: String, kind: UsageOAuthErrorKind)? {
         let stored: [Account]
         do {
             stored = try await auth.loadAccounts()
         } catch AccountStoreError.indexUnreadable {
-            return AccountStoreError.indexUnreadable.localizedDescription
+            return (AccountStoreError.indexUnreadable.localizedDescription, .other)
         } catch {
             stored = []
         }
         guard let existing = existingAccount(for: origin, stored: stored) else { return nil }
         let host = existing.origin.host ?? existing.origin.absoluteString
-        return "You're already signed in to \(host). If its session has expired, use Sign In on that account instead."
+        return (
+            "You're already signed in to \(host). If its session has expired, use Sign In on that account instead.",
+            .alreadyAdded
+        )
     }
 
     /// The account already signed in to `origin`, if any — live here, or only in

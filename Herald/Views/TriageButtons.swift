@@ -19,7 +19,7 @@ struct TriageButtons: View {
 
     var body: some View {
         if model.offersArchiveAction {
-            Button { Task { await model.performOnSelection(.archive) } } label: {
+            Button { Task { await model.performOnSelection(.archive, via: .toolbar) } } label: {
                 Image(systemName: MailTheme.Symbol.archive)
                     .iconButtonStyle("Archive")
             }
@@ -28,7 +28,7 @@ struct TriageButtons: View {
 
         // Trash and Archive get the put-back verb in the archive button's place.
         if let restore = model.restoreAction {
-            Button { Task { await model.performOnSelection(restore) } } label: {
+            Button { Task { await model.performOnSelection(restore, via: .toolbar) } } label: {
                 Image(systemName: "arrow.uturn.backward")
                     .iconButtonStyle(model.restoreActionTitle)
             }
@@ -44,7 +44,7 @@ struct TriageButtons: View {
             }
             .disabled(model.selectedDraftID == nil)
         } else if model.offersTrashAction {
-            Button { Task { await model.performOnSelection(.trash) } } label: {
+            Button { Task { await model.performOnSelection(.trash, via: .toolbar) } } label: {
                 Image(systemName: MailTheme.Symbol.trash)
                     .iconButtonStyle("Move to Trash")
             }

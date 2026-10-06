@@ -487,10 +487,12 @@ private struct UsageHarness {
 @MainActor
 @Suite(.scratchDefaults) struct UsageActionAndSyncTests {
 
-    /// The menu-bar verbs act on "the selection", which is a different scope from
-    /// clicking a row — and the count is a bucket, never a number. Fails if the
-    /// scope collapses to `conversation`, or if an exact count is ever attached.
-    @Test func actingOnTheSelectionReportsTheSelectionScopeAndABucketedCount() async throws {
+    /// Where an action came from is what answers "do people use the keyboard?"
+    /// — and the count is a bucket, never a number. Fails if the entry point's
+    /// `via` is lost or swapped on the way to the event, or if an exact count is
+    /// ever attached.
+    @Test(arguments: [UsageActionTrigger.toolbar, .keyboard, .menu])
+    func aSelectionActionReportsWhereItWasTriggered(via: UsageActionTrigger) async throws {
         let harness = try await UsageHarness.make()
         let message = MailFixtures.message(id: "m1", threadID: "t1", mailboxID: "mbA")
         try await harness.store.upsertMessages([message], accountID: "acct")
@@ -500,11 +502,11 @@ private struct UsageHarness {
         await harness.model.start()
         harness.model.select("t1", drill: false)
 
-        await harness.model.performOnSelection(.archive)
+        await harness.model.performOnSelection(.archive, via: via)
 
         let performed = await harness.recorded().filter { $0.name == "message_action_performed" }
         #expect(performed == [
-            .messageActionPerformed(action: .archive, scope: .selection, count: .one)
+            .messageActionPerformed(action: .archive, scope: .conversation, via: via, count: .one)
         ])
         for event in performed {
             #expect(event.props["count"] == .string("1"), "counts are only ever bucketed")
@@ -692,12 +694,11 @@ private struct UsageHarness {
         #expect(switches == [.accountSwitched(accounts: .twoToFive)])
     }
 
-    /// Clicking a banner can LAUNCH Herald: the route is held until its account
-    /// comes up and then replayed. The replay assigns the selected account, but
-    /// nobody reached for the switcher — fails if that assignment is counted as a
-    /// switch (every notification-launched session would report one), while a
-    /// click on a live window still is one.
-    @Test func aLaunchTimeRouteReplayIsNotAnAccountSwitch() async throws {
+    /// A banner click is ONE `notification_opened` — whether it launched Herald
+    /// (held until its account comes up, then replayed) or landed on a live
+    /// window. Fails if the account assignment it causes is also counted as a
+    /// switch, which made every click read as two or more navigations.
+    @Test func aBannerClickIsOneNotificationOpenedAndNeverASwitch() async throws {
         let tracker = RecordingUsageTracker()
         let environment = AppEnvironment(
             defaults: UsageHarness.scratchDefaults(), usage: tracker
@@ -707,23 +708,78 @@ private struct UsageHarness {
         let b = Account(origin: URL(string: "https://b.example.com")!, clientID: "cid", scopes: [])
         await environment.install(account: a, api: FakeMailAPIClient(), store: store)
 
-        // The banner names an account that is not up yet: held, then replayed by
-        // `install`. No thread id, so nothing is revealed — the account
-        // assignment is the whole point here.
+        // Names an account that is not up yet: held, then replayed by `install`.
         await environment.open(NewMailRoute(accountID: b.id, threadID: nil, messageID: nil))
+        #expect(await tracker.names.contains("notification_opened") == false, "reported before it was handled")
         await environment.install(account: b, api: FakeMailAPIClient(), store: store, select: false)
-        await environment.drainPendingUsage()
         #expect(environment.selectedAccountID == b.id, "the replay must still switch the window")
-        #expect(
-            await tracker.names.contains("account_switched") == false,
-            "a launch-time replay is not a switch"
-        )
 
-        // The same route on a live window IS the user choosing an account.
+        // The same kind of click on a live window.
         await environment.open(NewMailRoute(accountID: a.id, threadID: nil, messageID: nil))
-        await environment.drainPendingUsage()
-        let switches = await tracker.events.filter { $0.name == "account_switched" }
-        #expect(switches == [.accountSwitched(accounts: .twoToFive)])
+        #expect(environment.selectedAccountID == a.id)
+
+        #expect(await tracker.names.contains("account_switched") == false, "a banner click is not a switch")
+        let opened = await tracker.events.filter { $0.name == "notification_opened" }
+        #expect(opened == [.notificationOpened(landed: true), .notificationOpened(landed: true)])
+        for graph in environment.graphs.values { await graph.stop() }
+    }
+
+    /// Fails if a banner whose conversation has gone since (archived, trashed)
+    /// reports that it landed — the one thing `landed` exists to tell apart.
+    @Test func aBannerForAConversationThatIsGoneDidNotLand() async throws {
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(defaults: UsageHarness.scratchDefaults(), usage: tracker)
+        let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
+        await environment.install(account: a, api: FakeMailAPIClient(), store: try MailStore.inMemory())
+
+        await environment.open(NewMailRoute(accountID: a.id, threadID: "gone", messageID: "m-gone"))
+
+        let opened = await tracker.events.filter { $0.name == "notification_opened" }
+        #expect(opened == [.notificationOpened(landed: false)])
+        for graph in environment.graphs.values { await graph.stop() }
+    }
+
+    /// Add Account's two pre-OAuth refusals are different user problems. Fails
+    /// if either reports `failed` with no reason (indistinguishable on the
+    /// dashboard), or if what the user typed ever becomes a prop.
+    @Test func addAccountRefusalsCarryTheirReason() async throws {
+        let tracker = RecordingUsageTracker()
+        let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
+        let environment = AppEnvironment(
+            auth: AuthCoordinator(store: InMemoryAccountStore()),
+            defaults: UsageHarness.scratchDefaults(),
+            usage: tracker
+        )
+        await environment.install(account: a, api: FakeMailAPIClient(), store: try MailStore.inMemory())
+
+        await environment.signIn(originText: "not a server at all ::")
+        await environment.signIn(originText: "https://A.example.com/")
+
+        let added = await tracker.events.filter { $0.name == "account_added" }
+        #expect(added == [
+            .accountAdded(outcome: .failed, kind: .invalidOrigin, accounts: nil),
+            .accountAdded(outcome: .failed, kind: .alreadyAdded, accounts: nil),
+        ])
+        for event in added {
+            #expect(!event.props.values.contains { $0 == .string("not a server at all ::") })
+        }
+        for graph in environment.graphs.values { await graph.stop() }
+    }
+
+    /// `compose_opened` counts windows, not requests. Fails if a request that
+    /// cannot open one (no account to compose from) is still reported.
+    @Test func composeOpenedIsReportedOnlyWhenAWindowCanOpen() async throws {
+        let tracker = RecordingUsageTracker()
+        let environment = AppEnvironment(defaults: UsageHarness.scratchDefaults(), usage: tracker)
+        #expect(await environment.prepareCompose(ComposeRequest(kind: .new)) == nil)
+        #expect(await tracker.names.contains("compose_opened") == false)
+
+        let a = Account(origin: URL(string: "https://a.example.com")!, clientID: "cid", scopes: [])
+        await environment.install(account: a, api: FakeMailAPIClient(), store: try MailStore.inMemory())
+        #expect(await environment.prepareCompose(ComposeRequest(kind: .new)) != nil)
+        let opened = await tracker.events.filter { $0.name == "compose_opened" }
+        #expect(opened == [.composeOpened(kind: .new)])
+        for graph in environment.graphs.values { await graph.stop() }
     }
 
     /// Signing an account out is reported, and reported without naming it. Fails

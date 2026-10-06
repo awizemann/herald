@@ -89,7 +89,7 @@ import Testing
         let kind = UsageOAuthErrorKind(error)
         #expect(UsageEventContractTests.oauthErrorKinds.contains(kind.rawValue))
         expectNoLeak(in: [
-            .accountAdded(outcome: .failed, kind: kind),
+            .accountAdded(outcome: .failed, kind: kind, accounts: nil),
             .accountReauthenticated(outcome: .failed, kind: kind, automatic: false),
         ])
     }
@@ -152,7 +152,7 @@ import Testing
         }
         for error in foreign.dropLast() {
             #expect(UsageOAuthErrorKind(anyError: error) == .other)
-            expectNoLeak(in: [.accountAdded(outcome: .failed, kind: .other)])
+            expectNoLeak(in: [.accountAdded(outcome: .failed, kind: .other, accounts: nil)])
         }
         // A real error of each type still classifies as itself, so the fallback
         // cannot be swallowing everything.

@@ -20,6 +20,8 @@ extension AppEnvironment {
               isCurrent(graph)
         else { return nil }
         composeSessions[request.id] = ComposeSession(accountID: graph.account.id, context: context)
+        // Here, not where the request is made: only now is a window certain.
+        record(.composeOpened(kind: MailViewModel.usageComposeKind(for: request.kind)))
         return request.id
     }
 

@@ -31,7 +31,7 @@ struct ThreadMessageListView: View {
                     minHeight: rowHeight,
                     isSelected: model.selectedMessageID == message.id,
                     toggleStar: {
-                        Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id) }
+                        Task { await model.perform(message.isStarred ? .unstar : .star, on: message.id, via: .readingPane) }
                     }
                 )
                 .tag(message.id)

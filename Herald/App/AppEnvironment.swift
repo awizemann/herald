@@ -896,7 +896,7 @@ final class AppEnvironment {
         // Herald) is replayed now that its graph can answer.
         if let route = pendingRoute, route.accountID == account.id {
             pendingRoute = nil
-            await open(route, isLaunchReplay: true)
+            await open(route)
         }
     }
 
@@ -1009,11 +1009,10 @@ final class AppEnvironment {
     /// Switching the window is right here, unlike a background action doing it:
     /// the banner said which account the mail is in, so the switcher following
     /// the click is what the user asked for.
-    /// - Parameter isLaunchReplay: whether this is the held route being replayed
-    ///   as its account comes up, rather than a click on a live window. The
-    ///   replay's account assignment is Herald finishing its own launch, not the
-    ///   user reaching for the switcher, and must not be counted as a switch.
-    func open(_ route: NewMailRoute, isLaunchReplay: Bool = false) async {
+    ///
+    /// A click that launched Herald (its account not up yet) is held and
+    /// replayed by `install`; either way it is reported once, when handled.
+    func open(_ route: NewMailRoute) async {
         // Clicking a banner can LAUNCH Herald — or name an account still coming
         // up behind the first one, since a restore activates the rest in the
         // background. Held until that account installs rather than dropped.
@@ -1021,17 +1020,18 @@ final class AppEnvironment {
             pendingRoute = route
             return
         }
-        // A clicked banner IS the user choosing an account, so this one counts —
-        // unless it is the launch replay, which is not a choice made twice.
-        if isLaunchReplay {
-            selectAccount(route.accountID)
-        } else {
-            selectedAccountID = route.accountID
+        // Silently: the click is reported ONCE, as `notification_opened` below.
+        // Reporting the account switch (and the reveal's inbox reset) as well
+        // made one banner click read as up to four separate navigations.
+        selectAccount(route.accountID)
+        guard let threadID = route.threadID else {
+            record(.notificationOpened(landed: true))
+            return
         }
-        guard let threadID = route.threadID else { return }
         // The view the reveal lands on was reached from a notification.
         graph.mail.pendingNavigationSource = .notification
-        await graph.mail.revealConversation(threadID: threadID)
+        let landed = await graph.mail.revealConversation(threadID: threadID)
+        record(.notificationOpened(landed: landed))
     }
 
     /// Re-applies the badge from the live counts. Called by Settings so flipping

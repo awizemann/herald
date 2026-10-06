@@ -89,7 +89,7 @@ import Testing
         let suite = "com.wizemann.stats.\(harness.appId)"
         // Make the SDK actually create the suite, so the teardown has something
         // to remove and this test cannot pass vacuously.
-        await harness.tracker.track(.draftSaved)
+        harness.tracker.record(.draftSaved)
         await harness.tracker.flush()
         try #require(UserDefaults.standard.persistentDomain(forName: suite) != nil)
 
@@ -113,7 +113,7 @@ import Testing
         defer { harness.tearDown() }
 
         for event in UsageEventFixtures.all {
-            await harness.tracker.track(event)
+            harness.tracker.record(event)
         }
         await harness.tracker.flush()
 
@@ -138,14 +138,14 @@ import Testing
         let harness = try Harness()
         defer { harness.tearDown() }
 
-        await harness.tracker.track(.draftSaved)
+        harness.tracker.record(.draftSaved)
         await harness.tracker.flush()
         #expect(await harness.sink.sentEventNames == ["draft_saved"])
 
-        await harness.tracker.track(.remoteMediaLoaded)  // queued, never flushed
+        harness.tracker.record(.remoteMediaLoaded)  // queued, never flushed
         await harness.tracker.setEnabled(false)
         #expect(await harness.tracker.isEnabled == false)
-        await harness.tracker.track(.attachmentSaved)  // must not be captured at all
+        harness.tracker.record(.attachmentSaved)  // must not be captured at all
         await harness.tracker.flush()
 
         #expect(
@@ -158,7 +158,7 @@ import Testing
     /// toggle reading `true` from a tracker that collects nothing is a lie in the UI.
     @Test func noopTrackerCollectsNothingAndReportsDisabled() async {
         let tracker = NoopUsageTracker()
-        await tracker.track(.draftSaved)
+        tracker.record(.draftSaved)
         await tracker.applicationDidBecomeActive()
         await tracker.flush()
         await tracker.setEnabled(true)

@@ -14,11 +14,14 @@ private nonisolated let logger = Logger(subsystem: "com.wizemann.herald", catego
 /// protocol could not be witnessed by an actor at all (see "Herald Concurrency
 /// Rules").
 ///
-/// The `track` parameter is a ``UsageEvent``, never a `String` and never a
+/// The `record` parameter is a ``UsageEvent``, never a `String` and never a
 /// dictionary: that is what makes `UsageEvent.swift` the complete, auditable list
 /// of what this app can send.
 nonisolated protocol UsageTracking: Sendable {
-    func track(_ event: UsageEvent) async
+    /// Synchronous and ordered: the timestamp is taken at the call, and calls keep
+    /// their call order (swift-stats `record()`), so nothing — least of all a
+    /// flush waiting on the network — can delay or reorder an event.
+    func record(_ event: UsageEvent)
     /// Drives `app_open` / `session_start`. swift-stats installs no AppKit
     /// observers of its own, so Herald calls this from its existing
     /// `NSApplication.didBecomeActiveNotification` observer.
@@ -41,7 +44,7 @@ nonisolated protocol UsageTracking: Sendable {
 nonisolated struct NoopUsageTracker: UsageTracking {
     init() {}
 
-    func track(_ event: UsageEvent) async {}
+    func record(_ event: UsageEvent) {}
     func applicationDidBecomeActive() async {}
     func flush() async {}
     func setEnabled(_ enabled: Bool) async {}
@@ -80,7 +83,7 @@ nonisolated struct StatsUsageTracker: UsageTracking {
 
     /// Builds the shipping client. `StatsClient.init` performs no disk I/O — the
     /// queue path and the `UserDefaults` suite are both resolved lazily inside the
-    /// actor on the first `track` / `applicationDidBecomeActive` (swift-stats 0.1.0,
+    /// actor on the first event / `applicationDidBecomeActive` (swift-stats 0.1.0,
     /// "Consumer checklist") — so this is safe to call directly in
     /// `AppEnvironment.init` on the main actor, with no `Task.detached` around it.
     init(writeKey: String, endpoint: CloudflareEndpoint) {
@@ -89,8 +92,8 @@ nonisolated struct StatsUsageTracker: UsageTracking {
         )))
     }
 
-    func track(_ event: UsageEvent) async {
-        await client.track(event.name, props: event.statsProps)
+    func record(_ event: UsageEvent) {
+        client.record(event.name, props: event.statsProps)
     }
 
     func applicationDidBecomeActive() async {

@@ -278,10 +278,8 @@ final class AppEnvironment {
     /// The one usage-analytics seam for the whole app. Default ``NoopUsageTracker``,
     /// so every test — and any caller that does not opt in — collects nothing.
     let usage: any UsageTracking
-    /// The tail of the record chain. Every emission awaits the previous one, so
-    /// events reach the SDK in the order they happened rather than in whatever
-    /// order a pile of unstructured tasks got scheduled.
-    @ObservationIgnored private var pendingRecord: Task<Void, Never>?
+    /// The most recent lifecycle call (activation, flush) — see ``runLifecycle(_:)``.
+    @ObservationIgnored private var pendingLifecycle: Task<Void, Never>?
     /// Set by the launch restore just before it brings up its first account;
     /// claimed (and cleared) by the first graph installed after that. Never set
     /// on a launch with no accounts, so a first sign-in is not a "launch".
@@ -363,10 +361,15 @@ final class AppEnvironment {
 
     // MARK: - Usage analytics
 
-    /// Emits one event, after everything already queued. The only way anything in
-    /// Herald reaches the tracker.
+    /// Emits one event. The only way anything in Herald reaches the tracker.
+    ///
+    /// Synchronous: swift-stats' `record()` stamps the time at the call and keeps
+    /// call order itself, and drains anything recorded ahead of a lifecycle call
+    /// or a flush. Herald used to order events on a `Task` chain of its own,
+    /// which put each flush — a network send of up to 60s — IN FRONT of every
+    /// event recorded after it, delaying them and skewing their timestamps.
     func record(_ event: UsageEvent) {
-        enqueueUsage { usage in await usage.track(event) }
+        usage.record(event)
     }
 
     /// The closure the view-models are handed. Weak, because a composer can
@@ -375,31 +378,33 @@ final class AppEnvironment {
         { [weak self] event in self?.record(event) }
     }
 
-    /// Drives `app_open` / `session_start`. On the same chain as the events, so
-    /// the session opens before whatever the user does inside it.
+    /// Drives `app_open` / `session_start`.
     func recordApplicationDidBecomeActive() {
-        enqueueUsage { usage in await usage.applicationDidBecomeActive() }
+        runLifecycle { usage in await usage.applicationDidBecomeActive() }
     }
 
-    /// Pushes whatever is queued. Chained for the same reason: a flush that
-    /// overtook the events it was supposed to flush would send nothing.
+    /// Pushes whatever is queued.
     func recordFlush() {
-        enqueueUsage { usage in await usage.flush() }
+        runLifecycle { usage in await usage.flush() }
     }
 
-    private func enqueueUsage(_ work: @escaping @Sendable (any UsageTracking) async -> Void) {
-        let previous = pendingRecord
+    /// Starts `work` at once — never behind an earlier call, so an activation is
+    /// not held up by a flush still waiting on the network — and links it to the
+    /// previous one only so ``drainPendingUsage()`` can wait for all of them. A
+    /// finished task drops its closure, so the links do not accumulate.
+    private func runLifecycle(_ work: @escaping @Sendable (any UsageTracking) async -> Void) {
+        let previous = pendingLifecycle
         let usage = self.usage
-        pendingRecord = Task {
-            await previous?.value
+        pendingLifecycle = Task {
             await work(usage)
+            await previous?.value
         }
     }
 
-    /// Test seam: waits for everything queued so far to reach the tracker. There
-    /// is no production caller — the chain is fire-and-forget by design.
+    /// Test seam: waits for every lifecycle call made so far to finish. Events
+    /// need no waiting (``record(_:)`` is synchronous). No production caller.
     func drainPendingUsage() async {
-        await pendingRecord?.value
+        await pendingLifecycle?.value
     }
 
     // MARK: - Derived state
@@ -501,8 +506,7 @@ final class AppEnvironment {
         // didBecomeActive before `RootView.task` got here, so the observer above
         // never hears it and the session would open with no `app_open`. The SDK
         // treats `applicationDidBecomeActive()` as idempotent within a session, so
-        // a notification that does still arrive is harmless. On the record chain,
-        // so it lands ahead of the launch `view_shown`.
+        // a notification that does still arrive is harmless.
         if isApplicationActive() { recordApplicationDidBecomeActive() }
         if routesNotificationClicks { installNotificationRouter() }
         phase = .openingCache
@@ -1081,8 +1085,8 @@ final class AppEnvironment {
                         named: NSApplication.didBecomeActiveNotification
                     )
                     for await _ in active {
-                        // On the record chain, so the session opens ahead of the
-                        // events the user is about to generate inside it.
+                        // The SDK drains anything recorded before this ahead of
+                        // `app_open`, so order holds without a chain.
                         await self?.recordApplicationDidBecomeActive()
                         await self?.setWindowActive(true)
                     }
@@ -1092,7 +1096,7 @@ final class AppEnvironment {
                         named: NSApplication.didResignActiveNotification
                     )
                     for await _ in resigned {
-                        // Queued BEHIND everything already recorded, so a flush
+                        // The SDK's flush drains everything recorded first, so it
                         // never overtakes the events it exists to push.
                         await self?.recordFlush()
                         await self?.setWindowActive(false)
@@ -1107,9 +1111,9 @@ final class AppEnvironment {
                         // via `recordFlush()`: the main thread is inside
                         // `terminate:` on its way to `exit()`, so a hop to the main
                         // actor would never run. Straight to the tracker instead,
-                        // racing the exit. Events the SDK has already taken are on
-                        // disk and go out next launch; any still waiting in
-                        // ``enqueueUsage``'s chain are lost — acceptable for a quit.
+                        // racing the exit. Events already on disk go out next
+                        // launch; any still in `record()`'s in-memory buffer at
+                        // exit are lost — acceptable for a quit.
                         // No `applicationDidEnterBackground()`: Herald has no
                         // `.appBackground` and no background state.
                         await usage.flush()

@@ -1,42 +1,52 @@
 import AppKit
 import Foundation
 import HeraldKit
+import os
 import Testing
 @testable import Herald
 
 /// Collects what the app tried to send, without an SDK behind it.
 ///
-/// An actor, because ``UsageTracking`` is a `nonisolated protocol` and the whole
-/// point of the record chain is that emission happens off the call site — a
-/// main-actor spy would hide exactly the ordering bug these tests exist to catch.
-actor RecordingUsageTracker: UsageTracking {
-    private(set) var events: [UsageEvent] = []
-    private(set) var activationCount = 0
-    private(set) var flushCount = 0
+/// Not an actor: ``UsageTracking/record(_:)`` is synchronous (as the SDK's is),
+/// and a spy that hopped to record would reorder exactly what these tests check.
+/// State sits behind a lock; the getters stay `async` so call sites read the
+/// same as against the real tracker.
+nonisolated final class RecordingUsageTracker: UsageTracking, @unchecked Sendable {
+    private struct State {
+        var events: [UsageEvent] = []
+        var activationCount = 0
+        var flushCount = 0
+        var enabledWrites: [Bool] = []
+        var isEnabled = true
+        var isAvailable = true
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
-    func track(_ event: UsageEvent) async { events.append(event) }
-    func applicationDidBecomeActive() async { activationCount += 1 }
-    func flush() async { flushCount += 1 }
+    func record(_ event: UsageEvent) { state.withLock { $0.events.append(event) } }
+    func applicationDidBecomeActive() async { state.withLock { $0.activationCount += 1 } }
+    func flush() async { state.withLock { $0.flushCount += 1 } }
     /// Records every opt-out write AND applies it, so a caller that re-reads
     /// `isEnabled` after writing (as the Settings toggle does) sees its own effect.
     func setEnabled(_ enabled: Bool) async {
-        enabledWrites.append(enabled)
-        isEnabled = enabled
+        state.withLock {
+            $0.enabledWrites.append(enabled)
+            $0.isEnabled = enabled
+        }
     }
 
-    private(set) var enabledWrites: [Bool] = []
-    private(set) var isEnabled = true
-    /// `nonisolated(unsafe)` because the protocol requirement is synchronous —
-    /// tests only ever flip this before other calls are in flight, so there is
-    /// no real race to guard against.
-    nonisolated(unsafe) var isAvailable = true
+    var events: [UsageEvent] { get async { state.withLock { $0.events } } }
+    var activationCount: Int { get async { state.withLock { $0.activationCount } } }
+    var flushCount: Int { get async { state.withLock { $0.flushCount } } }
+    var enabledWrites: [Bool] { get async { state.withLock { $0.enabledWrites } } }
+    var isEnabled: Bool { get async { state.withLock { $0.isEnabled } } }
+    var isAvailable: Bool { state.withLock { $0.isAvailable } }
 
     /// Test-only: simulates the no-write-key build the toggle disables for.
-    func makeUnavailable() {
-        isAvailable = false
+    func makeUnavailable() async {
+        state.withLock { $0.isAvailable = false }
     }
 
-    var names: [String] { events.map(\.name) }
+    var names: [String] { get async { state.withLock { $0.events.map(\.name) } } }
 
     /// Polls until at least `count` events have arrived, or the deadline passes.
     /// Never sleeps longer than it has to, and never asserts on a race: a caller
@@ -44,14 +54,14 @@ actor RecordingUsageTracker: UsageTracking {
     @discardableResult
     func drain(until count: Int, deadline: Duration = .seconds(2)) async -> [UsageEvent] {
         let end = ContinuousClock.now.advanced(by: deadline)
-        while events.count < count, ContinuousClock.now < end {
+        while await events.count < count, ContinuousClock.now < end {
             try? await Task.sleep(for: .milliseconds(2))
         }
-        return events
+        return await events
     }
 }
 
-/// One view-model wired to a real ``AppEnvironment`` record chain — the same
+/// One view-model wired to a real ``AppEnvironment`` record path — the same
 /// ordering guarantee production gets, rather than a hand-rolled substitute.
 @MainActor
 private struct UsageHarness {
@@ -113,9 +123,9 @@ private struct UsageHarness {
 @MainActor
 @Suite(.scratchDefaults) struct UsageRecordChainTests {
 
-    /// The chain exists so events arrive in the order they happened. Fails if
-    /// `record` ever forks an independent task per event — which reorders under
-    /// any real scheduler and is invisible in a single-event test.
+    /// Events arrive in the order they happened. Fails if `record` ever forks an
+    /// independent task per event — which reorders under any real scheduler and
+    /// is invisible in a single-event test.
     @Test func recordsAreDeliveredInCallOrder() async {
         let tracker = RecordingUsageTracker()
         let environment = AppEnvironment(
@@ -164,6 +174,28 @@ private struct UsageHarness {
             await environment.drainPendingUsage()
             return await tracker.flushCount >= 1
         }
+    }
+
+    /// A flush is a network send of up to 60s. Fails if one stuck in flight
+    /// holds back an event recorded after it, or the next activation (whose
+    /// `app_open` timestamp would be late by the same amount) — the head-of-line
+    /// block Herald's old `Task` chain had.
+    @Test func aStalledFlushHoldsBackNeitherEventsNorActivation() async throws {
+        let tracker = StalledFlushTracker()
+        let environment = AppEnvironment(defaults: UsageHarness.scratchDefaults(), usage: tracker)
+
+        environment.recordFlush()
+        await tracker.waitUntilFlushStarted()
+        environment.record(.remoteMediaLoaded)
+        #expect(tracker.events == [.remoteMediaLoaded], "the event waited behind the flush")
+
+        environment.recordApplicationDidBecomeActive()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while tracker.activations == 0, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(tracker.activations == 1, "the activation waited behind the flush")
+
+        tracker.releaseFlush()
+        await environment.drainPendingUsage()
     }
 
     private func postUntil(
@@ -714,5 +746,50 @@ private struct UsageHarness {
         let removals = await tracker.events.filter { $0.name == "account_removed" }
         #expect(removals == [.accountRemoved])
         #expect(removals.first?.props.isEmpty == true)
+    }
+}
+
+/// A tracker whose `flush()` parks until released — a send stuck on the network.
+private nonisolated final class StalledFlushTracker: UsageTracking, @unchecked Sendable {
+    private struct State {
+        var events: [UsageEvent] = []
+        var activations = 0
+        var flushStarted = false
+        var release: CheckedContinuation<Void, Never>?
+        var released = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var events: [UsageEvent] { state.withLock { $0.events } }
+    var activations: Int { state.withLock { $0.activations } }
+    var isAvailable: Bool { true }
+    var isEnabled: Bool { get async { true } }
+
+    func record(_ event: UsageEvent) { state.withLock { $0.events.append(event) } }
+    func applicationDidBecomeActive() async { state.withLock { $0.activations += 1 } }
+    func setEnabled(_ enabled: Bool) async {}
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            let resumeNow = state.withLock { s -> Bool in
+                s.flushStarted = true
+                if s.released { return true }
+                s.release = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func waitUntilFlushStarted() async {
+        for _ in 0..<10_000 where !state.withLock({ $0.flushStarted }) { await Task.yield() }
+    }
+
+    func releaseFlush() {
+        let continuation = state.withLock { s -> CheckedContinuation<Void, Never>? in
+            s.released = true
+            defer { s.release = nil }
+            return s.release
+        }
+        continuation?.resume()
     }
 }

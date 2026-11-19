@@ -5,10 +5,10 @@ permalink: hqbase-mac/conventions/herald-error-handling-and-security-rules
 tags: [errors, security]
 source_paths: [HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthSession.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthError.swift]
 source_paths_inferred: false
-source_sha: 5097194ad8a505144220b87af67b1b89a863e718
+source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
 created: 2026-08-16
 updated: 2026-09-19
-reviewed: 2026-09-27
+reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
 

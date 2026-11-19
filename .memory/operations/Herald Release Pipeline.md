@@ -12,10 +12,6 @@ reviewed: 2026-10-06
 reviewed_by: audit:claude-code (background)
 ---
 
-Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
-self-hosters who won't build from Xcode; App Store deferred until the trademark/adoption question
-is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on macos-15/Xcode 26.6).
-
 ## Observations
 - [fact] Sparkle 2.9.2 via SPM; feed `https://awizemann.github.io/herald/appcast.xml` (gh-pages branch of the same repo, pushed by release.sh through a throwaway worktree); enclosures on GitHub Releases; sandbox needs the two mach-lookup exceptions `$(PRODUCT_BUNDLE_IDENTIFIER)-spks/-spki` + `SUEnableInstallerLauncherService` (Downloader XPC NOT enabled — in-process download) #sparkle
 - [rule] `UpdateService.isAvailable` is decided from the Info dictionary BEFORE any Sparkle object exists (key present, non-placeholder, 32 base64 bytes); otherwise the updater is never constructed and the menu item is disabled — this is what keeps CI/unsigned/test-host builds from Sparkle's abort-on-start. Under tests the updater is never started even with a real key #guard
@@ -110,3 +106,8 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 
 ## Update (2026-10-06 — v1.1.1 shipped)
 - [done] v1.1.1 released (build 14) by the agent at the owner's request: swift-stats 0.3.0 upgrade + the analytics accuracy pass (no cadence heartbeat, once-per-launch, record(), new events, Device ID in the manifest) + the search-on-Return debounce fix. No dry run (pipeline unchanged since 1.1.0). Notarization Accepted, `spctl` Notarized Developer ID, main + tag pushed (54ed13a), GitHub release zip HTTP 200 with content-length 5311240 = local zip = appcast enclosure length, gh-pages appcast advertises 1.1.1/14. Write key passed via a 0600 scratchpad file, removed after; 0 occurrences in the release log #release
+
+
+
+## Update (2026-11-19 — v1.1.2 shipped)
+- [done] v1.1.2 released (build 15): HQBase 1.4.2 compatibility — Herald now re-registers with the server whenever it discovers it needs scopes its saved registration doesn't cover (fixes "The following scopes are invalid: signatures:manage"); sign-in error messages show spaces instead of `+` signs. Notarization Accepted, main + tag pushed (b3d494c), GitHub release zip HTTP 200, gh-pages appcast advertises 1.1.2/15 #release

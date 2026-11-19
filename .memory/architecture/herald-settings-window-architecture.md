@@ -8,7 +8,7 @@ source_paths_inferred: true
 source_sha: 8f315ecb297bd54db7ebec7cdb14ebf150868626
 created: 2026-09-27
 updated: 2026-09-29
-reviewed: 2026-10-06
+reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
 

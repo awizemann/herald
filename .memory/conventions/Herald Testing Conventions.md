@@ -5,10 +5,10 @@ permalink: hqbase-mac/conventions/herald-testing-conventions
 tags: [testing]
 source_paths: [HeraldKit/Tests/HeraldKitTests/Support/FakeServer.swift, HeraldTests/Support/ScratchDefaults.swift, HeraldKit/Tests/HeraldKitTests/Sync/FakeMailAPIClient.swift, HeraldKit/Tests/HeraldKitTests/Compose/OutboxServiceTests.swift, HeraldKit/Tests/HeraldKitTests/Auth/SessionRejectionLatchTests.swift, project.yml]
 source_paths_inferred: false
-source_sha: 54ed13ac9775487fef938169371cd8d8f7913aa9
+source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
 created: 2026-08-16
 updated: 2026-09-27
-reviewed: 2026-10-06
+reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
 General unit-testing conventions for Herald (HeraldTests app-hosted suites + HeraldKit package tests). UI (XCUITest) testing lives in [[Herald UI Testing]].

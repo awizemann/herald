@@ -5,7 +5,7 @@ permalink: hqbase-mac/conventions/herald-testing-conventions
 tags: [testing]
 source_paths: [HeraldKit/Tests/HeraldKitTests/Support/FakeServer.swift, HeraldTests/Support/ScratchDefaults.swift, HeraldKit/Tests/HeraldKitTests/Sync/FakeMailAPIClient.swift, HeraldKit/Tests/HeraldKitTests/Compose/OutboxServiceTests.swift, HeraldKit/Tests/HeraldKitTests/Auth/SessionRejectionLatchTests.swift, project.yml]
 source_paths_inferred: false
-source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
+source_sha: 5ae9858b5bb16e32b7d8a215663d00db6d479110
 created: 2026-08-16
 updated: 2026-11-19
 reviewed: 2026-11-19

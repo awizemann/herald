@@ -5,7 +5,7 @@ permalink: hqbase-mac/decisions/herald-usage-analytics-swift-stats
 tags: [analytics, privacy, swift-stats, release]
 source_paths: [Herald/Analytics/UsageEvent.swift, Herald/Analytics/UsageTracking.swift, Herald/App/AppEnvironment.swift, Herald/App/MailViewModel.swift, HeraldTests/Analytics/UsageInstrumentationTests.swift, scripts/release.sh, project.yml, Herald/PrivacyInfo.xcprivacy]
 source_paths_inferred: false
-source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
+source_sha: 5ae9858b5bb16e32b7d8a215663d00db6d479110
 created: 2026-08-18
 updated: 2026-11-19
 reviewed: 2026-11-19

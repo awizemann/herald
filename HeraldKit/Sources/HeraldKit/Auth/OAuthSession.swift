@@ -99,9 +99,14 @@ public nonisolated struct OAuthSession: Sendable, TokenRefreshing {
     /// `state` does not match. Returns before any network call so a forged callback
     /// never reaches the token endpoint.
     public func authorizationCode(from callback: URL, for request: AuthorizationRequest) throws -> String {
-        let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        // Decoded as a form (`+` is a space), which is how servers encode the
+        // redirect's query — URLComponents alone leaves `+` literal, so an
+        // `error_description` would show "The+following+scopes…".
+        let raw = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.percentEncodedQueryItems ?? []
         func value(_ name: String) -> String? {
-            items.first { $0.name == name }?.value
+            raw.first { $0.name == name }?.value.map {
+                $0.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? $0
+            }
         }
 
         guard value("state") == request.state else {

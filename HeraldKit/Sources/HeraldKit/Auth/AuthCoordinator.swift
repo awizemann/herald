@@ -149,6 +149,15 @@ public final class AuthCoordinator {
             let code = try oauth.authorizationCode(from: callback, for: request)
             step(.exchanging)
             tokens = try await oauth.exchange(code: code, pkce: request.pkce)
+        } catch let error as OAuthError where error.isScopeRefusal {
+            // The server will not grant this registration the scopes Herald asks
+            // for — e.g. it was registered before a scope Herald now needs, by a
+            // build that did not record its scopes. Forget it so the next sign-in
+            // registers with the current scope list. Not retried here, for the
+            // same reason as below: a second browser window nobody asked for.
+            logger.warning("authorization refused the requested scopes; registration forgotten")
+            await forgetRejectedClient(clientID, for: origin)
+            throw OAuthError.scopesRefused(description: error.serverDescription)
         } catch let error as OAuthError where error.isRejectedClient {
             // `unauthorized_client` for a client THIS attempt just registered is
             // not a lost registration: the server knows the client and refuses
@@ -513,8 +522,22 @@ public final class AuthCoordinator {
         step: (AuthStep) -> Void = { _ in }
     ) async throws -> (id: String, registeredNow: Bool) {
         step(.checkingRegistration)
-        let existing = try await offMain { [store] in try store.clientID(for: origin) }
-        if let existing, !existing.isEmpty { return (existing, false) }
+        let (existing, registeredScopes) = try await offMain { [store] in
+            (try store.clientID(for: origin), try store.clientScopes(for: origin))
+        }
+        if let existing, !existing.isEmpty {
+            // The server refuses an authorize request for any scope the client
+            // did not register (`invalid_scope`), so a registration only covers
+            // sign-ins that ask for a subset of its scopes. Unknown scopes (a
+            // registration saved before Herald recorded them) count as stale:
+            // one extra registration is cheap, a sign-in that can never succeed
+            // is not. This is how a newly adopted scope (e.g. 1.4.2's
+            // `signatures:manage`) reaches an origin Herald registered earlier.
+            if let registeredScopes, Set(configuration.scopes).isSubset(of: registeredScopes) {
+                return (existing, false)
+            }
+            logger.info("registration for \(origin.absoluteString, privacy: .public) does not cover the requested scopes; registering again")
+        }
         guard let endpoint = configuration.server.registrationEndpoint else {
             logger.error("\(origin.absoluteString, privacy: .public) has no registration_endpoint")
             throw OAuthError.registrationUnsupported
@@ -525,7 +548,9 @@ public final class AuthCoordinator {
             resource: configuration.resource,
             scopes: configuration.scopes
         )
-        try await offMain { [store] in try store.setClientID(clientID, for: origin) }
+        try await offMain { [store, scopes = configuration.scopes] in
+            try store.setClientID(clientID, scopes: scopes, for: origin)
+        }
         return (clientID, true)
     }
 }

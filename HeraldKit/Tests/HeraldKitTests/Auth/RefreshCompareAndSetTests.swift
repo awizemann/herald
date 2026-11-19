@@ -337,6 +337,7 @@ private nonisolated final class FailingWriteStore: AccountStore, @unchecked Send
     func add(_ account: Account) throws { try base.add(account) }
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
     func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
-    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws { try base.setClientID(clientID, scopes: scopes, for: origin) }
+    func clientScopes(for origin: URL) throws -> [String]? { try base.clientScopes(for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }

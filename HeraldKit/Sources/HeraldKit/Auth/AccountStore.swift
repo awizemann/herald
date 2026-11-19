@@ -57,7 +57,15 @@ public nonisolated protocol AccountStore: Sendable {
 
     /// The dynamically registered `client_id` for an origin, if Herald already has one.
     func clientID(for origin: URL) throws -> String?
-    func setClientID(_ clientID: String, for origin: URL) throws
+    /// The scopes that registration was made with, or `nil` when unknown (a
+    /// registration saved before Herald recorded them). The server refuses an
+    /// authorize request for any scope the client did not register, so a
+    /// registration whose scopes do not cover what Herald now asks for is
+    /// stale — ``AuthCoordinator`` registers again rather than reuse it.
+    func clientScopes(for origin: URL) throws -> [String]?
+    /// Saves the registration and its scopes together; `nil` scopes means
+    /// "unknown", which the next sign-in treats as stale.
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws
     /// Forgets the origin's registration, but ONLY while it is still `clientID`
     /// — the one the server just refused. Returns whether anything was removed.
     ///
@@ -86,6 +94,12 @@ public nonisolated protocol AccountStore: Sendable {
 }
 
 nonisolated extension AccountStore {
+    /// A registration with unknown scopes — what a pre-scope-tracking build
+    /// left behind. Kept for seeding and tests.
+    public func setClientID(_ clientID: String, for origin: URL) throws {
+        try setClientID(clientID, scopes: nil, for: origin)
+    }
+
     public func account(id: Account.ID) throws -> Account? {
         try accounts().first { $0.id == id }
     }
@@ -144,6 +158,7 @@ public nonisolated final class KeychainAccountStore: AccountStore {
     static let indexKey = "accounts.index"
     static func tokensKey(_ accountID: Account.ID) -> String { "tokens.\(accountID)" }
     static func clientKey(_ origin: URL) -> String { "client.\(Account.normalize(origin).absoluteString)" }
+    static func clientScopesKey(_ origin: URL) -> String { "clientScopes.\(Account.normalize(origin).absoluteString)" }
     static func discoveryKey(_ origin: URL) -> String { "discovery.\(Account.normalize(origin).absoluteString)" }
 
     // MARK: Accounts
@@ -336,8 +351,26 @@ public nonisolated final class KeychainAccountStore: AccountStore {
 
     /// Under the lock, so a registration written by this process can never be
     /// lost between ``forgetClientID(_:for:)``'s compare and its delete.
-    public func setClientID(_ clientID: String, for origin: URL) throws {
-        try lock.withLock { try secrets.setString(clientID, for: Self.clientKey(origin)) }
+    public func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws {
+        try lock.withLock {
+            try secrets.setString(clientID, for: Self.clientKey(origin))
+            if let scopes {
+                try secrets.setValue(scopes, for: Self.clientScopesKey(origin))
+            } else {
+                try secrets.removeValue(for: Self.clientScopesKey(origin))
+            }
+        }
+    }
+
+    /// Unreadable bytes are "unknown", which only costs one re-registration.
+    public func clientScopes(for origin: URL) throws -> [String]? {
+        try lock.withLock {
+            do {
+                return try secrets.value([String].self, for: Self.clientScopesKey(origin))
+            } catch SecretStoreError.decodingFailed {
+                return nil
+            }
+        }
     }
 
     /// Serialized with this process's registration reads and writes
@@ -353,6 +386,7 @@ public nonisolated final class KeychainAccountStore: AccountStore {
             let key = Self.clientKey(origin)
             guard try secrets.string(for: key) == clientID else { return false }
             try secrets.removeValue(for: key)
+            try secrets.removeValue(for: Self.clientScopesKey(origin))
             return true
         }
     }

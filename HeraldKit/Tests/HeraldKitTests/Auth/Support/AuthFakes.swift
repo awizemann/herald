@@ -164,13 +164,23 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
     private var accountList: [Account] = []
     private var tokenStore: [String: OAuthTokens] = [:]
     private var clientIDs: [String: String] = [:]
+    private var clientScopeStore: [String: [String]] = [:]
     private var reads = 0
     private var waiters: [(needed: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     private(set) var writes = 0
 
-    init(clientIDs: [String: String] = [:]) {
+    /// Seeded registrations are current ones: recorded with `seededScopes`
+    /// (by default what ``AuthFixtures/fullServer()`` makes Herald request), so
+    /// a sign-in reuses them. Pass `nil` to seed a pre-scope-tracking one.
+    init(
+        clientIDs: [String: String] = [:],
+        seededScopes: [String]? = ["mail:read", "mail:write", "mail:send", "offline_access"]
+    ) {
         self.clientIDs = clientIDs
+        if let seededScopes {
+            self.clientScopeStore = clientIDs.mapValues { _ in seededScopes }
+        }
     }
 
     func accounts() throws -> [Account] { lock.withLock { accountList } }
@@ -220,8 +230,16 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
         lock.withLock { clientIDs[Account.normalize(origin).absoluteString] }
     }
 
-    func setClientID(_ clientID: String, for origin: URL) throws {
-        lock.withLock { clientIDs[Account.normalize(origin).absoluteString] = clientID }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws {
+        lock.withLock {
+            let key = Account.normalize(origin).absoluteString
+            clientIDs[key] = clientID
+            clientScopeStore[key] = scopes
+        }
+    }
+
+    func clientScopes(for origin: URL) throws -> [String]? {
+        lock.withLock { clientScopeStore[Account.normalize(origin).absoluteString] }
     }
 
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
@@ -229,6 +247,7 @@ nonisolated final class RecordingAccountStore: AccountStore, @unchecked Sendable
             let key = Account.normalize(origin).absoluteString
             guard clientIDs[key] == clientID else { return false }
             clientIDs[key] = nil
+            clientScopeStore[key] = nil
             return true
         }
     }
@@ -331,7 +350,8 @@ nonisolated final class StaleReadingStore: AccountStore, @unchecked Sendable {
     func add(_ account: Account) throws { try base.add(account) }
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
     func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
-    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws { try base.setClientID(clientID, scopes: scopes, for: origin) }
+    func clientScopes(for origin: URL) throws -> [String]? { try base.clientScopes(for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }
 
@@ -382,7 +402,8 @@ nonisolated final class FailingReadStore: AccountStore, @unchecked Sendable {
     func add(_ account: Account) throws { try base.add(account) }
     func remove(_ accountID: Account.ID) throws { try base.remove(accountID) }
     func clientID(for origin: URL) throws -> String? { try base.clientID(for: origin) }
-    func setClientID(_ clientID: String, for origin: URL) throws { try base.setClientID(clientID, for: origin) }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws { try base.setClientID(clientID, scopes: scopes, for: origin) }
+    func clientScopes(for origin: URL) throws -> [String]? { try base.clientScopes(for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try base.forgetClientID(clientID, for: origin) }
 }
 

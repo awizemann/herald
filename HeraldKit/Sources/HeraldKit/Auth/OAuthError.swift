@@ -41,6 +41,10 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     /// sign-in registers Herald again. Not retried automatically: that would
     /// open a second browser window the user did not ask for.
     case clientRegistrationRejected
+    /// Sign-in was refused `invalid_scope` / `invalid_target` for the saved
+    /// registration, which Herald then forgot; the next sign-in registers anew.
+    /// Carries the server's description, if any.
+    case scopesRefused(description: String?)
 
     public nonisolated enum DiscoveryFailure: String, Sendable, Hashable {
         case status
@@ -103,6 +107,12 @@ public nonisolated enum OAuthError: Error, Sendable, Hashable {
     /// grants. Re-consenting with the SAME cached discovery and scope-bound
     /// registration can never succeed, so both are discarded before the death
     /// is announced (see ``AccountTokenProvider``).
+    /// The server's `error_description`, when this is a server error carrying one.
+    var serverDescription: String? {
+        guard case .server(_, let description) = self else { return nil }
+        return description
+    }
+
     public var isScopeRefusal: Bool {
         guard case .server(let error, _) = self else { return false }
         return error == "invalid_scope" || error == "invalid_target"
@@ -163,6 +173,8 @@ nonisolated extension OAuthError: LocalizedError {
             failure.localizedDescription
         case .clientRegistrationRejected:
             "This server no longer recognizes Herald. Sign in again and Herald will register with it anew."
+        case .scopesRefused:
+            "This server would not grant Herald the access it asks for under its earlier registration. Sign in again and Herald will register with it anew."
         }
     }
 }

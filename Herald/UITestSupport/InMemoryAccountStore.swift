@@ -17,6 +17,7 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         var accounts: [Account] = []
         var tokens: [Account.ID: OAuthTokens] = [:]
         var clientIDs: [String: String] = [:]
+        var clientScopes: [String: [String]] = [:]
         var configurations: [String: OAuthConfiguration] = [:]
         var configurationReads: [String] = []
         var refusesAccountList = false
@@ -84,8 +85,16 @@ nonisolated final class InMemoryAccountStore: AccountStore {
         state.withLock { $0.clientIDs[Account.normalize(origin).absoluteString] }
     }
 
-    func setClientID(_ clientID: String, for origin: URL) throws {
-        state.withLock { $0.clientIDs[Account.normalize(origin).absoluteString] = clientID }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws {
+        state.withLock { state in
+            let key = Account.normalize(origin).absoluteString
+            state.clientIDs[key] = clientID
+            state.clientScopes[key] = scopes
+        }
+    }
+
+    func clientScopes(for origin: URL) throws -> [String]? {
+        state.withLock { $0.clientScopes[Account.normalize(origin).absoluteString] }
     }
 
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool {
@@ -93,6 +102,7 @@ nonisolated final class InMemoryAccountStore: AccountStore {
             let key = Account.normalize(origin).absoluteString
             guard state.clientIDs[key] == clientID else { return false }
             state.clientIDs[key] = nil
+            state.clientScopes[key] = nil
             return true
         }
     }

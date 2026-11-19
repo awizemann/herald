@@ -453,7 +453,8 @@ private nonisolated final class UnlistableAccountStore: AccountStore {
         try backing.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
     }
     func clientID(for origin: URL) throws -> String? { try backing.clientID(for: origin) }
-    func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws { try backing.setClientID(clientID, scopes: scopes, for: origin) }
+    func clientScopes(for origin: URL) throws -> [String]? { try backing.clientScopes(for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try backing.forgetClientID(clientID, for: origin) }
 }
 
@@ -471,6 +472,7 @@ private nonisolated final class DamagedIndexStore: AccountStore {
         try backing.setTokens(tokens, for: accountID, ifRefreshTokenIs: expected)
     }
     func clientID(for origin: URL) throws -> String? { try backing.clientID(for: origin) }
-    func setClientID(_ clientID: String, for origin: URL) throws { try backing.setClientID(clientID, for: origin) }
+    func setClientID(_ clientID: String, scopes: [String]?, for origin: URL) throws { try backing.setClientID(clientID, scopes: scopes, for: origin) }
+    func clientScopes(for origin: URL) throws -> [String]? { try backing.clientScopes(for: origin) }
     func forgetClientID(_ clientID: String, for origin: URL) throws -> Bool { try backing.forgetClientID(clientID, for: origin) }
 }

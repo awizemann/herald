@@ -221,7 +221,7 @@ nonisolated enum UsageOAuthErrorKind: String, Sendable, Hashable, CaseIterable {
     init(_ error: OAuthError) {
         switch error {
         case .discoveryFailed: self = .discovery
-        case .registrationUnsupported, .registrationFailed, .clientRegistrationRejected: self = .registration
+        case .registrationUnsupported, .registrationFailed, .clientRegistrationRejected, .scopesRefused: self = .registration
         case .server: self = .server
         case .stateMismatch: self = .stateMismatch
         case .missingAuthorizationCode: self = .missingCode

@@ -22,7 +22,7 @@
 # ONE-TIME PREREQS (see README "Releasing"):
 #   1. "Developer ID Application" certificate for team 3Q6X2L86C4 in the login Keychain.
 #   2. A notarytool keychain profile:
-#        xcrun notarytool store-credentials "herald-notary" \
+#        xcrun notarytool store-credentials "shabubox-notary" \
 #          --key <AuthKey_XXXX>.p8 --key-id <KEY_ID> --issuer <ISSUER_ID>
 #      (or reuse an existing one: NOTARY_PROFILE=<name> ./scripts/release.sh …)
 #   3. The Sparkle EdDSA keypair under Keychain account "Herald":
@@ -65,7 +65,7 @@ SCHEME="Herald"
 PROJECT="Herald.xcodeproj"
 APP_NAME="Herald"
 BUNDLE_ID="com.wizemann.herald"
-NOTARY_PROFILE="${NOTARY_PROFILE:-herald-notary}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-shabubox-notary}"
 SIGNING_IDENTITY="Developer ID Application"
 SPARKLE_ACCOUNT="${SPARKLE_ACCOUNT:-Herald}"
 REPO="${REPO:-awizemann/herald}"

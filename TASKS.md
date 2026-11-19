@@ -23,15 +23,15 @@
 - [ ] Multi-account inputs from 2026-09-26 session-recovery audit (id: t-09312c4d) (added: 2026-09-26)
 - [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
 - [ ] Journal deletes should re-list every cached listing of the thread (id: t-2962c745) (added: 2026-09-28) (priority: low)
-- [ ] Fix HeraldTests compile against swift-stats 0.3.1 (id: t-2ed94e9a) (added: 2026-11-19)
-- [ ] Default release.sh notary profile to shabubox-notary (id: t-544ae427) (added: 2026-11-19) (priority: low)
-- [ ] Stabilize timing tests under parallel swift test (id: t-0264af40) (added: 2026-11-19) (priority: low)
 
 ## Doing
 
 
 ## Done
 
+- [x] Stabilize timing tests under parallel swift test (id: t-0264af40) (added: 2026-11-19) (priority: low)
+- [x] Default release.sh notary profile to shabubox-notary (id: t-544ae427) (added: 2026-11-19) (priority: low)
+- [x] Fix HeraldTests compile against swift-stats 0.3.1 (id: t-2ed94e9a) (added: 2026-11-19)
 - [x] Analytics P4: new events — notification_opened, label_changed, setting_changed, notification_permission_resolved; plan doc sync (id: t-0edf2b4a) (added: 2026-10-06)
 - [x] Analytics P3: event quality — action via, draft trigger, attachments count, notification click, compose_opened, account_added kinds (id: t-b62008f5) (added: 2026-10-06)
 - [x] Analytics P2: adopt SDK record() — drop the enqueueUsage chain, flush off-chain (id: t-f688c4be) (added: 2026-10-06)

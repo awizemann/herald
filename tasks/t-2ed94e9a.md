@@ -1,7 +1,7 @@
 ---
 id: t-2ed94e9a
 title: Fix HeraldTests compile against swift-stats 0.3.1
-status: todo
+status: done
 added: 2026-11-19
 ---
 

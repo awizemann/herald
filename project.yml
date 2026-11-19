@@ -56,8 +56,9 @@ packages:
   # test seams (InMemorySink, FixedUUIDProvider, FixedRandomSource) used by HeraldTests.
   swift-stats:
     url: https://github.com/awizemann/swift-stats
-    # Up to next MINOR, not `from:` — in 0.x a minor release may break.
-    minorVersion: 0.3.0
+    # EXACT, bumped on purpose: in 0.x any release may break. The committed lockfile
+    # (HeraldKit/Package.resolved, which records the whole workspace) pins the build either way.
+    exactVersion: 0.3.1
 
 targets:
   Herald:

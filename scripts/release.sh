@@ -235,6 +235,13 @@ xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
   -xcconfig "$STATS_XCCONFIG" \
   archive | redact_key
 
+# The archive must build exactly the dependency versions that were committed and tested.
+# HeraldKit/Package.resolved is the WORKSPACE lockfile (Xcode records every package there,
+# Sparkle and swift-stats included); if resolution rewrote it, a dependency moved underneath us.
+git diff --quiet -- HeraldKit/Package.resolved || die "the archive changed HeraldKit/Package.resolved — a package resolved to a version that was not committed:
+$(git diff -- HeraldKit/Package.resolved | grep -E '^[+-] .*\"(version|revision)\"')
+Review, test and commit the new lockfile (or 'git checkout HeraldKit/Package.resolved'), then release again."
+
 log "Export signed .app (Developer ID)"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
   -exportOptionsPlist "$EXPORT_OPTIONS"

@@ -23,6 +23,9 @@
 - [ ] Multi-account inputs from 2026-09-26 session-recovery audit (id: t-09312c4d) (added: 2026-09-26)
 - [ ] Consolidate the Herald Design System memory note (id: t-b3ca8c3a) (added: 2026-09-28) (priority: low)
 - [ ] Journal deletes should re-list every cached listing of the thread (id: t-2962c745) (added: 2026-09-28) (priority: low)
+- [ ] Fix HeraldTests compile against swift-stats 0.3.1 (id: t-2ed94e9a) (added: 2026-11-19)
+- [ ] Default release.sh notary profile to shabubox-notary (id: t-544ae427) (added: 2026-11-19) (priority: low)
+- [ ] Stabilize timing tests under parallel swift test (id: t-0264af40) (added: 2026-11-19) (priority: low)
 
 ## Doing
 

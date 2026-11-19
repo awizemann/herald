@@ -5,10 +5,10 @@ permalink: hqbase-mac/decisions/sign-in-recoverability-and-the-presentation-watc
 tags: [auth, oauth, ux, concurrency]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/App/AppEnvironment+SignIn.swift, Herald/App/AppEnvironment+Compose.swift, Herald/App/AutoReauthPolicy.swift, Herald/App/MailViewModel.swift, Herald/App/SignatureSettingsModel.swift, Herald/Views/RootView.swift, Herald/Views/SidebarView.swift, Herald/Compose/ComposeViewModel.swift, Herald/Compose/ComposeWindow.swift, HeraldKit/Sources/HeraldKit/Auth/AuthorizationPresenter.swift, HeraldKit/Sources/HeraldKit/Auth/AuthCoordinator.swift, HeraldKit/Sources/HeraldKit/Auth/AccountTokenProvider.swift, HeraldKit/Sources/HeraldKit/Auth/OAuthError.swift, HeraldKit/Sources/HeraldKit/Auth/AccountStore.swift, HeraldKit/Sources/HeraldKit/API/AuthenticatingMiddleware.swift, HeraldKit/Sources/HeraldKit/Sync/MailEventSocket.swift, HeraldKit/Sources/HeraldKit/Sync/URLSessionMailEventChannel.swift]
 source_paths_inferred: false
-source_sha: 54ed13ac9775487fef938169371cd8d8f7913aa9
+source_sha: 5bf365e9eb97afb117962adc5d9a8d5f56b9053f
 created: 2026-09-05
 updated: 2026-09-27
-reviewed: 2026-10-06
+reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
 

@@ -7,7 +7,7 @@ source_paths: [Herald/Analytics/UsageEvent.swift, Herald/Analytics/UsageTracking
 source_paths_inferred: false
 source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
 created: 2026-08-18
-updated: 2026-10-06
+updated: 2026-11-19
 reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
@@ -15,6 +15,8 @@ reviewed_by: audit:claude-code (background)
 Herald ships privacy-first, opt-out usage analytics via swift-stats 0.1.0 (hosted https://api.swiftstats.co), landed 2026-08-18 in commit b9bad49. The approved event/prop contract lives in documents/plans/usage-analytics-plan.md and is enforced in code by Herald/Analytics/UsageEvent.swift (the privacy contract) plus HeraldTests/Analytics.
 
 ## Observations
+
+- [decision] 2026-11-19: swift-stats is pinned with `exactVersion: 0.3.1` in project.yml (1.1.2 and earlier shipped 0.3.0). HeraldKit/Package.resolved is the workspace lockfile for every app package (Sparkle included); release.sh fails if the archive rewrites it. Bump on purpose #analytics #deps
 - [decision] Consent is `.all` (hashed random install id, salt `herald-mac-2026`, never change), autoEvents [.appOpen, .sessions] — no .appBackground because macOS fires it on every ⌘-tab #analytics
 - [decision] One owner: AppEnvironment.usage (injected, never a singleton); record(_:) is synchronous via the SDK's record() (see 2026-10-06 update — the old Task chain is gone); action methods on MailViewModel/ComposeViewModel are instrumented, never buttons (exception: setting_changed, below); view_shown consumes the pending `via` before the equality guard; the launch view is emitted once per PROCESS (2026-10-06) #analytics
 - [constraint] The write key never enters the repo: Info.plist is xcodegen-GENERATED from project.yml `info.properties`, so `HeraldStatsWriteKey: $(APP_STATS_WRITE_KEY)` is declared there as a reference only; release.sh requires APP_STATS_WRITE_KEY and supplies it via a 0600 temp xcconfig (not argv — xcodebuild echoes argv), regenerates with `env -u`, and asserts the exported plist + bundled PrivacyInfo.xcprivacy; dev builds resolve to "" → NoopUsageTracker #release

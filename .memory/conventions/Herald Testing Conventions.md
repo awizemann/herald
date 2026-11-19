@@ -7,13 +7,15 @@ source_paths: [HeraldKit/Tests/HeraldKitTests/Support/FakeServer.swift, HeraldTe
 source_paths_inferred: false
 source_sha: b3d494ce6fb5e361eda1d81a80812f21680c65d2
 created: 2026-08-16
-updated: 2026-09-27
+updated: 2026-11-19
 reviewed: 2026-11-19
 reviewed_by: audit:claude-code (background)
 ---
 General unit-testing conventions for Herald (HeraldTests app-hosted suites + HeraldKit package tests). UI (XCUITest) testing lives in [[Herald UI Testing]].
 
 ## Observations
+
+- [gotcha] 2026-11-19: one parallel `swift test` run had about 10 waitUntil timeouts, every test stalling about 20s at once (even pure parsers). It did not reproduce in 8 parallel runs, including 6 concurrent runs plus an app build. Treat it as a process-wide stall (likely first-launch scanning of a fresh test binary), not a test timing bug: re-run before raising timeouts #testing
 - [convention] Swift Testing only (@Suite/@Test/#expect); protocol-oriented fakes injected via `nonisolated protocol`s (fake actors need it) #framework
 - [convention] Tests must DISCRIMINATE: each test states (in name or comment) what broken behavior it would fail on — a test that only re-asserts what the code obviously does is a checkbox and gets removed in audit #discriminating
 - [convention] Network is faked at URLProtocol level (`FakeServerProtocol`, HeraldKit/Tests/HeraldKitTests/Support/FakeServer.swift) with canned responses keyed by path, so the generated client + auth + sync run end-to-end without a server; no timing-dependent tests — poll with early exit or await events, never sleep-then-assert #network

@@ -7,7 +7,7 @@ source_paths: [scripts/release.sh, scripts/changelog-section.py, scripts/verify-
 source_paths_inferred: false
 source_sha: 54ed13ac9775487fef938169371cd8d8f7913aa9
 created: 2026-08-16
-updated: 2026-10-06
+updated: 2026-11-19
 reviewed: 2026-10-06
 reviewed_by: audit:claude-code (background)
 ---
@@ -26,7 +26,8 @@ reviewed_by: audit:claude-code (background)
 ## Update (2026-08-16 — first release run findings)
 - [gotcha] `xcodebuild -exportArchive` with signingStyle AUTOMATIC fails "No Accounts" under a CLI Xcode with no signed-in developer account even when another Xcode has one → ExportOptions uses `signingStyle: manual` + `signingCertificate: Developer ID Application` (Scarf pattern); no -allowProvisioningUpdates #export
 - [gotcha] Any profile-bound entitlement (keychain-access-groups was ours) makes export demand a provisioning profile ("requires a provisioning profile") — Herald ships none, so entitlements must stay to sandbox + network.client + user-selected files + Sparkle mach-lookup exceptions #entitlements
-- [fact] Notarization reuses the team-level profile `shabubox-notary` (`NOTARY_PROFILE=shabubox-notary ./scripts/release.sh <v>`); credentials are per team, not per app #notary
+- [fact] Notarization reuses the team-level profile `shabubox-notary`, which is release.sh's DEFAULT since 2026-11-19 (5bf365e) — no NOTARY_PROFILE override needed; credentials are per team, not per app #notary
+- [fact] 2026-11-19: release.sh fails after the archive if HeraldKit/Package.resolved (the workspace lockfile for every app package) changed, so a release always builds the committed dependency versions #release #deps
 
 ## Update (2026-08-16 — release notes are part of the runbook)
 - [rule] RUNBOOK step 0: write the version's notes in CHANGELOG.md (`## [x.y.z] - date`, Keep-a-Changelog; move `[Unreleased]` items down). release.sh PREFLIGHT FAILS without that section; `scripts/changelog-section.py <v> [--html]` extracts it → GitHub Release body AND `Herald-<v>.html` beside the zip so generate_appcast embeds it as the Sparkle update notes. releases/**/RELEASE_NOTES.md and *.html are derived and gitignored #release-notes

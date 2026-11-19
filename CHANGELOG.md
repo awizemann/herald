@@ -10,6 +10,18 @@ first, then cut the release.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-11-19
+
+A fix for signing in to HQBase 1.4.2 and later.
+
+### Fixed
+- **Signing in no longer fails with "The following scopes are invalid: signatures:manage".**
+  Herald registered itself with your server before it started asking for permission to manage
+  signatures, then kept reusing that registration, which the server refuses for the new
+  permission. Herald now registers again whenever it needs permissions its saved registration
+  doesn't cover, and a refused sign-in clears the old registration so the next attempt succeeds.
+- Sign-in error messages show spaces instead of `+` signs.
+
 ## [1.1.1] - 2026-10-06
 
 A maintenance release: more accurate, better-disclosed usage analytics, and one search fix.

@@ -3,11 +3,13 @@ title: Herald Release Pipeline
 type: note
 permalink: hqbase-mac/operations/herald-release-pipeline
 tags: [release, sparkle, operations]
-source_paths: [scripts/changelog-section.py, Herald/PrivacyInfo.xcprivacy]
-source_paths_inferred: true
-source_sha: 997b6e7907e5ea5494e1ef034084f406daf4c085
+source_paths: [scripts/release.sh, scripts/changelog-section.py, scripts/verify-release-identity.sh, Herald/PrivacyInfo.xcprivacy, project.yml]
+source_paths_inferred: false
+source_sha: 54ed13ac9775487fef938169371cd8d8f7913aa9
 created: 2026-08-16
-updated: 2026-10-01
+updated: 2026-10-06
+reviewed: 2026-10-06
+reviewed_by: audit:claude-code (background)
 ---
 
 Direct-download distribution with Sparkle 2 auto-updates (decision 2026-08-15: HQBase users are
@@ -103,3 +105,8 @@ is settled). Public repo: https://github.com/awizemann/herald (AGPL-3.0, CI on m
 ## Update (2026-10-01 — v1.1.0 shipped)
 - [done] v1.1.0 released (build 13) by the agent with the owner's explicit go — the auto-mode block noted for 1.0.0 did not recur. Notarization Accepted, main + tag pushed (a80015c), GitHub release zip HTTP 200 and byte-identical to the local signed zip (5280582 bytes = appcast enclosure length), `spctl` accepted (Notarized Developer ID), gh-pages appcast advertises 1.1.0/13 #release
 - [gotcha] The first `curl -L` of a fresh release asset returned a 92-byte body (not the zip); a retry a minute later was correct. Check `curl -sIL` for 200 + content-length before calling a download broken #release
+
+
+
+## Update (2026-10-06 — v1.1.1 shipped)
+- [done] v1.1.1 released (build 14) by the agent at the owner's request: swift-stats 0.3.0 upgrade + the analytics accuracy pass (no cadence heartbeat, once-per-launch, record(), new events, Device ID in the manifest) + the search-on-Return debounce fix. No dry run (pipeline unchanged since 1.1.0). Notarization Accepted, `spctl` Notarized Developer ID, main + tag pushed (54ed13a), GitHub release zip HTTP 200 with content-length 5311240 = local zip = appcast enclosure length, gh-pages appcast advertises 1.1.1/14. Write key passed via a 0600 scratchpad file, removed after; 0 occurrences in the release log #release

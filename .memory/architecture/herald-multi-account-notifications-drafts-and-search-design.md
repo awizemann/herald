@@ -5,10 +5,10 @@ permalink: hqbase-mac/architecture/herald-multi-account-notifications-drafts-and
 tags: [accounts, notifications, drafts, search, attachments]
 source_paths: [Herald/App/AppEnvironment.swift, Herald/App/MailViewModel.swift, HeraldKit/Sources/HeraldKit/Sync/SyncEngine.swift, HeraldKit/Sources/HeraldKit/Notifications, HeraldKit/Sources/HeraldKit/Compose/AttachmentLimits.swift]
 source_paths_inferred: false
-source_sha: 2d441e9a9ad57500bef916f829b4ad0b9934e258
+source_sha: 54ed13ac9775487fef938169371cd8d8f7913aa9
 created: 2026-08-18
 updated: 2026-09-28
-reviewed: 2026-09-29
+reviewed: 2026-10-06
 reviewed_by: audit:claude-code (background)
 ---
 
